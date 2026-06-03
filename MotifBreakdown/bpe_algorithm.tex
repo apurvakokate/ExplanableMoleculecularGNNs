@@ -1,0 +1,122 @@
+% bpe_algorithm.tex
+% Full LaTeX algorithm for the prevalence-guided upward BPE
+% implemented in molfragbpe5.py :: bpe_merge()
+%
+% Required packages (add to your preamble):
+%   \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+%   \usepackage{amsmath,amssymb}
+%
+% Hyperparameters (defaults from molfragbpe5.py):
+%   MIN_FRAG_ATOMS = 3
+%   SZ_MAX         = 18
+%   GNN_LAYERS     = 3   =>  max_diam = 2 * GNN_LAYERS = 6
+%   BPE_MIN_ABS    = 5
+%   max_iterations = 100
+
+\begin{algorithm}[t]
+\caption{Prevalence-Guided Upward BPE via Fragment Hierarchy}
+\label{alg:bpe}
+\DontPrintSemicolon
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
+\SetKwInOut{Hyper}{Hyperparameters}
+\SetKwComment{Comment}{$\triangleright$~}{}
+
+\Input{%
+  $\mathcal{F} = (F_1, \dots, F_N)$ \;
+  \hspace{1.4em} per-molecule leaf fragment sets produced by the chemistry cascade\;
+  $\mathcal{H}$ \;
+  \hspace{1.4em} fragment hierarchy with nodes $v$, each storing:\;
+  \hspace{2.8em} $\mathrm{support}(v)$ -- number of molecules containing $v$\;
+  \hspace{2.8em} $\mathrm{children}(v)$ -- set of direct children in hierarchy\;
+  \hspace{2.8em} $\mathrm{depth}(v)$ -- 0 for molecule root, $\ge 1$ for fragments\;
+  \hspace{2.8em} $\mathrm{diam}(v)$ -- topological diameter of $v$\;
+  \hspace{2.8em} $\mathrm{atoms}(v)$ -- heavy atom count of $v$ (wildcards excluded)\;
+  \hspace{2.8em} $\mathrm{ring}(v)$ -- True if $v$ contains at least one ring\;
+}
+
+\Hyper{%
+  $\alpha_{\min} = 5$ \quad (BPE\_MIN\_ABS: minimum support for a merge)\;
+  $\delta = 3$ \quad (GNN\_LAYERS: GNN depth; sets receptive-field diameter bound)\;
+  $\sigma = 18$ \quad (SZ\_MAX: maximum atom count after merge)\;
+  $\mu = 3$ \quad (MIN\_FRAG\_ATOMS: atom-count threshold for ``small'' children)\;
+  $T = 100$ \quad (maximum iterations)\;
+}
+
+\Output{Updated $\mathcal{F}$ with small fragments merged upward; merge history}
+
+\BlankLine
+$V \leftarrow \bigcup_{i=1}^{N} F_i$
+\Comment*{current vocabulary = all leaves initially}
+
+$\mathcal{I} \leftarrow \{\,v \in \mathcal{H} : \mathrm{depth}(v)\ge 1
+    \;\wedge\; v \text{ contains } [\ast]
+    \;\wedge\; \mathrm{children}(v)\neq\emptyset\,\}$
+\Comment*{internal fragment nodes, fixed across iterations}
+
+\BlankLine
+\For{$t = 1, 2, \dots, T$}{
+
+  $\mathcal{C} \leftarrow \emptyset$
+  \Comment*{candidate parents for this iteration}
+
+  \ForEach{internal node $P \in \mathcal{I}$}{
+
+    \Comment{Seven guards -- all must pass for $P$ to be a candidate}
+
+    \lIf{$\mathrm{support}(P) < \alpha_{\min}$}{\textbf{skip}
+      \Comment*[f]{G1: parent too rare}}
+
+    \lIf{$\mathrm{atoms}(P) = 0 \;\vee\; \mathrm{atoms}(P) > \sigma$}{\textbf{skip}
+      \Comment*[f]{G2: parent too large}}
+
+    \lIf{$\mathrm{diam}(P) > 2\delta$}{\textbf{skip}
+      \Comment*[f]{G3: exceeds GNN receptive field}}
+
+    \lIf{$\neg\,\mathrm{ring}(P) \;\wedge\; \mathrm{diam}(P) > \delta$}{\textbf{skip}
+      \Comment*[f]{G4: acyclic chain diameter too large}}
+
+    \lIf{$P \in V$}{\textbf{skip}
+      \Comment*[f]{G5: $P$ is already a vocabulary leaf}}
+
+    $K \leftarrow \mathrm{children}(P) \cap V$
+    \Comment*{current-vocabulary children of $P$}
+
+    \lIf{$\nexists\, c \in K : \mathrm{atoms}(c) < \mu$}{\textbf{skip}
+      \Comment*[f]{G6: no small child to absorb}}
+
+    $n_{\mathrm{cooc}} \leftarrow \bigl|\,\{i : K \subseteq F_i\}\,\bigr|$
+    \Comment*{graphs where ALL children of $P$ co-occur}
+
+    \lIf{$n_{\mathrm{cooc}} < \alpha_{\min}$}{\textbf{skip}
+      \Comment*[f]{G7: children rarely co-occur together}}
+
+    $\mathcal{C} \leftarrow \mathcal{C} \cup \{(n_{\mathrm{cooc}} \times \mathrm{support}(P),\; P,\; K,\; n_{\mathrm{cooc}})\}$
+    \Comment*{passes all guards}
+  }
+
+  \BlankLine
+  \lIf{$\mathcal{C} = \emptyset$}{\textbf{break}
+    \Comment*[f]{no valid candidate found; BPE converged}}
+
+  \BlankLine
+  $(P^{\ast}, K^{\ast}, n^{\ast}) \leftarrow \operatorname*{argmax}_{(P,K,n)\,\in\,\mathcal{C}}\; n \times \mathrm{support}(P)$
+  \Comment*{highest-priority merge}
+
+  \BlankLine
+  \Comment{Execute merge: replace children with parent in every matching molecule}
+  \ForEach{$i \in \{1,\dots,N\}$ such that $K^{\ast} \subseteq F_i$}{
+    $F_i \leftarrow \bigl(F_i \setminus K^{\ast}\bigr) \cup \{P^{\ast}\}$
+    \Comment*{children removed, parent inserted}
+  }
+
+  \BlankLine
+  $V \leftarrow (V \setminus K^{\ast}) \cup \{P^{\ast}\}$
+  \Comment*{update vocabulary}
+
+  Record merge $(P^{\ast}, K^{\ast}, n^{\ast}, t)$ in history\;
+}
+
+\BlankLine
+\Return $\mathcal{F},\; \text{history}$
+\end{algorithm}

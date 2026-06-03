@@ -1,0 +1,235 @@
+% fragmentation_algorithm.tex
+% LaTeX algorithm for the fragmentation tree building pipeline
+% implemented in molfragbpe5.py:
+%   fragment_molecule()    -- top-level per-molecule driver
+%   fragment_recursive()   -- first-match-wins recursive cascade
+%   Hierarchy              -- the shared tree built incrementally
+%
+% Required packages:
+%   \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+%   \usepackage{amsmath,amssymb}
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ALGORITHM 1 — Data structure: Fragment Hierarchy H
+% ─────────────────────────────────────────────────────────────────────────────
+
+% H is a globally shared tree populated across the entire dataset.
+% Each node v stores:
+%   smarts(v)       SMARTS string (canonical SMILES for roots, [*]-SMARTS for fragments)
+%   parent(v)       parent node (None for molecule roots)
+%   children(v)     set of direct children
+%   support(v)      number of molecules in which v appeared (incremented on add_cut)
+%   depth(v)        0 for molecule roots, ≥ 1 for all fragment nodes
+%   method(v)       name of the cut method that produced v
+%
+% Three mutating operations:
+%   TOUCH(s, parent, d, m)   register node s if absent; return it
+%   ADD-ROOT(mol)            TOUCH(mol, None, 0, root); support(mol)++
+%   ADD-CUT(parent, {c_i}, d, m)  foreach c_i: TOUCH(c_i, parent, d, m);
+%                                              parent.children += c_i; support(c_i)++
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ALGORITHM 1 — Recursive first-match-wins cascade
+%  (fragment_recursive)
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{algorithm}[t]
+\caption{\textsc{FragmentRecursive} — first-match-wins cascade on one fragment}
+\label{alg:frag_recursive}
+\DontPrintSemicolon
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
+\SetKwInOut{Param}{Parameters}
+\SetKwComment{Comment}{$\triangleright$~}{}
+\SetKwFunction{FragRec}{FragmentRecursive}
+\SetKwFunction{AddCut}{AddCut}
+\SetKwFunction{Touch}{Touch}
+\SetKwFunction{CutFn}{cut}
+
+\Input{%
+  $s$ \quad fragment SMARTS (contains at least one $[\ast]$ wildcard)\;
+  $\mathcal{H}$ \quad fragment hierarchy (mutated in place)\;
+  $\Lambda = \bigl[(\ell_1, f_1), \dots, (\ell_k, f_k)\bigr]$
+    \quad ordered chemistry cascade: method name $\ell_j$, cut function $f_j$\;
+  $d$ \quad current depth in the hierarchy\;
+}
+\Param{$d_{\max} = 12$ \quad maximum recursion depth}
+\Output{$L$ \quad list of leaf fragment SMARTS produced from $s$}
+
+\BlankLine
+\lIf{$d \ge d_{\max}$}{\Return $[s]$}
+
+Convert $s$ to RDKit molecule $m$\;
+\lIf{$m$ is invalid}{\Return $[s]$}
+
+\BlankLine
+\Comment{First-match-wins: try each chemistry method in order}
+\ForEach{$(\ell_j,\, f_j) \in \Lambda$}{
+  $C \leftarrow \{c : c \in f_j(m),\; \mathrm{atoms}(c) \ge 1\}$
+  \Comment*{candidate cuts from method $\ell_j$}
+
+  \lIf{$|C| < 2$}{\textbf{continue}
+    \Comment*[f]{method produced $< 2$ fragments; try next method}}
+
+  \BlankLine
+  \Comment{First method that yields $\ge 2$ fragments wins}
+  $\AddCut(\mathcal{H},\; s,\; C,\; d+1,\; \ell_j)$
+  \Comment*{records $s \to C$ in $\mathcal{H}$; increments $\mathrm{support}(c)$ for all $c \in C$}
+
+  $L \leftarrow [\,]$\;
+  \ForEach{$c \in C$}{
+    \lIf{$c \notin \mathcal{H}$}{$\Touch(\mathcal{H},\; c,\; s,\; d+1,\; \ell_j)$}
+    $L \leftarrow L \;\|$ \FragRec{$c,\; \mathcal{H},\; \Lambda,\; d+1$}
+    \Comment*{same full cascade, one level deeper}
+  }
+  \Return $L$ if $L \ne [\,]$ else $[s]$
+  \Comment*{return immediately — no other methods tried}
+}
+
+\BlankLine
+\Return $[s]$
+\Comment*{no method could cut $s$ — $s$ is a leaf}
+\end{algorithm}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ALGORITHM 2 — Full per-molecule fragmentation pipeline
+%  (fragment_molecule)
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{algorithm}[t]
+\caption{\textsc{FragmentMolecule} — full per-molecule pipeline}
+\label{alg:frag_molecule}
+\DontPrintSemicolon
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
+\SetKwComment{Comment}{$\triangleright$~}{}
+\SetKwFunction{FragRec}{FragmentRecursive}
+\SetKwFunction{AddRoot}{AddRoot}
+\SetKwFunction{AddCut}{AddCut}
+\SetKwFunction{Touch}{Touch}
+
+\Input{%
+  $M$ \quad RDKit molecule object\;
+  $\mathcal{H}$ \quad shared fragment hierarchy (mutated in place)\;
+  $\mathrm{use\_fallback} \in \{\mathrm{True}, \mathrm{False}\}$\;
+  $\mathrm{method} \in \{\texttt{rbrics},\,\texttt{brics},\,\texttt{all}\}$
+}
+
+\Output{$L$ \quad ordered list of leaf fragment SMARTS (no duplicates)}
+
+\BlankLine
+$s_0 \leftarrow \mathrm{canonicalise}(M)$
+\Comment*{canonical SMILES — the depth-0 root node}
+$\AddRoot(\mathcal{H},\, s_0)$
+\Comment*{TOUCH($s_0$, None, 0, root); support$(s_0)$++}
+
+\BlankLine
+$\Lambda \leftarrow \mathrm{cascade}(\mathrm{method})$
+\Comment*{rBRICS $\to$ BRICS $\to$ RECAP $\to$ Murcko (chemistry only; no fallback)}
+
+\BlankLine
+% ── Step 1 + 2: chemistry cascade, first-match-wins at every level ──────────
+\Comment{\textbf{Step 1 \& 2} --- chemistry cascade on the whole molecule,
+  first-match-wins at the root and at every depth below it}
+
+$L \leftarrow [\,]$\;
+\ForEach{$(\ell_j,\, f_j) \in \Lambda$}{
+  $C \leftarrow \{c : c \in f_j(M),\; \mathrm{atoms}(c) \ge 1\}$\;
+  \lIf{$|C| < 2$}{\textbf{continue}}
+
+  \BlankLine
+  \Comment{First method that fires at the root wins}
+  $\AddCut(\mathcal{H},\; s_0,\; C,\; 1,\; \ell_j)$\;
+  \ForEach{$c \in C$}{
+    \lIf{$c \notin \mathcal{H}$}{$\Touch(\mathcal{H},\; c,\; s_0,\; 1,\; \ell_j)$}
+    $L \leftarrow L \;\|\;$ \FragRec{$c,\; \mathcal{H},\; \Lambda,\; 1$}
+    \Comment*{recurse with full chemistry cascade; first-match-wins throughout}
+  }
+  \textbf{break}
+  \Comment*{stop after first firing method — do not try further root-level methods}
+}
+
+\BlankLine
+% ── No chemistry cut at all ──────────────────────────────────────────────────
+\If{$L = [\,]$}{
+  \Comment{No chemistry method fired on the whole molecule — identity fragment}
+  $s_{\mathrm{id}} \leftarrow [\ast]\,s_0\,[\ast]$\;
+  $\Touch(\mathcal{H},\; s_{\mathrm{id}},\; s_0,\; 1,\; \texttt{identity})$\;
+  $\mathrm{support}(s_{\mathrm{id}}) \mathrel{+}= 1$\;
+  $\mathrm{children}(s_0) \mathrel{\cup}= \{s_{\mathrm{id}}\}$\;
+  $L \leftarrow [s_{\mathrm{id}}]$\;
+}
+
+\BlankLine
+% ── Deduplicate ──────────────────────────────────────────────────────────────
+$L \leftarrow \mathrm{deduplicate}(L)$
+\Comment*{remove duplicates, preserve order of first occurrence}
+
+\BlankLine
+% ── Step 3: structural fallback ──────────────────────────────────────────────
+\If{$\mathrm{use\_fallback}$ \textbf{and} $|L| = 1$}{
+  \Comment{\textbf{Step 3} --- last resort, applied at most once, never recursed into}
+  \Comment{$\Phi = [\,(\texttt{ring\_chain},\, f_{\mathrm{rc}}),\;
+            (\texttt{acyclic\_bonds},\, f_{\mathrm{ab}})\,]$}
+
+  $s_{\ell} \leftarrow L[0]$ \quad (the sole leaf)\;
+  $m_{\ell} \leftarrow \mathrm{toMol}(s_{\ell})$\;
+  \ForEach{$(\ell_j,\, f_j) \in \Phi$}{
+    $C \leftarrow \{c : c \in f_j(m_{\ell}),\; \mathrm{atoms}(c) \ge 1\}$\;
+    \If{$|C| \ge 2$}{
+      $\AddCut(\mathcal{H},\; s_{\ell},\; C,\; 2,\; \ell_j)$\;
+      $L \leftarrow \mathrm{list}(C)$\;
+      \textbf{break}
+      \Comment*{first fallback method that fires wins; no further recursion}
+    }
+  }
+}
+
+\BlankLine
+\Return $L$
+\end{algorithm}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ALGORITHM 3 — Dataset-level fragmentation
+%  (called once per dataset fold before BPE)
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{algorithm}[t]
+\caption{\textsc{BuildFragmentHierarchy} — dataset-level fragmentation}
+\label{alg:build_hierarchy}
+\DontPrintSemicolon
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
+\SetKwComment{Comment}{$\triangleright$~}{}
+\SetKwFunction{FragMol}{FragmentMolecule}
+
+\Input{%
+  $\mathcal{D} = \{(s_i, y_i)\}_{i=1}^{N}$ \quad dataset of SMILES and labels\;
+  $\mathrm{method} \in \{\texttt{rbrics},\,\texttt{brics},\,\texttt{all}\}$\;
+  $\mathrm{use\_fallback} \in \{\mathrm{True}, \mathrm{False}\}$\;
+}
+
+\Output{%
+  $\mathcal{H}$ \quad shared hierarchy with support counts for all fragments\;
+  $\mathcal{F} = (F_1, \dots, F_N)$ \quad per-molecule leaf lists (input to BPE)\;
+}
+
+\BlankLine
+Initialise empty hierarchy $\mathcal{H}$\;
+$\mathcal{F} \leftarrow [\,]$\;
+
+\ForEach{$(s_i, y_i) \in \mathcal{D}$}{
+  $M_i \leftarrow \mathrm{Chem.MolFromSmiles}(s_i)$\;
+  \lIf{$M_i$ is invalid}{$\mathcal{F}.\mathrm{append}(\mathrm{None})$; \textbf{continue}}
+  $F_i \leftarrow $ \FragMol{$M_i,\; \mathcal{H},\; \mathrm{use\_fallback},\; \mathrm{method}$}\;
+  $\mathcal{F}.\mathrm{append}(F_i)$\;
+}
+
+\BlankLine
+\Comment{$\mathcal{H}$ now encodes the complete fragment tree over $\mathcal{D}$:}
+\Comment{every node's support equals the number of molecules it appeared in,}
+\Comment{every parent–child edge records the method that produced the cut.}
+\Return $\mathcal{H},\; \mathcal{F}$
+\end{algorithm}

@@ -1,0 +1,184 @@
+"""train.py — MotifSAT training loop."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from SharedModules.evaluation.metrics import evaluate_predictions
+from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger
+from SharedModules.evaluation.wandb_logger import WandbLogger
+from SharedModules.utils import save_checkpoint
+
+
+def _task_loss(criterion, out, y, task_type):
+    if task_type == 'MultiLabel':
+        valid = ~torch.isnan(y)
+        if not valid.any():
+            return torch.tensor(0.0, device=out.device, requires_grad=True)
+        return criterion(out[valid.any(dim=1)], y[valid.any(dim=1)].float())
+    valid = ~torch.isnan(y.view(-1))
+    return criterion(out.view(-1)[valid], y.view(-1)[valid].float())
+
+
+def _val_score(metrics: Dict, task_type: str) -> float:
+    if task_type == 'Regression':
+        return metrics.get('rmse', float('inf'))
+    elif task_type == 'MultiLabel':
+        return metrics.get('auc_mean', 0.0)
+    return metrics.get('auc', 0.0)
+
+
+def train_one_epoch(
+    model,
+    criterion,
+    optimizer,
+    loader,
+    device,
+    task_type: str,
+    epoch: int,
+    motif_lengths: Optional[list] = None,
+    clip_grad: float = 0.0,
+) -> Dict[str, float]:
+    model.train()
+    totals: Dict[str, float] = {}
+    n = 0
+    for data in loader:
+        data = data.to(device)
+        optimizer.zero_grad()
+
+        _edge_attr = getattr(data, 'edge_attr', None)
+        if _edge_attr is None and os.environ.get('MOTIFSAT_VERIFY_FIXES') == '1':
+            print('  [FIX#3 active] batch had no edge_attr; '
+                  'used getattr fallback (None) instead of crashing')
+        logits, node_att, aux = model(
+            data.x, data.edge_index, data.batch,
+            data.nodes_to_motifs, _edge_attr,
+            epoch=epoch, motif_lengths=motif_lengths,
+        )
+
+        task = _task_loss(criterion, logits, data.y, task_type)
+        total, breakdown = model.compute_loss(
+            task, aux, data.nodes_to_motifs, data.batch, motif_lengths
+        )
+        total.backward()
+        if clip_grad > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+        optimizer.step()
+
+        for k, v in breakdown.items():
+            totals[k] = totals.get(k, 0.0) + v
+        n += 1
+
+    return {k: v / max(n, 1) for k, v in totals.items()}
+
+
+def train_gsat(
+    model,
+    loaders: Dict,
+    task_type: str,
+    device: torch.device,
+    epochs: int = 100,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-5,
+    pos_weights: Optional[torch.Tensor] = None,
+    motif_lengths: Optional[list] = None,
+    patience: int = 20,
+    min_epochs: int = 20,
+    clip_grad: float = 2.0,
+    save_path: Optional[str] = None,
+    verbose: bool = True,
+    viz_logger: Optional['EmbeddingVizLogger'] = None,
+    wandb_logger: Optional['WandbLogger'] = None,
+) -> Tuple[object, Dict]:
+    """Full MotifSAT training loop.
+
+    Returns (best_model, history).
+    """
+    model.to(device)
+
+    if task_type in ('BinaryClass', 'MultiLabel'):
+        pw = pos_weights.to(device) if pos_weights is not None else None
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
+    else:
+        criterion = nn.MSELoss()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr,
+                                 weight_decay=weight_decay)
+    scheduler = ReduceLROnPlateau(optimizer, patience=10, factor=0.5,
+                                  min_lr=1e-5)
+
+    best_val = float('inf') if task_type == 'Regression' else 0.0
+    no_improve = 0
+    best_state = deepcopy(model.state_dict())
+    history: Dict = {}
+
+    for epoch in range(1, epochs + 1):
+        # Anneal temperature
+        model.anneal_r(epoch)
+
+        ep_losses = train_one_epoch(
+            model, criterion, optimizer, loaders['train'], device,
+            task_type, epoch, motif_lengths, clip_grad,
+        )
+        for k, v in ep_losses.items():
+            history.setdefault(k, []).append(v)
+
+        val_m = evaluate_predictions(model, loaders['valid'], device, task_type)
+        val_score = _val_score(val_m, task_type)
+        history.setdefault('val_metric', []).append(val_score)
+
+        scheduler.step(val_score if task_type == 'Regression' else -val_score)
+
+        is_better = (val_score < best_val if task_type == 'Regression'
+                     else val_score > best_val)
+        if is_better:
+            best_val = val_score
+            no_improve = 0
+            best_state = deepcopy(model.state_dict())
+        else:
+            no_improve += 1
+
+        # W&B logging
+        if wandb_logger is not None:
+            wandb_logger.log_epoch(
+                epoch=epoch,
+                train_losses=ep_losses,
+                val_metrics=val_m,
+                optimizer=optimizer,
+                no_improve=no_improve,
+                best_val=best_val,
+                valid_loader=loaders['valid'],
+                device=device,
+            )
+
+        if verbose and epoch % 10 == 0:
+            loss_str = '  '.join(f'{k}={v:.4f}'
+                                 for k, v in ep_losses.items() if k != 'total')
+            print(f'  Epoch {epoch:4d}  r={model.r.item():.3f}  '
+                  f'{loss_str}  val={val_score:.4f}  best={best_val:.4f}  '
+                  f'patience={no_improve}/{patience}')
+
+        # Motif embedding PCA visualisation
+        if viz_logger is not None:
+            viz_logger.log(loaders['valid'], epoch)
+
+        if epoch >= min_epochs and no_improve >= patience:
+            if verbose:
+                print(f'  Early stopping at epoch {epoch}')
+            break
+
+    model.load_state_dict(best_state)
+    if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save({'epoch': epoch, 'model_state_dict': best_state,
+                    'best_val': best_val}, save_path)
+    return model, history

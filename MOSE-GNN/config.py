@@ -1,0 +1,114 @@
+"""config.py — MOSE-GNN configuration dataclass with YAML loading."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Dict, List, Optional
+import yaml
+
+
+@dataclass
+class MOSEConfig:
+    # Data
+    dataset: str = 'Mutagenicity'
+    data_root: str = './datasets/FOLDS'
+    vocab_root: str = './motifsat_output'
+    vocab_variant: str = 'all_fallback_bpe'
+    fold: int = 0
+    processed_root: str = './processed'
+
+    # Model
+    backbone: str = 'GIN'                    # GIN | GAT | GCN | SAGE | PNA
+    node_encoder: str = 'onehot'             # onehot | linear
+    hidden_dim: int = 64
+    num_layers: int = 3
+    apply_layer_norm: bool = False
+    conv_normalize: str = 'l2'      # l2 | layernorm | none (per-conv norm)
+    gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
+    dropout: float = 0.5
+    w_feat: bool = True
+    w_message: bool = False
+    w_readout: bool = True
+
+    # Motif importance
+    unk_mode: str = 'fixed'                  # fixed | learnable_shared
+    unk_value: float = 0.5
+
+    # Training
+    epochs: int = 150
+    lr: float = 1e-3              # base LR (kept for backward compat / fallback)
+    explainer_lr: float = 0.01   # LR for motif-importance params (the explainer)
+    gnn_lr: float = 0.001        # LR for GNN backbone params
+    weight_decay: float = 1e-5
+    batch_size: int = 128
+    size_reg: float = 0.0
+    ent_reg: float = 0.01
+    top_tau: int = 10
+    ignore_unknowns: bool = False
+    patience: int = 30
+    min_epochs: int = 20
+    clip_grad: float = 2.0
+    seed: int = 42
+
+    # Output
+    out_dir: str = './mose_results'
+    run_name: str = 'mose_run'
+    verbose: bool = True
+
+    # Evaluation
+    run_motif_impact: bool = True
+    max_motifs_eval: Optional[int] = None
+    run_multi_explanation: bool = False
+    # Eval-only mode: skip training, load weights, run the eval pipeline only.
+    eval_only: bool = False
+    load_weights_from: Optional[str] = None  # dir or path to best_model.pt
+
+    # W&B
+    use_wandb: bool = False
+    wandb_project: str = 'ChemIntuit'
+    wandb_entity: Optional[str] = None
+
+    # Ground-truth relabelling (phase4)
+    use_gt: bool = False        # load GT relabelled graphs from gt_cache
+    gt_cache: Optional[str] = None  # path to gt_cache directory
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+    def save(self, path: str) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False)
+
+    @classmethod
+    def from_yaml(cls, path: str) -> 'MOSEConfig':
+        with open(path) as f:
+            d = yaml.safe_load(f)
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> 'MOSEConfig':
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    def variant_tag(self) -> str:
+        """Short string uniquely identifying this configuration for output directory naming.
+
+        Encodes all axes of variation so no two different configs can collide:
+            backbone  - GIN / GCN / GAT / SAGE / PNA
+            encoder   - onehot / linear
+            ln        - noLN / LN
+            injection - wf+wr, wm+wr, wf+wm+wr, etc.
+            unk       - fixed / learn
+            frag      - vocab_variant (fragmentation algorithm)
+        """
+        enc  = self.node_encoder            # onehot | linear
+        ln   = 'LN' if self.apply_layer_norm else 'noLN'
+        inj  = '+'.join(filter(None, [
+            'wf' if self.w_feat    else '',
+            'wm' if self.w_message else '',
+            'wr' if self.w_readout else '',
+        ])) or 'noinj'
+        unk  = f'unk-{self.unk_mode}'
+        frag = self.vocab_variant           # e.g. rbrics_nofall_nobpe_nofilter
+        return f'{self.backbone}_{enc}_{ln}_{inj}_{unk}_{frag}'
