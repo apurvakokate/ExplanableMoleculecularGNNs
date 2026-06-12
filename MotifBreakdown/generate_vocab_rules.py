@@ -194,6 +194,19 @@ MIN_COV        = 5.0
 # mapping so original indices are always recoverable.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ LEGACY ATOM-TRACKED FRAGMENTATION — DISABLED (replaced by v4).            ║
+# ║                                                                          ║
+# ║ The functions below (_fob_tracked, _stamp_mol, _bond_indices_for,        ║
+# ║ _cascade_tracked, fragment_molecule_tracked) implemented the OLD         ║
+# ║ first-match-wins cascade + prevalence-BPE fragmentation. They are NO     ║
+# ║ LONGER CALLED by run_dataset(), which now uses chemfrag_v4_adapter       ║
+# ║ (v4 cascade + MDL merge). They are retained, unmodified, only for        ║
+# ║ reference and because the unit tests in test_pipeline.py still exercise  ║
+# ║ the underlying molfragbpe5 cut_* primitives. To restore the legacy       ║
+# ║ pipeline, see generate_vocab_rules_LEGACY_BACKUP.py.                     ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
 def _fob_tracked(mol_mapped: Chem.Mol,
                  bond_indices: List[int]
                  ) -> List[Tuple[str, Set[int], Dict[int, int]]]:
@@ -548,6 +561,12 @@ def fragment_molecule_tracked(mol: Chem.Mol,
         all_pieces = [(frag.strip(frag.canon(mol)), set(range(n)))]
 
     return all_pieces
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ END LEGACY ATOM-TRACKED FRAGMENTATION (DISABLED).                        ║
+# ║ run_dataset() uses chemfrag_v4_adapter.fragment_tracked_v4 instead.      ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1039,6 +1058,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 apply_threshold: bool = False,
                 threshold_pct: Optional[float] = None,
                 variant_override: Optional[str] = None,
+                variant_suffix: str = '',
                 rule_rank: str = 'balanced'):
     """Run the full pipeline for one dataset with given settings.
 
@@ -1057,9 +1077,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     # "rbrics_old") independently of the internal method string
     # (e.g. "rbrics_only"). When not provided the name is auto-generated.
     if variant_override is not None:
-        variant = variant_override
+        variant = variant_override + variant_suffix
     else:
-        variant = f"{method}{'_fallback' if use_fallback else ''}{'_bpe' if use_bpe else ''}{'_filter' if apply_threshold else ''}"
+        variant = f"{method}{'_fallback' if use_fallback else ''}{'_bpe' if use_bpe else ''}{'_filter' if apply_threshold else ''}{variant_suffix}"
 
     t0 = time.time()
     smdf = _load_csv(data_root, dataset, fold)
@@ -1084,53 +1104,85 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
           f"  threshold={'off' if not apply_threshold else f'{resolved_pct}%'}"
           f"  → {variant}")
 
-    # Fragment
+    # ========================================================================
+    # v4 FRAGMENTATION + MDL MERGE  (replaces legacy first-match cascade + BPE)
+    # ------------------------------------------------------------------------
+    # The legacy block below is DISABLED (commented out). v4 learns ONE global
+    # MDL rulebook over the corpus, then tokenizes every molecule by a
+    # deterministic per-tree rewrite (consistency by construction). `use_bpe`
+    # now selects whether the MDL merge is applied (True) or the finest cascade
+    # leaves are used (False). `method`/`use_fallback` are accepted for CLI
+    # backward-compatibility; v4 always runs the full cascade with structural
+    # fallback built in, so they no longer change the algorithm.
+    # ========================================================================
+    import chemfrag_v4_adapter as _v4
     frag._CACHE.clear()
-    hier = frag.Hierarchy()
-    mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
-    mol_frags_plain:   List[List[str]]                   = []
+    hier = frag.Hierarchy()   # kept: still consumed by extract_rules / save_outputs
 
+    _ruleset, _index = _v4.learn_corpus_rulebook(smiles_all, use_merge=use_bpe)
+    mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
     for orig_smi in smiles_all:
-        mol = Chem.MolFromSmiles(orig_smi)
-        if mol is None:
+        if Chem.MolFromSmiles(orig_smi) is None:
             mol_frags_tracked.append([('[INVALID]', {0})])
-            mol_frags_plain.append(['[INVALID]'])
             continue
         mol_frags_tracked.append(
-            fragment_molecule_tracked(mol, orig_smi, use_fallback, method))
-        mol_frags_plain.append(
-            frag.fragment_molecule(mol, hier,
-                                   use_fallback=use_fallback, method=method))
+            _v4.fragment_tracked_v4(orig_smi, _ruleset, _index))
 
     n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
     n_single = sum(1 for frags in mol_frags_tracked if len(frags) == 1)
-    print(f"    Fragmented: {n_valid - n_single}/{n_valid} "
+    print(f"    [v4] Fragmented: {n_valid - n_single}/{n_valid} "
           f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
-          f"single-frag: {n_single}")
+          f"single-frag: {n_single}  merge_rules={len(_ruleset)}")
+    bpe_history: List[dict] = []   # v4 merge history not exposed in legacy schema
 
-    # BPE
-    bpe_history: List[dict] = []
-    if use_bpe:
-        mf_copy = copy.deepcopy(mol_frags_plain)
-        mf_copy, bpe_history = frag.bpe_merge(
-            mf_copy, hier, n_valid,
-            min_atoms=min_atoms, max_diam=max_diam,
-            sz_max=sz_max, min_abs=min_abs)
-        if bpe_history:
-            merge_map: Dict[str, str] = {}
-            for h in bpe_history:
-                for child in h['children']:
-                    merge_map[child] = h['parent']
-
-            def resolve(s: str) -> str:
-                seen: Set[str] = set()
-                while s in merge_map and s not in seen:
-                    seen.add(s); s = merge_map[s]
-                return s
-
-            mol_frags_tracked = [
-                [(resolve(smi), atoms) for smi, atoms in mf]
-                for mf in mol_frags_tracked]
+    # ---- BEGIN LEGACY FRAGMENTATION + BPE (DISABLED) -----------------------
+    # frag._CACHE.clear()
+    # hier = frag.Hierarchy()
+    # mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
+    # mol_frags_plain:   List[List[str]]                   = []
+    #
+    # for orig_smi in smiles_all:
+    #     mol = Chem.MolFromSmiles(orig_smi)
+    #     if mol is None:
+    #         mol_frags_tracked.append([('[INVALID]', {0})])
+    #         mol_frags_plain.append(['[INVALID]'])
+    #         continue
+    #     mol_frags_tracked.append(
+    #         fragment_molecule_tracked(mol, orig_smi, use_fallback, method))
+    #     mol_frags_plain.append(
+    #         frag.fragment_molecule(mol, hier,
+    #                                use_fallback=use_fallback, method=method))
+    #
+    # n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
+    # n_single = sum(1 for frags in mol_frags_tracked if len(frags) == 1)
+    # print(f"    Fragmented: {n_valid - n_single}/{n_valid} "
+    #       f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
+    #       f"single-frag: {n_single}")
+    #
+    # # BPE
+    # bpe_history: List[dict] = []
+    # if use_bpe:
+    #     mf_copy = copy.deepcopy(mol_frags_plain)
+    #     mf_copy, bpe_history = frag.bpe_merge(
+    #         mf_copy, hier, n_valid,
+    #         min_atoms=min_atoms, max_diam=max_diam,
+    #         sz_max=sz_max, min_abs=min_abs)
+    #     if bpe_history:
+    #         merge_map: Dict[str, str] = {}
+    #         for h in bpe_history:
+    #             for child in h['children']:
+    #                 merge_map[child] = h['parent']
+    #
+    #         def resolve(s: str) -> str:
+    #             seen: Set[str] = set()
+    #             while s in merge_map and s not in seen:
+    #                 seen.add(s); s = merge_map[s]
+    #             return s
+    #
+    #         mol_frags_tracked = [
+    #             [(resolve(smi), atoms) for smi, atoms in mf]
+    #             for mf in mol_frags_tracked]
+    # ---- END LEGACY FRAGMENTATION + BPE (DISABLED) -------------------------
 
     # Vocabulary
     motif_list, frag_to_id, motif_stats = build_vocab(
@@ -1381,6 +1433,13 @@ Examples:
                    help='Apply structural fallbacks to unfragmented molecules')
     p.add_argument('--bpe',       action='store_true',
                    help='Apply BPE merging to reduce tiny fragments')
+    p.add_argument('--shatter',   action='store_true',
+                   help='Mild-shatter floor: drop the terminal-atom guard in the '
+                        'structural stage so every acyclic single bond is cut '
+                        '(rings + double bonds still protected), giving the MDL '
+                        'merge a finer floor. Measured ~20%% smaller vocab and '
+                        'equal-or-better env-consistency. Variant name gets a '
+                        '"_shatter" suffix so it does not collide with standard v4.')
     p.add_argument('--min_atoms', type=int, default=MIN_FRAG_ATOMS,
                    help=f'Min atoms for BPE fragment to stand alone (default {MIN_FRAG_ATOMS})')
     p.add_argument('--max_diam',  type=int, default=GNN_LAYERS,
@@ -1413,6 +1472,12 @@ Examples:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Activate the mild-shatter floor in the adapter if requested, and make the
+    # output variant name distinct so shatter vocabs never overwrite v4 vocabs.
+    import chemfrag_v4_adapter as _v4adapter
+    _v4adapter.SHATTER = bool(args.shatter)
+    _shatter_suffix = '_shatter' if args.shatter else ''
+
     all_metas = []
     for ds in args.datasets:
         print(f"\n{'='*60}\n  {ds}\n{'='*60}")
@@ -1428,6 +1493,7 @@ Examples:
                            apply_threshold=args.apply_threshold,
                            threshold_pct=args.threshold_pct,
                            variant_override=args.variant,
+                           variant_suffix=_shatter_suffix,
                            rule_rank=args.rule_rank)
         meta['dataset'] = ds
         all_metas.append(meta)
