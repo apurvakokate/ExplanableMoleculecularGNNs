@@ -19,53 +19,9 @@ from torch_geometric.loader import DataLoader
 from .dataset import MolDataset, NUM_ATOM_TYPES, EDGE_FEAT_DIM
 from .vocab import VocabData
 
-DATASET_COLUMN: Dict[str, str] = {
-    'Mutagenicity':      'Mutagenicity',
-    'BBBP':              'BBBP',
-    'hERG':              'hERG',
-    'Lipophilicity':     'Lipophilicity',
-    'esol':              'esol',
-    'tox21':             'tox21',
-    'Benzene':           'label',          # CSV column is 'label'
-    'Alkane_Carbonyl':   'label',          # CSV column is 'label'
-    'Fluoride_Carbonyl': 'Fluoride_Carbonyl',
-    'freesolv':          'freesolv',
-    # OGB: label column not applicable (OGB provides y directly)
-    'ogbg-molhiv':       None,
-    'ogbg-molbace':      None,
-    'ogbg-molbbbp':      None,
-    'ogbg-molclintox':   None,
-    'ogbg-moltox21':     None,
-    'ogbg-molsider':     None,
-    'ogbg-molesol':      None,
-    'ogbg-molfreesolv':  None,
-    'ogbg-mollipo':      None,
-    # mutag TUDataset: label column not applicable (loaded from PKL)
-    'mutag':             None,
-}
+from .dataset_schema import DATASET_COLUMN  # unified schema (single source of truth)
 
-TASK_TYPE: Dict[str, str] = {
-    'Mutagenicity':      'BinaryClass',
-    'BBBP':              'BinaryClass',
-    'hERG':              'BinaryClass',
-    'Benzene':           'BinaryClass',
-    'Alkane_Carbonyl':   'BinaryClass',
-    'Fluoride_Carbonyl': 'BinaryClass',
-    'Lipophilicity':     'Regression',
-    'esol':              'Regression',
-    'freesolv':          'Regression',
-    'tox21':             'MultiLabel',
-    'ogbg-molhiv':       'BinaryClass',
-    'ogbg-molbace':      'BinaryClass',
-    'ogbg-molbbbp':      'BinaryClass',
-    'ogbg-molclintox':   'MultiLabel',
-    'ogbg-moltox21':     'MultiLabel',
-    'ogbg-molsider':     'MultiLabel',
-    'ogbg-molesol':      'Regression',
-    'ogbg-molfreesolv':  'Regression',
-    'ogbg-mollipo':      'Regression',
-    'mutag':             'BinaryClass',
-}
+from .dataset_schema import TASK_TYPE       # unified schema (single source of truth)
 
 # OGB dataset metadata — node features come as [N, 9] integer tensor
 # (OGB Schema 2), not one-hot.  x_dim is set to OGB_NODE_FEAT_DIM = 9.

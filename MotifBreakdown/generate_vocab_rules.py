@@ -73,17 +73,28 @@ except ImportError:
 # CSV format: {data_root}/{dataset}_{fold}.csv
 # Add new datasets here.
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET_COLUMN: dict = {
-    'Mutagenicity':      'Mutagenicity',
-    'BBBP':              'BBBP',
-    'hERG':              'hERG',
-    'Lipophilicity':     'Lipophilicity',
-    'esol':              'esol',
-    'tox21':             'tox21',
-    'Benzene':           'label',
-    'Alkane_Carbonyl':   'label',
-    'Fluoride_Carbonyl': 'label',
-}
+# Unified per-dataset label-column schema (single source of truth shared with
+# SharedModules/data/loader.py). Falls back to a local copy if SharedModules is
+# not importable (e.g. running vocab generation in isolation), but the values
+# MUST match SharedModules/data/dataset_schema.py — keep them identical.
+try:
+    _shared = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'SharedModules')
+    if _shared not in sys.path:
+        sys.path.insert(0, _shared)
+    from data.dataset_schema import DATASET_COLUMN   # type: ignore
+except Exception:
+    DATASET_COLUMN: dict = {
+        'Mutagenicity':      'Mutagenicity',
+        'BBBP':              'BBBP',
+        'hERG':              'hERG',
+        'Lipophilicity':     'Lipophilicity',
+        'esol':              'esol',
+        'tox21':             'tox21',
+        'Benzene':           'label',
+        'Alkane_Carbonyl':   'label',
+        'Fluoride_Carbonyl': 'label',
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHOSEN THRESHOLD — per variant × dataset
@@ -195,16 +206,18 @@ MIN_COV        = 5.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ LEGACY ATOM-TRACKED FRAGMENTATION — DISABLED (replaced by v4).            ║
+# ║ LEGACY ATOM-TRACKED FRAGMENTATION — RE-ENABLED for one-shot/two-shot      ║
+# ║ methods (rbrics / rbrics_old / rbrics_only / brics).                      ║
 # ║                                                                          ║
-# ║ The functions below (_fob_tracked, _stamp_mol, _bond_indices_for,        ║
-# ║ _cascade_tracked, fragment_molecule_tracked) implemented the OLD         ║
-# ║ first-match-wins cascade + prevalence-BPE fragmentation. They are NO     ║
-# ║ LONGER CALLED by run_dataset(), which now uses chemfrag_v4_adapter       ║
-# ║ (v4 cascade + MDL merge). They are retained, unmodified, only for        ║
-# ║ reference and because the unit tests in test_pipeline.py still exercise  ║
-# ║ the underlying molfragbpe5 cut_* primitives. To restore the legacy       ║
-# ║ pipeline, see generate_vocab_rules_LEGACY_BACKUP.py.                     ║
+# ║ run_dataset() routes by --method:                                        ║
+# ║   'all'         -> v4 cascade + MDL merge (chemfrag_v4_adapter)           ║
+# ║   'rbrics'      -> rBRICS + reBRICS  (two-shot, flat, no tree/merge)      ║
+# ║   'rbrics_old'/ -> rBRICS only       (one-shot, flat, no tree/merge)      ║
+# ║   'rbrics_only'                                                           ║
+# ║   'brics'       -> BRICS only        (flat, no tree/merge)                ║
+# ║ The functions below implement the flat legacy path and ARE called for    ║
+# ║ the legacy methods. They feed build_vocab + support --apply_threshold     ║
+# ║ identically to the original pipeline.                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 def _fob_tracked(mol_mapped: Chem.Mol,
@@ -1115,25 +1128,88 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     # backward-compatibility; v4 always runs the full cascade with structural
     # fallback built in, so they no longer change the algorithm.
     # ========================================================================
-    import chemfrag_v4_adapter as _v4
+    # ========================================================================
+    # FRAGMENTATION ROUTING (restores rbrics / rbrics_old semantics)
+    # ------------------------------------------------------------------------
+    #   method == 'all'                  -> v4 cascade + MDL merge (tree-based,
+    #                                       consistency-by-construction). use_bpe
+    #                                       selects whether the MDL merge runs.
+    #   method in {'rbrics','rbrics_old', -> LEGACY flat fragmenter (no tree, no
+    #              'rbrics_only','brics'}   merge): a one-shot/two-shot bond cut.
+    #                                         'rbrics'      = rBRICS + reBRICS  (two-shot)
+    #                                         'rbrics_old'/ = rBRICS only        (one-shot)
+    #                                         'rbrics_only'   (no reBRICS post-pass)
+    #                                         'brics'       = BRICS only
+    #                                       These feed straight into build_vocab and
+    #                                       support --apply_threshold exactly as before.
+    #                                       use_bpe controls the legacy prevalence BPE
+    #                                       for these methods (NOT the v4 MDL merge).
+    # The shatter floor (--shatter) only affects the v4 ('all') path.
+    # ========================================================================
     frag._CACHE.clear()
-    hier = frag.Hierarchy()   # kept: still consumed by extract_rules / save_outputs
+    hier = frag.Hierarchy()
+    bpe_history: List[dict] = []
 
-    _ruleset, _index = _v4.learn_corpus_rulebook(smiles_all, use_merge=use_bpe)
-    mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
-    for orig_smi in smiles_all:
-        if Chem.MolFromSmiles(orig_smi) is None:
-            mol_frags_tracked.append([('[INVALID]', {0})])
-            continue
-        mol_frags_tracked.append(
-            _v4.fragment_tracked_v4(orig_smi, _ruleset, _index))
+    _LEGACY_METHODS = {'rbrics', 'rbrics_old', 'rbrics_only', 'brics'}
+    _legacy_method = ('rbrics_only' if method in ('rbrics_old', 'rbrics_only')
+                      else method)
 
-    n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
-    n_single = sum(1 for frags in mol_frags_tracked if len(frags) == 1)
-    print(f"    [v4] Fragmented: {n_valid - n_single}/{n_valid} "
-          f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
-          f"single-frag: {n_single}  merge_rules={len(_ruleset)}")
-    bpe_history: List[dict] = []   # v4 merge history not exposed in legacy schema
+    if method in _LEGACY_METHODS:
+        # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
+        import copy as _copy
+        mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
+        mol_frags_plain:   List[List[str]]                   = []
+        for orig_smi in smiles_all:
+            mol = Chem.MolFromSmiles(orig_smi)
+            if mol is None:
+                mol_frags_tracked.append([('[INVALID]', {0})])
+                mol_frags_plain.append(['[INVALID]'])
+                continue
+            mol_frags_tracked.append(
+                fragment_molecule_tracked(mol, orig_smi, use_fallback, _legacy_method))
+            mol_frags_plain.append(
+                frag.fragment_molecule(mol, hier,
+                                       use_fallback=use_fallback, method=_legacy_method))
+        n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
+        n_single = sum(1 for f in mol_frags_tracked if len(f) == 1)
+        print(f"    [legacy:{_legacy_method}] Fragmented: {n_valid-n_single}/{n_valid} "
+              f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  single-frag: {n_single}")
+
+        if use_bpe:
+            mf_copy = _copy.deepcopy(mol_frags_plain)
+            mf_copy, bpe_history = frag.bpe_merge(
+                mf_copy, hier, n_valid,
+                min_atoms=min_atoms, max_diam=max_diam,
+                sz_max=sz_max, min_abs=min_abs)
+            if bpe_history:
+                merge_map: Dict[str, str] = {}
+                for h in bpe_history:
+                    for child in h['children']:
+                        merge_map[child] = h['parent']
+                def _resolve(s: str) -> str:
+                    seen: Set[str] = set()
+                    while s in merge_map and s not in seen:
+                        seen.add(s); s = merge_map[s]
+                    return s
+                mol_frags_tracked = [
+                    [(_resolve(smi), atoms) for smi, atoms in mf]
+                    for mf in mol_frags_tracked]
+    else:
+        # ---- v4 cascade + MDL merge (method == 'all') -----------------------
+        import chemfrag_v4_adapter as _v4
+        _ruleset, _index = _v4.learn_corpus_rulebook(smiles_all, use_merge=use_bpe)
+        mol_frags_tracked = []
+        for orig_smi in smiles_all:
+            if Chem.MolFromSmiles(orig_smi) is None:
+                mol_frags_tracked.append([('[INVALID]', {0})])
+                continue
+            mol_frags_tracked.append(
+                _v4.fragment_tracked_v4(orig_smi, _ruleset, _index))
+        n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
+        n_single = sum(1 for frags in mol_frags_tracked if len(frags) == 1)
+        print(f"    [v4] Fragmented: {n_valid - n_single}/{n_valid} "
+              f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
+              f"single-frag: {n_single}  merge_rules={len(_ruleset)}")
 
     # ---- BEGIN LEGACY FRAGMENTATION + BPE (DISABLED) -----------------------
     # frag._CACHE.clear()
@@ -1427,7 +1503,7 @@ Examples:
     p.add_argument('--out_dir',   default='./motifsat_output',
                    help='Output root directory')
     p.add_argument('--method',    default='all',
-                   choices=['rbrics', 'brics', 'all', 'rbrics_only'],
+                   choices=['rbrics', 'brics', 'all', 'rbrics_only', 'rbrics_old'],
                    help='Fragmentation algorithm(s) to use (default: all)')
     p.add_argument('--fallback',  action='store_true',
                    help='Apply structural fallbacks to unfragmented molecules')

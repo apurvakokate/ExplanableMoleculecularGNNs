@@ -90,9 +90,10 @@ def learn_rulebook(forest, verbose=False):
             trial=cur.copy(); trial.update(dcount); trial=Counter({k:v for k,v in trial.items() if v>0})
             dL=mdl_L(trial)-L
             if dL>1e-9: continue
-            tie=(natoms_key(pkey), pkey)
+            tie=(natoms_key(pkey), pkey, ckeys)  # total order → run-to-run determinism
             better=(dL<best_dL-1e-12) or (abs(dL-best_dL)<=1e-9 and best_tie is not None and
-                    (tie[0]>best_tie[0] or (tie[0]==best_tie[0] and tie[1]<best_tie[1])))
+                    (tie[0]>best_tie[0] or (tie[0]==best_tie[0] and tie[1]<best_tie[1]) or
+                     (tie[0]==best_tie[0] and tie[1]==best_tie[1] and tie[2]<best_tie[2])))
             if best_sig is None or better:
                 best=occ; best_dL=dL; best_tie=tie; best_sig=sig; best_trial=trial
         if best_sig is None: break

@@ -44,14 +44,20 @@ import chemfrag_shatter as _S
 #   Measured to lower vocabulary ~20% and match-or-improve env-consistency.
 SHATTER = False
 
-def _tree(mol):
-    return _S.cascade_tree_mild(mol) if SHATTER else C.cascade_tree(mol)
+def _tree(mol, shatter=None):
+    # Explicit `shatter` arg takes precedence; None falls back to the module
+    # default SHATTER. Passing it explicitly avoids relying on global state in
+    # long-lived / programmatic multi-run processes (the CLI still uses the
+    # global, set once from --shatter).
+    use = SHATTER if shatter is None else shatter
+    return _S.cascade_tree_mild(mol) if use else C.cascade_tree(mol)
 
 
 # ── PHASE 1: learn the MDL rulebook once over the whole corpus ──────────────
 def learn_corpus_rulebook(smiles_list: List[str],
                           use_merge: bool = True,
-                          verbose: bool = False
+                          verbose: bool = False,
+                          shatter: bool = None
                           ) -> Tuple[set, Dict[str, tuple]]:
     """Fragment every (raw) molecule into its cascade tree and learn the global
     MDL rulebook. Returns (ruleset, index) where index maps
@@ -68,7 +74,7 @@ def learn_corpus_rulebook(smiles_list: List[str],
             Chem.SanitizeMol(m)
         except Exception:
             continue
-        tree = _tree(m)
+        tree = _tree(m, shatter)
         for nd in M.all_nodes(tree):
             nd['key'] = C.frag_key(m, nd['atomset'])
         forest.append((m, tree))
@@ -80,7 +86,8 @@ def learn_corpus_rulebook(smiles_list: List[str],
 # ── PHASE 2: tokenize ONE molecule deterministically ────────────────────────
 def fragment_tracked_v4(orig_smi: str,
                         ruleset: set,
-                        index: Optional[Dict[str, tuple]] = None
+                        index: Optional[Dict[str, tuple]] = None,
+                        shatter: bool = None
                         ) -> List[Tuple[str, Set[int]]]:
     """Return [(fragment_smarts, {original_atom_indices})] for one molecule,
     covering every atom exactly once (raw atom-index order).
@@ -97,7 +104,7 @@ def fragment_tracked_v4(orig_smi: str,
             Chem.SanitizeMol(m)
         except Exception:
             return [('[INVALID]', {0})]
-        tree = _tree(m)
+        tree = _tree(m, shatter)
         for nd in M.all_nodes(tree):
             nd['key'] = C.frag_key(m, nd['atomset'])
     else:
@@ -107,20 +114,26 @@ def fragment_tracked_v4(orig_smi: str,
     tokens = M.apply_rulebook(m, tree, ruleset)        # [(key, atomset)]
     out: List[Tuple[str, Set[int]]] = []
     covered: Set[int] = set()
+    overlap: Set[int] = set()
     for key, atomset in tokens:
         atoms = {int(a) for a in atomset}
         if not atoms:
             continue
+        overlap |= (atoms & covered)
         out.append((key, atoms))
         covered |= atoms
 
-    # Guarantee full, exact, non-overlapping coverage (defensive; v4 already
-    # conserves atoms, but keep the legacy safety net).
+    # FAIL FAST on any partition violation. v4 conserves atoms by construction;
+    # if this fires it means the tokenizer is corrupt (a real bug), and silently
+    # patching it (the old "absorb missing atoms into token 0" safety net) would
+    # hide that corruption and feed wrong atom→motif assignments downstream.
     missing = set(range(n)) - covered
-    if missing and out:
-        out[0] = (out[0][0], out[0][1] | missing)
-    elif missing:
-        out = [(C.frag_key(m, frozenset(range(n))) or Chem.MolToSmiles(m), set(range(n)))]
+    if missing or overlap:
+        raise ValueError(
+            f"v4 tokenizer produced an invalid partition for {orig_smi!r} "
+            f"({n} atoms): missing={sorted(missing)} overlap={sorted(overlap)}. "
+            f"This indicates a fragmentation/merge bug — refusing to emit a "
+            f"silently-corrected lookup. Tokens={[(k, sorted(a)) for k,a in out]}")
     return out
 
 

@@ -102,13 +102,24 @@ def run(cfg: MOSEConfig) -> dict:
         _gt_base = (Path(cfg.gt_cache) / cfg.dataset
                     / f'fold{cfg.fold}' / cfg.vocab_variant / 'relabel1')
         _gt_loaded: dict = {}
+        _gt_missing: list = []
         for _split in ('train', 'valid', 'test'):
             _gt_path = _gt_base / f'{_split}_with_gt.pt'
             if _gt_path.exists():
                 _gt_loaded[_split] = torch.load(_gt_path, weights_only=False)
                 print(f'  GT {_split}: {len(_gt_loaded[_split])} graphs ← {_gt_path.name}')
             else:
-                print(f'  [warn] GT {_split} not found: {_gt_path}')
+                _gt_missing.append(str(_gt_path))
+        # FAIL FAST: use_gt was explicitly requested, so a partial/missing GT
+        # cache must NOT silently fall back to mixing GT and original-label
+        # loaders (that trains on a different target than intended and corrupts
+        # the synthetic-relabel experiment).
+        if _gt_missing:
+            raise FileNotFoundError(
+                "use_gt=True but the ground-truth cache is incomplete. Missing:\n  "
+                + "\n  ".join(_gt_missing)
+                + f"\nRun phase-4 relabelling for dataset={cfg.dataset} "
+                  f"fold={cfg.fold} variant={cfg.vocab_variant} first, or unset --use_gt.")
         for _split, _shuffle in (('train', True), ('valid', False), ('test', False)):
             if _split in _gt_loaded:
                 loaders[_split] = _DataLoader(

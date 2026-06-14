@@ -131,7 +131,8 @@ def train_vanilla_gnn(
     scheduler = ReduceLROnPlateau(optimizer, patience=10, factor=0.5,
                                   min_lr=1e-5)
 
-    # When epochs=0, skip training and load existing weights if available.
+    # When epochs=0, skip training and load existing weights. A baseline/explainer
+    # run with epochs=0 is meaningless on random weights, so REQUIRE the checkpoint.
     if epochs == 0:
         if save_path is not None and Path(save_path).exists():
             model.load_state_dict(
@@ -139,9 +140,12 @@ def train_vanilla_gnn(
             )
             if verbose:
                 print(f'  Loaded weights from {save_path}')
-        elif verbose:
-            print(f'  [warn] epochs=0 but no checkpoint found at {save_path}')
-        return model
+            return model
+        raise FileNotFoundError(
+            f"epochs=0 (load-and-evaluate / baseline-explainer mode) but no "
+            f"checkpoint found at {save_path}. Refusing to run on randomly "
+            f"initialized weights. Train the vanilla model first (epochs>0) so "
+            f"the checkpoint exists, then re-run with epochs=0.")
 
     best_val = float('inf') if task_type == 'Regression' else 0.0
     no_improve = 0

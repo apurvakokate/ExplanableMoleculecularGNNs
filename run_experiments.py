@@ -95,6 +95,9 @@ def build_arg_parser():
     p.add_argument('--gt_cache', default='./RESULTS/gt_cache',
                    help='phase-4 GT cache root (used when --synthetic on)')
     p.add_argument('--out_root', default='./RESULTS')
+    p.add_argument('--weights_root', default=None,
+                   help='Root of trained vanilla checkpoints for baselines/'
+                        'explainers (epochs=0). Defaults to <out_root>/vanilla.')
 
     # MotifSAT-specific
     p.add_argument('--motif_method', default='readout', help='readout|none (none ⇒ base GSAT)')
@@ -140,8 +143,12 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr)]
         if en == 'on': cmd += ['--apply_layer_norm']
     elif exp == 'baselines':
-        # post-hoc / antehoc explainers: load weights, no training (epochs 0)
-        cmd += ['--epochs', '0']
+        # post-hoc / antehoc explainers: load trained vanilla weights, no training.
+        # Point the trainer at the weights root so it can resolve the checkpoint;
+        # with the fail-fast fix, a missing checkpoint now errors instead of
+        # silently explaining random weights.
+        cmd += ['--epochs', '0',
+                '--load_weights_from', args.weights_root]
         if en == 'on': cmd += ['--apply_layer_norm']
     elif exp in ('mose',):
         cmd += ['--epochs', str(epochs)]
@@ -167,6 +174,8 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
 
 def main():
     args = build_arg_parser().parse_args()
+    if args.weights_root is None:
+        args.weights_root = str(Path(args.out_root) / 'vanilla')
     exps      = csv(args.experiments)
     datasets  = csv(args.datasets)
     folds     = csv(args.folds)
