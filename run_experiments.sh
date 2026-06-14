@@ -10,8 +10,8 @@
 #
 # Phases:
 #   phase1           fragmentation, no threshold (all 3 variants)
-#   phase2           coverage vs threshold sweep  (review, then set THRESHOLD)
-#   phase3           thresholded vocabularies     (requires THRESHOLD)
+#   phase2           coverage vs threshold sweep  (review, then edit CHOSEN_THRESHOLD)
+#   phase3           thresholded vocabularies     (reads CHOSEN_THRESHOLD dict)
 #   phase4           synthetic GT                 (requires RULE_INDEX)
 #   phase5_vanilla   train Vanilla GNN
 #   phase5_mose      train MOSE-GNN
@@ -99,6 +99,7 @@ _check_paths() {
 V_OLD="rbrics_old"               # method=rbrics_only, legacy behaviour
 V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
+V_ALL_SHATTER="all_fallback_bpe_shatter"  # method=all + mild-shatter floor (auto-suffixed)
 
 # Three filtered variants (threshold applied):
 V_OLD_TH="rbrics_old_filter"
@@ -109,10 +110,10 @@ V_ALL_TH="all_fallback_bpe_filter"
 V_ALL_GT="${V_ALL}_relabelled"
 
 # ── Helper: fragment one variant ──────────────────────────────────────────────
-# Usage: run_frag <method> <fallback:0|1> <bpe:0|1> <out_variant>
+# Usage: run_frag <method> <fallback:0|1> <bpe:0|1> <out_variant> [shatter:0|1]
 run_frag() {
-    local method=$1 use_fallback=$2 use_bpe=$3 variant=$4
-    echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe"
+    local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
+    echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets  "$ds" \
@@ -122,6 +123,7 @@ run_frag() {
             --variant   "$variant" \
             $( [ "$use_fallback" = "1" ] && echo "--fallback" ) \
             $( [ "$use_bpe"      = "1" ] && echo "--bpe" ) \
+            $( [ "$use_shatter"  = "1" ] && echo "--shatter" ) \
             --rule_rank "$RULE_RANK" \
             --fold 0
     done
@@ -320,9 +322,14 @@ phase1() {
     echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
     run_frag all 1 1 "$V_ALL"
 
+    echo "1d. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
+    # NOTE: --shatter auto-appends '_shatter' to the variant name, so we pass the
+    # BASE name "$V_ALL" here; the output lands in "$V_ALL_SHATTER".
+    run_frag all 1 1 "$V_ALL" 1
+
     echo ""
     echo "Phase 1 complete. Vocabularies in: $VOCAB_ROOT"
-    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL"
+    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL  $V_ALL_SHATTER"
     echo "Next: bash run_experiments.sh phase2  (review coverage plots)"
 }
 
@@ -350,7 +357,7 @@ phase2() {
 
     echo ""
     echo "Phase 2 complete. Review plots in: $OUT_ROOT/coverage_plots"
-    echo "Then:  export THRESHOLD=<value>"
+    echo "Then:  edit CHOSEN_THRESHOLD in MotifBreakdown/generate_vocab_rules.py"
     echo "       bash run_experiments.sh phase3"
 }
 
@@ -660,8 +667,8 @@ case "$PHASE" in
         echo ""
         echo "Phases:"
         echo "  phase1            fragment all 3 variants (rbrics_old, rbrics, all_fallback_bpe)"
-        echo "  phase2            coverage vs threshold sweep (review, then set THRESHOLD)"
-        echo "  phase3            threshold all 3 variants  (requires THRESHOLD)"
+        echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
+        echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT               (requires RULE_INDEX)"
         echo "  phase5_vanilla    vanilla GNN (3 variants)"
         echo "  phase5_mose       MOSE-GNN (6 configs)"

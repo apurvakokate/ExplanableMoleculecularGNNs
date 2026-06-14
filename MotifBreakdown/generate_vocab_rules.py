@@ -1072,6 +1072,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 threshold_pct: Optional[float] = None,
                 variant_override: Optional[str] = None,
                 variant_suffix: str = '',
+                shatter: bool = False,
                 rule_rank: str = 'balanced'):
     """Run the full pipeline for one dataset with given settings.
 
@@ -1197,14 +1198,15 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     else:
         # ---- v4 cascade + MDL merge (method == 'all') -----------------------
         import chemfrag_v4_adapter as _v4
-        _ruleset, _index = _v4.learn_corpus_rulebook(smiles_all, use_merge=use_bpe)
+        _ruleset, _index = _v4.learn_corpus_rulebook(smiles_all, use_merge=use_bpe,
+                                                     shatter=shatter)
         mol_frags_tracked = []
         for orig_smi in smiles_all:
             if Chem.MolFromSmiles(orig_smi) is None:
                 mol_frags_tracked.append([('[INVALID]', {0})])
                 continue
             mol_frags_tracked.append(
-                _v4.fragment_tracked_v4(orig_smi, _ruleset, _index))
+                _v4.fragment_tracked_v4(orig_smi, _ruleset, _index, shatter=shatter))
         n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
         n_single = sum(1 for frags in mol_frags_tracked if len(frags) == 1)
         print(f"    [v4] Fragmented: {n_valid - n_single}/{n_valid} "
@@ -1548,10 +1550,10 @@ Examples:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Activate the mild-shatter floor in the adapter if requested, and make the
-    # output variant name distinct so shatter vocabs never overwrite v4 vocabs.
-    import chemfrag_v4_adapter as _v4adapter
-    _v4adapter.SHATTER = bool(args.shatter)
+    # Mild-shatter floor is threaded explicitly into run_dataset → the v4 adapter
+    # (no module-global mutation), so concurrent/programmatic callers can't leak
+    # state into each other. The output variant name gets a distinct suffix so
+    # shatter vocabs never overwrite standard-v4 vocabs.
     _shatter_suffix = '_shatter' if args.shatter else ''
 
     all_metas = []
@@ -1570,6 +1572,7 @@ Examples:
                            threshold_pct=args.threshold_pct,
                            variant_override=args.variant,
                            variant_suffix=_shatter_suffix,
+                           shatter=bool(args.shatter),
                            rule_rank=args.rule_rank)
         meta['dataset'] = ds
         all_metas.append(meta)
