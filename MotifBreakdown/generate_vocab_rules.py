@@ -94,6 +94,7 @@ except Exception:
         'Benzene':           'label',
         'Alkane_Carbonyl':   'label',
         'Fluoride_Carbonyl': 'label',
+        'mutag':             'label',
     }
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta):
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,
         backbone=cfg.backbone,
-        node_encoder=meta.node_encoder,   # 'onehot' | 'atom_encoder' | 'linear'
+        node_encoder=cfg.node_encoder,   # resolved in run(): CLI for CSV, atom_encoder for OGB
         apply_layer_norm=cfg.apply_layer_norm,
         num_motifs=num_motifs,
         unk_mode=cfg.unk_mode,
@@ -91,6 +91,14 @@ def run(cfg: MOSEConfig) -> dict:
     print(f'  Task: {task_type}  train={len(loaders["train"].dataset)}'
           f'  val={len(loaders["valid"].dataset)}'
           f'  test={len(loaders["test"].dataset)}')
+
+    # Honor --node_encoder for CSV datasets (force atom_encoder for OGB), and
+    # store the resolved value on cfg so the model, variant_tag (output dir) and
+    # logged config all agree. Previously the model used meta.node_encoder and
+    # the CLI flag was silently ignored for CSV datasets.
+    from SharedModules.data.loader import resolve_node_encoder
+    cfg.node_encoder = resolve_node_encoder(getattr(cfg, 'node_encoder', None),
+                                            meta.node_encoder)
 
     # ── GT loader replacement (use_gt=True: train on synthetic rule labels) ──
     # apply_gt.py writes train/valid/test_with_gt.pt for every split.

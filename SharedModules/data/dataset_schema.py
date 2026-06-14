@@ -35,18 +35,25 @@ DATASET_COLUMN: Dict[str, Optional[str]] = {
     'Benzene':           'label',
     'Alkane_Carbonyl':   'label',
     'Fluoride_Carbonyl': 'label',   # <- unified (was 'Fluoride_Carbonyl' in loader.py)
-    # OGB: label provided directly by the OGB dataset object
-    'ogbg-molhiv':       None,
-    'ogbg-molbace':      None,
-    'ogbg-molbbbp':      None,
-    'ogbg-molclintox':   None,
-    'ogbg-moltox21':     None,
-    'ogbg-molsider':     None,
-    'ogbg-molesol':      None,
-    'ogbg-molfreesolv':  None,
-    'ogbg-mollipo':      None,
-    # TUDataset mutag: label from PKL
-    'mutag':             None,
+    # OGB: label provided directly by the OGB dataset object for TRAINING, but
+    # for VOCAB GENERATION they are first exported to a CSV via
+    # MotifBreakdown/export_ogb_to_csv.py, which writes a generic 'label' column.
+    # Single-task OGB sets therefore map to 'label' here; multi-task sets stay
+    # None (export one task explicitly with --label_col if you need them).
+    'ogbg-molhiv':       'label',
+    'ogbg-molbace':      'label',
+    'ogbg-molbbbp':      'label',
+    'ogbg-molesol':      'label',
+    'ogbg-molfreesolv':  'label',
+    'ogbg-mollipo':      'label',
+    'ogbg-molclintox':   None,   # multi-task: export one task with --label_col
+    'ogbg-moltox21':     None,   # multi-task
+    'ogbg-molsider':     None,   # multi-task
+    # TUDataset mutag: the exported mutag_<fold>.csv (build_mutag_smiles_df /
+    # export_mutag_dataset_to_csv.py) has a generic 'label' column, so the CSV
+    # vocab pipeline works once that CSV exists. Mutag ships with source GT, so
+    # it needs vocab generation but NOT synthetic relabelling.
+    'mutag':             'label',
 }
 
 TASK_TYPE: Dict[str, str] = {

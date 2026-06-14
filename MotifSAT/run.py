@@ -42,7 +42,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,
         backbone_name=cfg.backbone,
-        node_encoder=meta.node_encoder,
+        node_encoder=cfg.node_encoder,   # resolved in run(): CLI for CSV, atom_encoder for OGB
         apply_layer_norm=cfg.apply_layer_norm,
         dropout=cfg.dropout,
         num_classes=num_classes,
@@ -161,9 +161,8 @@ def run(cfg: MotifSATConfig) -> dict:
     set_seed(cfg.seed)
     device = get_device()
 
-    tag = cfg.variant_tag()
     print(f'\n{"="*60}')
-    print(f'  MotifSAT  {cfg.dataset}  fold={cfg.fold}  {tag}')
+    print(f'  MotifSAT  {cfg.dataset}  fold={cfg.fold}')
     print(f'{"="*60}')
 
     # Vocabulary
@@ -186,6 +185,14 @@ def run(cfg: MotifSATConfig) -> dict:
           f"train={len(loaders['train'].dataset)}  "
           f"val={len(loaders['valid'].dataset)}  "
           f"test={len(loaders['test'].dataset)}")
+
+    # Honor --node_encoder for CSV (force atom_encoder for OGB); store on cfg so
+    # model build and variant_tag agree. tag computed AFTER this resolution.
+    from SharedModules.data.loader import resolve_node_encoder
+    cfg.node_encoder = resolve_node_encoder(getattr(cfg, 'node_encoder', None),
+                                            meta.node_encoder)
+    tag = cfg.variant_tag()
+    print(f'  variant: {tag}')
 
     # ── GT loader replacement (use_gt=True: train on synthetic rule labels) ──
     # apply_gt.py writes train/valid/test_with_gt.pt for every split.

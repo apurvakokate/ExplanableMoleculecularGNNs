@@ -63,6 +63,31 @@ class LoaderMeta:
     # Required for PNA backbone; None for all others.
 
 
+def resolve_node_encoder(cli_value: Optional[str], meta_value: str) -> str:
+    """Resolve which node encoder the model should use.
+
+    The CLI flag (--node_encoder) MUST be honored for CSV datasets so the
+    feature sweep (onehot vs linear) actually takes effect — previously trainers
+    built from meta.node_encoder and silently ignored the CLI value.
+
+    OGB datasets are the exception: their node features are a [N,9] integer
+    tensor that only the OGB AtomEncoder can consume, so 'atom_encoder' is forced
+    regardless of the CLI value (with a warning if the user asked for something
+    else). If cli_value is None/empty, fall back to the loader's recommendation.
+    """
+    if meta_value == 'atom_encoder':
+        if cli_value and cli_value not in (None, 'atom_encoder'):
+            print(f"  [node_encoder] OGB dataset requires 'atom_encoder'; "
+                  f"ignoring --node_encoder={cli_value!r}.")
+        return 'atom_encoder'
+    if not cli_value:
+        return meta_value
+    if cli_value not in ('onehot', 'linear', 'atom_encoder'):
+        raise ValueError(f"Unknown node_encoder {cli_value!r}; "
+                         f"choose from onehot | linear | atom_encoder.")
+    return cli_value
+
+
 # ── mutag TUDataset ──────────────────────────────────────────────────────────
 
 class MutagTUDataset(torch.utils.data.Dataset):

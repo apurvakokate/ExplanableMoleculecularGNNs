@@ -97,9 +97,8 @@ def run(cfg: VanillaConfig) -> dict:
     set_seed(cfg.seed)
     device = get_device()
 
-    tag = cfg.variant_tag()
     print(f'\n{"="*60}')
-    print(f'  VanillaGNN  {cfg.dataset}  fold={cfg.fold}  {tag}')
+    print(f'  VanillaGNN  {cfg.dataset}  fold={cfg.fold}')
     print(f'{"="*60}')
 
     # Vocabulary (needed for motif-level evaluation)
@@ -113,11 +112,20 @@ def run(cfg: VanillaConfig) -> dict:
         batch_size=cfg.batch_size, normalize=(task_type == 'Regression'),
     )
 
-    from SharedModules.data.loader import NUM_CLASSES
+    from SharedModules.data.loader import NUM_CLASSES, resolve_node_encoder
     num_classes = NUM_CLASSES.get(cfg.dataset, 1)
+    # Resolve the encoder ONCE (honors CLI for CSV; forces atom_encoder for OGB)
+    # and store it back on cfg so the output dir tag, checkpoint tag, and the
+    # model all use the SAME value — otherwise a baseline (epochs=0) run could
+    # look for a checkpoint under a different tag than training wrote.
+    cfg.node_encoder = resolve_node_encoder(getattr(cfg, 'node_encoder', None),
+                                            meta.node_encoder)
+    tag = cfg.variant_tag()   # computed AFTER resolution so the dir reflects reality
+    print(f'  variant: {tag}')
+    _node_encoder = cfg.node_encoder
     model = VanillaGNN(
         x_dim=meta.x_dim, hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers,
-        backbone=cfg.backbone, node_encoder=meta.node_encoder,
+        backbone=cfg.backbone, node_encoder=_node_encoder,
         apply_layer_norm=cfg.apply_layer_norm, dropout=cfg.dropout,
         conv_normalize=getattr(cfg,'conv_normalize','l2'),
         gin_inner_bn=getattr(cfg,'gin_inner_bn',True),
