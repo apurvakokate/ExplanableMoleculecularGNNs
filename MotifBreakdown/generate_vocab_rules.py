@@ -89,7 +89,7 @@ except Exception:
         'BBBP':              'BBBP',
         'hERG':              'hERG',
         'Lipophilicity':     'Lipophilicity',
-        'esol':              'esol',
+        'esol':              'measured log solubility in mols per litre',
         'tox21':             'tox21',
         'Benzene':           'label',
         'Alkane_Carbonyl':   'label',

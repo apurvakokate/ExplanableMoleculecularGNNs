@@ -28,7 +28,9 @@ DATASET_COLUMN: Dict[str, Optional[str]] = {
     'BBBP':              'BBBP',
     'hERG':              'hERG',
     'Lipophilicity':     'Lipophilicity',
-    'esol':              'esol',
+    # MoleculeNet ESOL fold exports commonly use the measured-solubility header
+    # instead of a short 'esol' alias.
+    'esol':              'measured log solubility in mols per litre',
     'tox21':             'tox21',
     'freesolv':          'freesolv',
     # synthetic / benchmark datasets — generic 'label' column
