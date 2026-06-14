@@ -114,7 +114,8 @@ class MotifSATConfig:
     def variant_tag(self) -> str:
         """Unique tag encoding all axes of variation — no two different configs can collide."""
         enc  = self.node_encoder
-        ln   = 'LN' if self.apply_layer_norm else 'noLN'
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',
             'wm' if self.w_message else '',
@@ -125,4 +126,12 @@ class MotifSATConfig:
         noise_str = f'noise-{self.noise}'
         il_str    = f'il-{self.info_loss_level}'
         frag      = self.vocab_variant
-        return f'{self.backbone}_{self.motif_method}_{enc}_{ln}_{inj}_{noise_str}_{il_str}_{frag}'
+        gt        = 'gt' if getattr(self, 'use_gt', False) else 'real'
+        ep        = f'ep{self.epochs}'
+        try:
+            from SharedModules.data.loader import hp_suffix
+            hp = hp_suffix(self)
+        except Exception:
+            hp = ''
+        base = f'{self.backbone}_{self.motif_method}_{enc}_{ln}_{inj}_{noise_str}_{il_str}_{gt}_{ep}_{frag}'
+        return f'{base}_{hp}' if hp else base

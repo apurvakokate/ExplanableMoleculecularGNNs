@@ -73,8 +73,19 @@ class VanillaConfig:
 
     def variant_tag(self) -> str:
         enc = self.node_encoder
-        ln  = 'LN' if self.apply_layer_norm else 'noLN'
-        return f'{self.backbone}_{enc}_{ln}_{self.vocab_variant}'
+        # Effective inter-layer norm (none|l2|layernorm). apply_layer_norm=True
+        # forces layernorm. Encoded so none/l2/layernorm runs never collide.
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        # NOTE: epochs is deliberately NOT in the tag. A baseline/explainer run
+        # uses --epochs 0 to LOAD the checkpoint trained at epochs>0; if epochs
+        # were in the tag the load would look in the wrong directory.
+        try:
+            from SharedModules.data.loader import hp_suffix
+            hp = hp_suffix(self)
+        except Exception:
+            hp = ''
+        base = f'{self.backbone}_{enc}_norm-{_norm}_{self.vocab_variant}'
+        return f'{base}_{hp}' if hp else base
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -140,6 +151,7 @@ def run(cfg: VanillaConfig) -> dict:
 
     out_dir = Path(cfg.out_dir) / cfg.dataset / f'fold{cfg.fold}' / tag
     out_dir.mkdir(parents=True, exist_ok=True)
+    from SharedModules.data.loader import write_hparams as _wh; _wh(out_dir, cfg)
 
     # When load_weights_from is set, resolve the checkpoint path from that dir.
     # The checkpoint was saved with the weight variant's tag (which may differ
@@ -150,9 +162,19 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.load_weights_from:
         print(f'  [FIX#1 active] resolved checkpoint variant via cfg: '
               f'eval_vocab={cfg.vocab_variant} weight_vocab={_ckpt_variant}')
-    _ckpt_tag = (f'{cfg.backbone}_{cfg.node_encoder}'
-                f'_{"LN" if cfg.apply_layer_norm else "noLN"}'
-                f'_{_ckpt_variant}')
+    # Checkpoint tag MUST match VanillaConfig.variant_tag() exactly (the dir the
+    # training run wrote to), except the vocab variant may differ when a post-hoc
+    # baseline evaluates under a filtered vocab but loads weights trained on the
+    # unfiltered one. Keep this in lockstep with variant_tag().
+    _norm = 'layernorm' if cfg.apply_layer_norm else getattr(cfg, 'conv_normalize', 'l2')
+    try:
+        from SharedModules.data.loader import hp_suffix as _hp_suffix
+        _hp = _hp_suffix(cfg)
+    except Exception:
+        _hp = ''
+    _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}_{_ckpt_variant}'
+    if _hp:
+        _ckpt_tag = f'{_ckpt_tag}_{_hp}'
     _ckpt_dir = (Path(cfg.load_weights_from) / cfg.dataset / f'fold{cfg.fold}' / _ckpt_tag
                  if cfg.load_weights_from else out_dir)
 

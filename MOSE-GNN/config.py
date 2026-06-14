@@ -103,7 +103,12 @@ class MOSEConfig:
             frag      - vocab_variant (fragmentation algorithm)
         """
         enc  = self.node_encoder            # onehot | linear
-        ln   = 'LN' if self.apply_layer_norm else 'noLN'
+        # Inter-layer norm type (none|l2|layernorm). apply_layer_norm=True is a
+        # back-compat alias that forces layernorm, so derive the effective value
+        # the model will actually use, and put it in the tag so none/l2/layernorm
+        # runs never collide.
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',
             'wm' if self.w_message else '',
@@ -111,4 +116,12 @@ class MOSEConfig:
         ])) or 'noinj'
         unk  = f'unk-{self.unk_mode}'
         frag = self.vocab_variant           # e.g. rbrics_nofall_nobpe_nofilter
-        return f'{self.backbone}_{enc}_{ln}_{inj}_{unk}_{frag}'
+        gt   = 'gt' if getattr(self, 'use_gt', False) else 'real'
+        ep   = f'ep{self.epochs}'
+        try:
+            from SharedModules.data.loader import hp_suffix
+            hp = hp_suffix(self)
+        except Exception:
+            hp = ''
+        base = f'{self.backbone}_{enc}_{ln}_{inj}_{unk}_{gt}_{ep}_{frag}'
+        return f'{base}_{hp}' if hp else base

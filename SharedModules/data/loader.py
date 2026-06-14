@@ -88,6 +88,97 @@ def resolve_node_encoder(cli_value: Optional[str], meta_value: str) -> str:
     return cli_value
 
 
+# ── Hyperparameter tagging (hybrid: readable axes + hash of the fine knobs) ──
+import hashlib as _hashlib
+import json as _json
+
+# Knobs spelled out in the directory name (the ones swept most often).
+# Format: short prefix -> cfg attribute name.
+_HP_SPELLED = [
+    ('L',    'num_layers'),
+    ('h',    'hidden_dim'),
+    ('glr',  'gnn_lr'),        # MOSE: GNN-backbone LR
+    ('xlr',  'explainer_lr'),  # MOSE: motif-importance (explainer) LR
+    ('lr',   'lr'),            # vanilla / MotifSAT single LR (used when gnn_lr absent)
+]
+
+# Fine knobs folded into the hash (regularization / fine-tuning). Anything here
+# changing → a different hp-hash → a different directory. Extend freely; the
+# hparams.json written alongside makes the hash fully decodable.
+_HP_HASHED = [
+    'weight_decay', 'dropout', 'clip_grad',
+    'size_reg', 'ent_reg',                       # MOSE regularization
+    'info_loss_coef', 'motif_loss_coef',         # MotifSAT regularization
+    'between_motif_coef', 'within_node_coef',
+    'init_r', 'final_r', 'logit_clamp',          # MotifSAT scheduling
+    'unk_value', 'extractor_dropout_p',
+]
+
+
+def _fmt_num(v):
+    """Compact, stable string for a numeric hyperparameter (no trailing zeros)."""
+    if isinstance(v, float):
+        return ('%g' % v)
+    return str(v)
+
+
+def hp_spelled(cfg) -> str:
+    """Readable segment for the most-swept knobs, e.g. 'L3_h64_glr0.001_xlr0.01'.
+    A knob is included only if the cfg actually has it AND (for the single 'lr')
+    only when the model doesn't use the split gnn_lr/explainer_lr."""
+    parts = []
+    has_split_lr = getattr(cfg, 'gnn_lr', None) is not None
+    for prefix, attr in _HP_SPELLED:
+        if attr == 'lr' and has_split_lr:
+            continue          # split LRs already captured by glr/xlr
+        if attr in ('gnn_lr', 'explainer_lr') and not has_split_lr:
+            continue
+        v = getattr(cfg, attr, None)
+        if v is None:
+            continue
+        parts.append(f'{prefix}{_fmt_num(v)}')
+    return '_'.join(parts)
+
+
+def hp_hash(cfg, length: int = 8) -> str:
+    """Short deterministic hash of the fine hyperparameters present on cfg.
+    Two configs differing in ANY hashed knob get different hashes."""
+    items = {}
+    for attr in _HP_HASHED:
+        v = getattr(cfg, attr, None)
+        if v is not None:
+            items[attr] = _fmt_num(v)
+    if not items:
+        return 'hp-none'
+    blob = _json.dumps(items, sort_keys=True)
+    return 'hp-' + _hashlib.sha1(blob.encode()).hexdigest()[:length]
+
+
+def hp_suffix(cfg) -> str:
+    """Full hyperparameter path segment: '<spelled>_<hash>'."""
+    spelled = hp_spelled(cfg)
+    h = hp_hash(cfg)
+    return f'{spelled}_{h}' if spelled else h
+
+
+def write_hparams(out_dir, cfg) -> None:
+    """Write hparams.json (full key→value of spelled+hashed knobs) into out_dir so
+    the hp-hash is always decodable. Call once per run after out_dir is created."""
+    from pathlib import Path as _P
+    rec = {}
+    for _, attr in _HP_SPELLED:
+        if getattr(cfg, attr, None) is not None:
+            rec[attr] = getattr(cfg, attr)
+    for attr in _HP_HASHED:
+        if getattr(cfg, attr, None) is not None:
+            rec[attr] = getattr(cfg, attr)
+    rec['hp_hash'] = hp_hash(cfg)
+    p = _P(out_dir) / 'hparams.json'
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, 'w') as f:
+        _json.dump(rec, f, indent=2, default=str)
+
+
 # ── mutag TUDataset ──────────────────────────────────────────────────────────
 
 class MutagTUDataset(torch.utils.data.Dataset):
