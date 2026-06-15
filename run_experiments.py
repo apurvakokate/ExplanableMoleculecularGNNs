@@ -35,7 +35,7 @@ Examples
       --synthetic off,on --out_root ./RESULTS --dry_run
 """
 from __future__ import annotations
-import argparse, itertools, os, subprocess, sys, shlex
+import argparse, itertools, json, os, subprocess, sys, shlex
 from pathlib import Path
 
 # ── trainer entry points (relative to PROJECT root) ─────────────────────────
@@ -98,6 +98,10 @@ def build_arg_parser():
     p.add_argument('--weights_root', default=None,
                    help='Root of trained vanilla checkpoints for baselines/'
                         'explainers (epochs=0). Defaults to <out_root>/vanilla.')
+    p.add_argument('--share_filter_weights', action='store_true',
+                   help='Let a *_filter baseline load the UNFILTERED vanilla '
+                        'checkpoint (vanilla weights are motif-agnostic, so one '
+                        'training is shared across the filter/no-filter pair).')
 
     # MotifSAT-specific
     p.add_argument('--motif_method', default='readout', help='readout|none (none ⇒ base GSAT)')
@@ -105,6 +109,9 @@ def build_arg_parser():
     # extra passthrough + control
     p.add_argument('--extra', default='', help='extra flags appended verbatim to every trainer call')
     p.add_argument('--dry_run', action='store_true', help='print commands, do not execute')
+    p.add_argument('--skip_existing', action='store_true',
+                   help='skip any run whose out_dir already has a summary.json '
+                        '(resume a partially-completed sweep without redoing work)')
     p.add_argument('--continue_on_error', action='store_true')
     return p
 
@@ -118,18 +125,89 @@ def resolve_norm_feature(args, preset, feat_override, ln_override, en_override):
     if en_override:   base['encoder_norm'] = en_override
     return base
 
-def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn):
-    """Unique, human-readable folder name for this config."""
-    enc = f"enc-{feat}"
+# Families whose checkpoint/identity does NOT depend on injection or epochs:
+# the vanilla GNN (its weights are motif-agnostic) and the post-hoc baseline
+# explainers that load those weights. Their config slug omits inj/ep so a single
+# vanilla checkpoint is reused across injection and epoch sweeps.
+INJECTION_AGNOSTIC = ('vanilla', 'baselines')
+
+
+def _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep):
+    """Leaf config folder name (the part below <exp>/<ds>/fold/<variant>)."""
     nrm = f"norm-{ln}" + ("+encLN" if en == 'on' else "")
-    return (f"{exp}/{ds}/fold{fold}/{variant}/"
-            f"{enc}_{nrm}_inj{inj}_ep{epochs}_{'gt' if syn=='on' else 'real'}")
+    parts = [f"enc-{feat}", nrm]
+    if include_inj_ep:
+        parts += [f"inj{inj}", f"ep{epochs}"]
+    parts.append('gt' if syn == 'on' else 'real')
+    return '_'.join(parts)
+
+
+def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn):
+    """Canonical results path (relative to --out_root) for one config.
+
+    Layout (a SINGLE dataset/fold level — the trainers are invoked with
+    --final_out_dir so they do not re-append <ds>/fold/<tag>):
+
+        <exp>/<ds>/fold<fold>/<variant>/<cfg_slug>
+
+    vanilla/baselines omit the inj/ep tokens from <cfg_slug> so their (motif-
+    agnostic) weights are shared across injection and epoch sweeps.
+    """
+    include_inj_ep = exp not in INJECTION_AGNOSTIC
+    slug = _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep)
+    return f"{exp}/{ds}/fold{fold}/{variant}/{slug}"
+
+
+def vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn):
+    """FINAL dir of the trained vanilla run a baseline should load weights from."""
+    slug = _cfg_slug(feat, ln, en, inj=None, epochs=None, syn=syn,
+                     include_inj_ep=False)
+    return (Path(args.out_root) /
+            f"vanilla/{ds}/fold{fold}/{weight_variant}/{slug}")
+
+
+def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
+                     weight_variant=None):
+    """Explicit, machine-readable axis record written as config.json into the
+    run dir. analysis/run_analysis.py collect merges these so all_results.csv
+    carries real axis columns instead of path tokens."""
+    threshold = 'on' if variant.endswith('_filter') else 'off'
+    fragmentation = variant[:-len('_filter')] if variant.endswith('_filter') else variant
+    # injection only applies to ante-hoc motif models; baselines do not train.
+    inj_val = 'na' if exp in INJECTION_AGNOSTIC else inj
+    ep_val = 0 if exp == 'baselines' else int(epochs)
+    rec = {
+        'schema':        'chemintuit/v1',
+        'family':        exp,
+        'dataset':       ds,
+        'fold':          int(fold),
+        'backbone':      args.backbone,
+        'vocab_variant': variant,
+        'fragmentation': fragmentation,
+        'threshold':     threshold,
+        'features':      cfg['features'],
+        'norm':          cfg['layer_norm'],
+        'encoder_norm':  cfg['encoder_norm'],
+        'injection':     inj_val,
+        'epochs':        ep_val,
+        'synthetic':     'gt' if syn == 'on' else 'real',
+        'seed':          args.seed,
+    }
+    if exp == 'baselines':
+        rec['weight_vocab_variant'] = weight_variant or variant
+        rec['weights_dir'] = str(vanilla_weights_dir(
+            args, ds, fold, weight_variant or variant,
+            cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn))
+    return rec
 
 def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
     feat = cfg['features']; ln = cfg['layer_norm']; en = cfg['encoder_norm']
     w_feat, w_msg, w_read = parse_injection(inj)
     out_dir = Path(args.out_root) / config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn)
     script = Path(args.project) / TRAINERS[exp]
+    # Every run uses the canonical single-level layout: the launcher owns the
+    # full path and passes --final_out_dir so the trainer does not re-append
+    # <ds>/fold/<variant_tag> (which caused the historical double nesting).
     cmd = [sys.executable, str(script),
            '--dataset', ds, '--fold', str(fold),
            '--backbone', args.backbone, '--node_encoder', feat,
@@ -137,18 +215,24 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
            '--conv_normalize', ln,
            '--data_root', args.data_root, '--vocab_root', args.vocab_root,
            '--vocab_variant', variant, '--out_dir', str(out_dir),
-           '--seed', str(args.seed)]
+           '--final_out_dir', '--seed', str(args.seed)]
 
     if exp == 'vanilla':
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr)]
         if en == 'on': cmd += ['--apply_layer_norm']
     elif exp == 'baselines':
-        # post-hoc / antehoc explainers: load trained vanilla weights, no training.
-        # Point the trainer at the weights root so it can resolve the checkpoint;
-        # with the fail-fast fix, a missing checkpoint now errors instead of
-        # silently explaining random weights.
+        # Post-hoc explainers: load the trained vanilla weights, no training.
+        # Resolve the EXACT vanilla run dir (final layout) for this config so the
+        # checkpoint is found deterministically. Vanilla weights are motif-
+        # agnostic, so with --share_filter_weights a *_filter baseline reuses the
+        # unfiltered vanilla checkpoint (one training shared across thresholds).
+        weight_variant = variant
+        if args.share_filter_weights and variant.endswith('_filter'):
+            weight_variant = variant[:-len('_filter')]
+        vdir = vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn)
         cmd += ['--epochs', '0',
-                '--load_weights_from', args.weights_root]
+                '--load_weights_from', str(vdir),
+                '--weight_vocab_variant', weight_variant]
         if en == 'on': cmd += ['--apply_layer_norm']
     elif exp in ('mose',):
         cmd += ['--epochs', str(epochs)]
@@ -209,16 +293,39 @@ def main():
 
     runs = list(itertools.product(exps, datasets, folds, variants,
                                   resolved_cfgs, injections, epochs_l, synth_l))
-    print(f"# {len(runs)} run(s) planned\n")
     failures = 0
+    planned = []           # de-duped (vanilla/baselines collapse inj/ep sweeps)
+    seen_dirs = set()
     for exp, ds, fold, variant, cfg, inj, epochs, syn in runs:
         cmd, out_dir = make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn)
+        if str(out_dir) in seen_dirs:
+            # vanilla/baseline slug drops inj/ep, so an inj/epoch sweep maps many
+            # run tuples to one dir — run it once, not N times.
+            continue
+        seen_dirs.add(str(out_dir))
+        wv = (variant[:-len('_filter')]
+              if (exp == 'baselines' and args.share_filter_weights
+                  and variant.endswith('_filter')) else variant)
+        config = canonical_config(exp, args, ds, fold, variant, cfg, inj,
+                                  epochs, syn, weight_variant=wv)
+        planned.append((exp, ds, fold, variant, cfg, inj, epochs, syn,
+                        cmd, out_dir, config))
+
+    print(f"# {len(planned)} run(s) planned"
+          + (f" ({len(runs)} before de-dup)" if len(planned) != len(runs) else "")
+          + "\n")
+    for (exp, ds, fold, variant, cfg, inj, epochs, syn,
+         cmd, out_dir, config) in planned:
+        if args.skip_existing and (out_dir / 'summary.json').exists():
+            print(f"## [skip existing] {out_dir}\n")
+            continue
         out_dir.mkdir(parents=True, exist_ok=True)
         printable = ' '.join(shlex.quote(c) for c in cmd)
         print(f"## {out_dir}")
         print(printable + "\n")
-        # persist the exact command for provenance
+        # persist the exact command + canonical axis record for provenance
         (out_dir / 'run_command.sh').write_text("#!/bin/bash\n" + printable + "\n")
+        (out_dir / 'config.json').write_text(json.dumps(config, indent=2) + "\n")
         if args.dry_run:
             continue
         env = dict(os.environ)
@@ -234,7 +341,8 @@ def main():
             print(f"!! {e} for {out_dir}", file=sys.stderr)
             if not args.continue_on_error:
                 raise
-    print(f"\n# done. {len(runs)-failures}/{len(runs)} succeeded"
+    n = len(planned)
+    print(f"\n# done. {n-failures}/{n} succeeded"
           + (f", {failures} failed" if failures else ""))
 
 if __name__ == '__main__':

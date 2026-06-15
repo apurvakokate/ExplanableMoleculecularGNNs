@@ -56,12 +56,20 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
     enc = meta.get('node_encoder', 'onehot')
     if not (ds and bb and var):
         return None
+    # Canonical runs (written by run_experiments.py) carry a config.json and use
+    # the single-level FINAL layout: regenerate must write back into run_dir
+    # itself (--out_dir run_dir --final_out_dir) instead of re-deriving the
+    # nested path under out_root.
+    canonical = (run_dir / 'config.json').exists()
+    out_dir = str(run_dir) if canonical else args.out_root
     common = [
         '--dataset', str(ds), '--fold', str(fold), '--backbone', str(bb),
         '--node_encoder', str(enc),
         '--data_root', args.data_root, '--vocab_root', args.vocab_root,
-        '--vocab_variant', str(var), '--out_dir', args.out_root,
+        '--vocab_variant', str(var), '--out_dir', out_dir,
     ]
+    if canonical:
+        common += ['--final_out_dir']
     if args.processed_root:
         common += ['--processed_root', f'{args.processed_root}']
 

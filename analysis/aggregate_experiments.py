@@ -243,19 +243,30 @@ def experiment_id(row, axes) -> str:
 
 # ── metric resolution ──────────────────────────────────────────────────────────
 
-def pick_metric(df: pd.DataFrame, requested: str | None) -> dict:
-    """Return per-row chosen metric value, honoring a requested column or a
-    sensible auc/pearson default per dataset task type."""
-    if requested:
-        if requested not in df.columns:
-            raise SystemExit(f'metric {requested!r} not in CSV columns')
-        return {'mode': 'fixed', 'col': requested}
-    return {'mode': 'auto'}
+# Special pseudo-metric: predictive performance, auto-resolved per task type
+# (auc for classification, pearson for regression).
+PERF = 'performance'
+
+# Metrics reported per experiment by default (filtered to those present). This is
+# the FULL result set, not just model performance: prediction + every
+# explainability metric the eval pipeline writes into summary.json.
+DEFAULT_REPORT_METRICS = [PERF, 'pearson', 'spearman', 'gt_roc_auc_mean',
+                          'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman']
+
+METRIC_LABELS = {
+    PERF:                  'predictive performance (auc / pearson by task)',
+    'pearson':             'score-vs-impact correlation (pearson)',
+    'spearman':            'score-vs-impact correlation (spearman)',
+    'gt_roc_auc_mean':     'explanation GT-ROC AUC',
+    'top_k_abs_disc':      'top-k motif |discriminativeness|',
+    'mean_abs_disc':       'mean motif |discriminativeness|',
+    'score_disc_spearman': 'score-vs-discriminativeness (spearman)',
+}
 
 
-def _row_score(row, spec) -> float:
-    if spec['mode'] == 'fixed':
-        return pd.to_numeric(row.get(spec['col']), errors='coerce')
+def _perf_score(row) -> float:
+    """Task-aware predictive metric: auc for classification, pearson for
+    regression (falls back to pearson if auc is missing)."""
     ds = str(row.get('dataset', ''))
     if ds in REGRESSION_DATASETS:
         return pd.to_numeric(row.get('pearson'), errors='coerce')
@@ -265,11 +276,20 @@ def _row_score(row, spec) -> float:
     return v
 
 
+def _mean_std(series):
+    s = pd.to_numeric(series, errors='coerce').dropna()
+    if len(s) == 0:
+        return None, None
+    return (round(float(s.mean()), 6),
+            round(float(s.std()), 6) if len(s) > 1 else 0.0)
+
+
 # ── aggregation ─────────────────────────────────────────────────────────────────
 
-def build_tidy(df: pd.DataFrame, metric_spec, exp_axes) -> pd.DataFrame:
-    """Long/tidy table: one row per (experiment, family, backbone, dataset)
-    with fold-averaged score, std, fold count and the folds that ran.
+def build_tidy(df: pd.DataFrame, metrics, exp_axes) -> pd.DataFrame:
+    """Long/tidy table: one row per (experiment, family, backbone, dataset) with
+    fold-averaged mean/std for EVERY requested metric, the fold count, and the
+    folds that ran. Columns are ``<metric>__mean`` / ``<metric>__std``.
 
     ``exp_axes`` are the config axes that define an experiment. When 'injection'
     is one of them, the injection-agnostic families (vanilla/baselines) are
@@ -277,7 +297,7 @@ def build_tidy(df: pd.DataFrame, metric_spec, exp_axes) -> pd.DataFrame:
     each experiment table stays complete.
     """
     df = df.copy()
-    df['_score'] = df.apply(lambda r: _row_score(r, metric_spec), axis=1)
+    df[PERF] = df.apply(_perf_score, axis=1)
     df['_exp'] = df.apply(lambda r: experiment_id(r, exp_axes), axis=1)
     # base experiment id = experiment axes minus injection (broadcast key)
     base_axes = [a for a in exp_axes if a != 'injection']
@@ -292,18 +312,18 @@ def build_tidy(df: pd.DataFrame, metric_spec, exp_axes) -> pd.DataFrame:
     grp_cols = ['_exp', '_base_exp', 'family', 'backbone', 'dataset'] + ALL_AXES
     for keys, g in df.groupby(grp_cols, dropna=False):
         rec = dict(zip(grp_cols, keys))
-        s = g['_score'].dropna()
         folds = sorted(int(f) for f in g['fold'].dropna().unique())
-        rec.update(dict(
-            metric_mean=round(float(s.mean()), 6) if len(s) else None,
-            metric_std=round(float(s.std()), 6) if len(s) > 1 else (0.0 if len(s) == 1 else None),
-            n_folds=len(folds),
-            folds=','.join(map(str, folds)),
-        ))
+        rec['n_folds'] = len(folds)
+        rec['folds'] = ','.join(map(str, folds))
+        for m in metrics:
+            src = g[m] if m in g.columns else None
+            mean, std = _mean_std(src) if src is not None else (None, None)
+            rec[f'{m}__mean'] = mean
+            rec[f'{m}__std'] = std
         records.append(rec)
     tidy = pd.DataFrame.from_records(records)
 
-    if inj_is_sep:
+    if inj_is_sep and not tidy.empty:
         broadcast_rows = []
         for _, r in tidy[tidy['family'].isin(INJECTION_AGNOSTIC)].iterrows():
             injs = [i for i in inj_by_base.get(r['_base_exp'], []) if i and i != 'na']
@@ -319,31 +339,43 @@ def build_tidy(df: pd.DataFrame, metric_spec, exp_axes) -> pd.DataFrame:
     return tidy.drop(columns=['_base_exp']).rename(columns={'_exp': 'experiment'})
 
 
-def write_per_experiment_tables(tidy: pd.DataFrame, save_dir: Path) -> None:
+def write_per_experiment_tables(tidy: pd.DataFrame, save_dir: Path, metrics) -> None:
+    """One markdown file per experiment; within it a section per metric, and
+    within each metric a backbone×dataset pivot per model family."""
     save_dir.mkdir(parents=True, exist_ok=True)
     index = []
     for exp_id, g in tidy.groupby('experiment'):
-        # one wide table per experiment: rows=backbone, cols=dataset, per family
         safe = re.sub(r'[^A-Za-z0-9]+', '_', exp_id).strip('_')[:120]
         lines = [f'# Experiment: {exp_id}\n']
-        for fam, gf in g.groupby('family'):
-            def cell(row):
-                if row['metric_mean'] is None or pd.isna(row['metric_mean']):
+        present_metrics = []
+        for m in metrics:
+            mcol, scol = f'{m}__mean', f'{m}__std'
+            if mcol not in g.columns or g[mcol].notna().sum() == 0:
+                continue
+            present_metrics.append(m)
+            lines.append(f'\n## {METRIC_LABELS.get(m, m)}\n')
+
+            def cell(row, mcol=mcol, scol=scol):
+                mv = row.get(mcol)
+                if mv is None or pd.isna(mv):
                     return f"– (folds={row['folds']})"
-                std = '' if not row['metric_std'] else f"±{row['metric_std']:.3f}"
-                return f"{row['metric_mean']:.4f}{std} [f:{row['folds']}]"
-            gf = gf.assign(_cell=gf.apply(cell, axis=1))
-            piv = gf.pivot_table(index='backbone', columns='dataset',
-                                 values='_cell', aggfunc='first')
-            lines.append(f'\n## {fam}\n')
-            try:
-                lines.append(piv.to_markdown())
-            except Exception:
-                lines.append(piv.to_string())
-            lines.append('\n')
+                sv = row.get(scol)
+                std = '' if (sv is None or pd.isna(sv) or not sv) else f"±{sv:.3f}"
+                return f"{mv:.4f}{std} [f:{row['folds']}]"
+
+            for fam, gf in g.groupby('family'):
+                gf = gf.assign(_cell=gf.apply(cell, axis=1))
+                piv = gf.pivot_table(index='backbone', columns='dataset',
+                                     values='_cell', aggfunc='first')
+                lines.append(f'\n### {fam}\n')
+                try:
+                    lines.append(piv.to_markdown())
+                except Exception:
+                    lines.append(piv.to_string())
+                lines.append('\n')
         (save_dir / f'experiment__{safe}.md').write_text('\n'.join(lines))
         index.append({'experiment': exp_id, 'file': f'experiment__{safe}.md',
-                      'rows': len(g)})
+                      'metrics': ','.join(present_metrics), 'rows': len(g)})
     pd.DataFrame(index).sort_values('experiment').to_csv(
         save_dir / 'experiments_index.csv', index=False)
 
@@ -355,8 +387,14 @@ def main():
     src.add_argument('--csv', help='existing combined results CSV')
     src.add_argument('--out_root', help='output tree to collect summary.json from')
     ap.add_argument('--save_dir', default='experiment_tables')
+    ap.add_argument('--metrics', nargs='*', default=None,
+                    help='metric columns to report per experiment. Use the '
+                         f'pseudo-metric "{PERF}" for auc/pearson-by-task. '
+                         f'Default reports {DEFAULT_REPORT_METRICS} (filtered to '
+                         'columns present). Pass any summary.json column, e.g. '
+                         'gnnexplainer_mean_pearson, to add explainer metrics.')
     ap.add_argument('--metric', default=None,
-                    help='fixed metric column; default = auc (pearson for regression)')
+                    help='(legacy) single metric column; same as --metrics <col>.')
     ap.add_argument('--experiment_axes', default=','.join(DEFAULT_EXPERIMENT_AXES),
                     help='comma list of axes that define an experiment. '
                          f'Choose from {ALL_AXES}. '
@@ -402,19 +440,35 @@ def main():
             raise SystemExit(f'no rows with vocab_variant in {sorted(keep)}')
 
     df = normalize(df)
-    spec = pick_metric(df, args.metric)
-    tidy = build_tidy(df, spec, exp_axes)
+
+    # resolve which metrics to report
+    if args.metrics:
+        requested = args.metrics
+    elif args.metric:
+        requested = [args.metric]
+    else:
+        requested = DEFAULT_REPORT_METRICS
+    metrics = []
+    for m in requested:
+        if m == PERF or m in df.columns:
+            metrics.append(m)
+        else:
+            print(f'  [skip] metric {m!r} not present in data')
+    if not metrics:
+        metrics = [PERF]
+
+    tidy = build_tidy(df, metrics, exp_axes)
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     tidy_path = save_dir / 'results_tidy.csv'
     tidy.sort_values(['experiment', 'family', 'backbone', 'dataset']).to_csv(
         tidy_path, index=False)
-    write_per_experiment_tables(tidy, save_dir)
+    write_per_experiment_tables(tidy, save_dir, metrics)
 
     n_exp = tidy['experiment'].nunique()
     print(f'normalized {len(df)} rows -> {len(tidy)} tidy rows')
-    print(f'{n_exp} distinct experiment(s)')
+    print(f'{n_exp} distinct experiment(s); metrics: {metrics}')
     print(f'wrote {tidy_path}')
     print(f'wrote per-experiment tables under {save_dir}/')
 

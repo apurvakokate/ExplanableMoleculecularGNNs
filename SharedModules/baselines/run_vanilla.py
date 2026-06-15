@@ -67,6 +67,13 @@ class VanillaConfig:
     max_motifs_eval: Optional[int] = None
     load_weights_from: Optional[str] = None  # dir containing best_model.pt
     weight_vocab_variant: Optional[str] = None  # vocab variant of loaded weights
+    # When True, treat --out_dir as the FINAL run directory and do NOT append
+    # <dataset>/fold<k>/<variant_tag>. The unified launcher (run_experiments.py)
+    # sets this so the on-disk path has a single dataset/fold level (no double
+    # nesting) and so config.json/summary.json/best_model.pt all live together.
+    # Legacy callers (run_experiments.sh, run_priority.sh, direct invocation)
+    # leave it False and keep the historical nested layout.
+    final_out_dir: bool = False
     use_wandb: bool = False
     wandb_project: str = 'ChemIntuit'
     wandb_entity: Optional[str] = None
@@ -149,7 +156,10 @@ def run(cfg: VanillaConfig) -> dict:
     pos_w = (compute_pos_weights(loaders['train'].dataset)
              if task_type in ('BinaryClass', 'MultiLabel') else None)
 
-    out_dir = Path(cfg.out_dir) / cfg.dataset / f'fold{cfg.fold}' / tag
+    if getattr(cfg, 'final_out_dir', False):
+        out_dir = Path(cfg.out_dir)            # launcher already encoded ds/fold/cfg
+    else:
+        out_dir = Path(cfg.out_dir) / cfg.dataset / f'fold{cfg.fold}' / tag
     out_dir.mkdir(parents=True, exist_ok=True)
     from SharedModules.data.loader import write_hparams as _wh; _wh(out_dir, cfg)
 
@@ -175,8 +185,16 @@ def run(cfg: VanillaConfig) -> dict:
     _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}_{_ckpt_variant}'
     if _hp:
         _ckpt_tag = f'{_ckpt_tag}_{_hp}'
-    _ckpt_dir = (Path(cfg.load_weights_from) / cfg.dataset / f'fold{cfg.fold}' / _ckpt_tag
-                 if cfg.load_weights_from else out_dir)
+    if not cfg.load_weights_from:
+        _ckpt_dir = out_dir
+    elif getattr(cfg, 'final_out_dir', False):
+        # FINAL layout: --load_weights_from IS the trained vanilla run dir, which
+        # contains best_model.pt directly (no <ds>/fold/<tag> re-append). If a
+        # best_model.pt path was passed, use its parent.
+        _lw = Path(cfg.load_weights_from)
+        _ckpt_dir = _lw.parent if _lw.name == 'best_model.pt' else _lw
+    else:
+        _ckpt_dir = Path(cfg.load_weights_from) / cfg.dataset / f'fold{cfg.fold}' / _ckpt_tag
 
     model = train_vanilla_gnn(
         model, loaders, task_type, device,
@@ -394,6 +412,10 @@ def main():
     parser.add_argument('--load_weights_from', default=None,
                         help='Directory of a previous run to load best_model.pt from. '
                              'Used with --epochs 0 for post-hoc explainer evaluation.')
+    parser.add_argument('--final_out_dir', action='store_true',
+                        help='Treat --out_dir as the FINAL run dir (do not append '
+                             '<dataset>/fold<k>/<variant_tag>). Set by the unified '
+                             'launcher to avoid double dataset/fold nesting.')
     parser.add_argument('--no_gnnexplainer', action='store_true')
     parser.add_argument('--no_pgexplainer',  action='store_true')
     parser.add_argument('--no_mage',         action='store_true')
@@ -421,6 +443,7 @@ def main():
         run_mage=not args.no_mage,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,
+        final_out_dir=args.final_out_dir,
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,

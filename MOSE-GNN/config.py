@@ -55,6 +55,9 @@ class MOSEConfig:
     out_dir: str = './mose_results'
     run_name: str = 'mose_run'
     verbose: bool = True
+    # When True, treat out_dir as the FINAL run dir (no <ds>/fold/<tag> append).
+    # Set by the unified launcher (run_experiments.py) to avoid double nesting.
+    final_out_dir: bool = False
 
     # Evaluation
     run_motif_impact: bool = True

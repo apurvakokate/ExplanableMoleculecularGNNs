@@ -153,7 +153,10 @@ def run(cfg: MOSEConfig) -> dict:
         if task_type in ('BinaryClass', 'MultiLabel') else None
 
     # Train
-    out_dir = Path(cfg.out_dir) / cfg.dataset / f'fold{cfg.fold}' / cfg.variant_tag()
+    if getattr(cfg, 'final_out_dir', False):
+        out_dir = Path(cfg.out_dir)
+    else:
+        out_dir = Path(cfg.out_dir) / cfg.dataset / f'fold{cfg.fold}' / cfg.variant_tag()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # W&B initialisation (only when --use_wandb is passed)
@@ -404,6 +407,10 @@ def main():
                         help='Load ground-truth relabelled graphs from gt_cache')
     parser.add_argument('--gt_cache',    default=None,
                         help='Path to gt_cache directory written by phase4')
+    parser.add_argument('--final_out_dir', action='store_true',
+                        help='Treat --out_dir as the FINAL run dir (no '
+                             '<dataset>/fold<k>/<variant_tag> append). Set by the '
+                             'unified launcher to avoid double dataset/fold nesting.')
     parser.add_argument('--eval_only',   action='store_true',
                         help='Skip training; load a checkpoint and only run the '
                              'eval pipeline (regenerates summary + per-motif CSVs).')
@@ -455,6 +462,7 @@ def main():
             node_encoder=args.node_encoder,
             processed_root=_proc_root,
             out_dir=args.out_dir, seed=args.seed,
+            final_out_dir=args.final_out_dir,
             use_wandb=args.use_wandb,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
