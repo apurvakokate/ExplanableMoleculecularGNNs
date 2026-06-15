@@ -69,39 +69,87 @@ def step_regenerate(args) -> int:
     return subprocess.run(cmd).returncode
 
 
+# Canonical axis columns (written by run_experiments.py into config.json and/or
+# derived from the path by aggregate_experiments.normalize). Surfaced explicitly
+# in all_results.csv so downstream tables no longer have to parse exp_dir.
+AXIS_COLS = ['family', 'fragmentation', 'threshold', 'synthetic',
+             'norm', 'features', 'injection', 'epochs', 'fold']
+# config.json fields that are NOT axis columns but worth carrying through.
+_CONFIG_EXTRA = ['schema', 'encoder_norm', 'weight_vocab_variant', 'seed']
+
+
 def step_collect(args) -> int:
-    """Rebuild all_results.csv from summary.json files (mirrors shell collect)."""
+    """Rebuild all_results.csv from summary.json files.
+
+    For each run we merge (when present) the canonical config.json written by
+    run_experiments.py, then fill any axis columns still missing by parsing the
+    path with aggregate_experiments.normalize. New canonical runs therefore get
+    exact axis columns; legacy runs are decoded from their directory tokens.
+    """
     import json
     import pandas as pd
+    from analysis.aggregate_experiments import normalize, ALL_AXES, iter_summaries
     out_root = Path(args.out_root)
     print('\n=== collect summaries -> all_results.csv ===')
     rows = []
-    for p in out_root.rglob('summary.json'):
+    n_cfg = 0
+    for p in iter_summaries(out_root, getattr(args, 'exclude', None)):
         try:
             d = json.load(open(p))
-            d['exp_dir'] = str(p.parent.relative_to(out_root))
-            rows.append(d)
         except Exception:
-            pass
+            continue
+        # Merge the sibling config.json (canonical axes) without letting it clobber
+        # the measured metrics in summary.json.
+        cfg_path = p.parent / 'config.json'
+        if cfg_path.exists():
+            try:
+                cfg = json.load(open(cfg_path))
+                for k, v in cfg.items():
+                    d.setdefault(k, v)
+                n_cfg += 1
+            except Exception:
+                pass
+        d['exp_dir'] = str(p.parent.relative_to(out_root))
+        rows.append(d)
     if not rows:
         print('  no summary.json files found.')
         return 1
     df = pd.DataFrame(rows)
-    core = [c for c in ['exp_dir', 'dataset', 'backbone', 'vocab_variant',
+    keep = getattr(args, 'vocab_variant', None)
+    if keep:
+        before = len(df)
+        vv = df.get('vocab_variant', pd.Series([''] * len(df))).astype(str)
+        df = df[vv.isin(set(keep))].copy()
+        print(f'  filtered to vocab_variant in {sorted(set(keep))}: '
+              f'{len(df)}/{before} rows')
+        if df.empty:
+            print('  no rows after vocab_variant filter.')
+            return 1
+    # Fill/derive the canonical axis columns (prefers explicit config.json values,
+    # falls back to path parsing for legacy runs).
+    df = normalize(df)
+
+    core = [c for c in ['exp_dir', 'family', 'dataset', 'backbone', 'vocab_variant',
+                        *ALL_AXES, 'fold',
                         'motif_method', 'noise', 'info_loss_coef',
-                        'ent_reg', 'size_reg', 'num_layers', 'explainer_lr', 'gnn_lr', 'conv_normalize', 'gin_inner_bn',
-                        'train_auc', 'val_auc', 'auc', 'gt_roc_auc_mean',
+                        'ent_reg', 'size_reg', 'num_layers', 'explainer_lr', 'gnn_lr',
+                        'conv_normalize', 'gin_inner_bn',
+                        'encoder_norm', 'weight_vocab_variant', 'seed',
+                        'train_auc', 'val_auc', 'auc', 'rmse', 'gt_roc_auc_mean',
                         'pearson', 'spearman',
                         'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman',
                         'score_min', 'score_max', 'score_mean', 'score_std',
                         'score_median', 'score_mode', 'score_count'] if c in df]
+    # de-dup while preserving order
+    seen = set(); core = [c for c in core if not (c in seen or seen.add(c))]
     extra = sorted(c for c in df.columns if c not in core and any(
         c.startswith(p) for p in ('gnnexplainer_', 'pgexplainer_', 'mage_')))
     want = core + extra
     out = df[want].sort_values(['dataset', 'exp_dir'])
     dest = out_root / 'all_results.csv'
     out.to_csv(dest, index=False)
-    print(f'  wrote {dest}  ({len(out)} rows, {len(want)} cols)')
+    print(f'  wrote {dest}  ({len(out)} rows, {len(want)} cols; '
+          f'{n_cfg} with config.json)')
     return 0
 
 
@@ -153,6 +201,12 @@ def main():
     def common(p, need_train=False):
         p.add_argument('--out_root', required=True)
         p.add_argument('--save_dir', default=None)
+        p.add_argument('--exclude', nargs='*', default=None,
+                       help='extra directory-name prefixes to skip when walking '
+                            '--out_root (archive/scratch dirs are always skipped).')
+        p.add_argument('--vocab_variant', nargs='*', default=None,
+                       help='collect ONLY these vocab variants, e.g. '
+                            '--vocab_variant rbrics_old_filter (default: all).')
         if need_train:
             p.add_argument('--data_root', default=None)
             p.add_argument('--vocab_root', default=None)
