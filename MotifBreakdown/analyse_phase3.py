@@ -53,20 +53,13 @@ RDLogger.DisableLog('rdApp.*')
 import motif_label_pipeline as pipe
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset label column map  (matches generate_vocab_rules.py)
+# Dataset label column map — imported from the single source of truth in
+# SharedModules/data/dataset_schema.py (no local copy; fail loud if missing).
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET_COLUMN: Dict[str, str] = {
-    'Mutagenicity':      'Mutagenicity',
-    'BBBP':              'BBBP',
-    'hERG':              'hERG',
-    'Lipophilicity':     'Lipophilicity',
-    'esol':              'esol',
-    'tox21':             'tox21',
-    'Benzene':           'label',
-    'Alkane_Carbonyl':   'label',
-    'Fluoride_Carbonyl': 'label',
-    'freesolv':          'freesolv',
-}
+_SHARED = _HERE / '..' / 'SharedModules'
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
+from data.dataset_schema import DATASET_COLUMN   # type: ignore
 
 
 # ─────────────────────────────────────────────────────────────────────────────
