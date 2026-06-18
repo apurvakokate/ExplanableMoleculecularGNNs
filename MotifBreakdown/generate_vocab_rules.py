@@ -56,7 +56,7 @@ MotifSAT pickle files (per dataset/variant, under {out_dir}/{dataset}/{variant}/
 import os, sys, re, json, time, copy, pickle, argparse, warnings
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Any, Dict, List, Set, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -572,7 +572,10 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
     Output:
         motif_list   list[str] sorted by count descending (index = motif_id)
         frag_to_id   {smarts: motif_id}
-        motif_stats  {smarts: {count, n_pos, n_neg, n_atoms, ring, above_min_sup}}
+        motif_stats  {smarts: {count, n_pos, n_neg, n_occurrences, weighted_count,
+                      wt_count_0, wt_count_1, n_atoms, ring, above_min_sup}}
+                      count/n_pos/n_neg are per-MOLECULE (deduped); n_occurrences
+                      and the weighted_/wt_ fields are trainval occurrence counts.
     """
     n = len(mol_frags_tracked)
     raw: Dict[str, Dict] = defaultdict(
@@ -980,20 +983,22 @@ def compute_stats(dataset: str, variant: str, fold: int,
                   frag_to_id: Dict[str, int],
                   threshold_motifs: Optional[Set[str]],
                   lookup_all: Dict) -> pd.DataFrame:
-    """Compute per-motif and per-molecule statistics and return as a DataFrame.
+    """Compute per-motif and per-molecule statistics.
 
-    Columns:
-      dataset, variant, fold, split
-      — per-motif section (one row per motif):
-        motif_id, smarts, n_atoms, ring,
-        freq_count (n molecules containing it),
-        freq_pct (% of split molecules),
+    Returns two DataFrames: (motif_df, graph_df).
+
+    motif_df — one row per motif:
+        dataset, variant, fold, motif_id, smarts, n_atoms, ring,
+        freq_count (n molecules containing it across all splits),
+        freq_pct (% of all molecules),
         above_threshold (True/False; False → motif_id remapped to -1 in lookup)
-      — per-molecule section (appended as summary rows):
-        n_unfragmented, n_unknown_nodes, mean_frags_per_mol,
-        frag_count_distribution
+      sorted by freq_count descending.
 
-    Returns two DataFrames: (motif_df, graph_df)
+    graph_df — one row per molecule:
+        dataset, variant, fold, split, smiles, label, n_atoms, n_frags,
+        unfragmented (whole molecule is a single fragment),
+        n_unknown_nodes (nodes mapped to motif_id = -1),
+        pct_unknown (% of atoms that are unknown).
     """
     n_all = len(smiles_all)
 
