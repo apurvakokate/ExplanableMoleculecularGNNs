@@ -281,19 +281,23 @@ class WandbLogger:
             unk_s = float(self.model.unk_param.sigmoid().item())
             stats['motif_scores/unk'] = unk_s
 
-        # Top-10 table (per-vocabulary motif, mean across classes)
+        # Top-10 table (per-vocabulary motif, mean across classes).
+        # motif_params rows are COMPACT (kept-only); map each row back to its
+        # global motif id via kept_motif_ids before indexing motif_list.
         motif_list = getattr(self.vocab, 'motif_list', None) if self.vocab else None
-        mean_scores = scores.mean(dim=-1) if scores.dim() > 1 else scores  # [M]
-        top10_idx = mean_scores.argsort(descending=True)[:10].tolist()
+        kept = getattr(self.model, 'kept_motif_ids', None)
+        mean_scores = scores.mean(dim=-1) if scores.dim() > 1 else scores  # [K]
+        top10_rows = mean_scores.argsort(descending=True)[:10].tolist()
 
         rows = []
-        for mid in top10_idx:
-            name = (motif_list[mid][:40] if motif_list and mid < len(motif_list)
-                    else f'motif_{mid}')
+        for row in top10_rows:
+            gid = int(kept[row]) if kept is not None else int(row)
+            name = (motif_list[gid][:40] if motif_list and gid < len(motif_list)
+                    else f'motif_{gid}')
             rows.append([
-                int(mid),
+                gid,
                 name,
-                round(float(mean_scores[mid]), 4),
+                round(float(mean_scores[row]), 4),
             ])
         stats['motif_scores/top10_table'] = wandb.Table(
             columns=['motif_id', 'smarts', 'importance'],

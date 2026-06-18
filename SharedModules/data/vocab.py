@@ -9,6 +9,7 @@ File produced by generate_vocab_rules.py
   {base}_motif_class.pickle
   {base}_graph_motifidx.pickle
   {base}_test_graph_motifidx.pickle
+  {base}_kept_motif_ids.pickle   ← global ids surviving the threshold (compact params)
   mask_cache_training.pickle   ← added by patched generate_vocab_rules
   mask_cache_valid.pickle
   mask_cache_test.pickle
@@ -71,6 +72,11 @@ class VocabData:
     mask_cache: Dict[str, Dict[int, Dict[str, torch.BoolTensor]]] = field(
         default_factory=dict
     )
+    # Ordered global motif ids that survive the threshold (= every id when no
+    # threshold was applied).  The model allocates parameters ONLY for these,
+    # while motif_list / lookups keep the full, stable global id space.  None for
+    # older vocab dirs produced before this artifact existed (→ treat as all ids).
+    kept_motif_ids: Optional[List[int]] = None
 
     @property
     def num_motifs(self) -> int:
@@ -141,6 +147,12 @@ def load_vocab(
     gmi_train = _load_pickle(p('_graph_motifidx.pickle'))
     gmi_test = _load_pickle(p('_test_graph_motifidx.pickle'))
 
+    # kept_motif_ids was added with the compact-parameter remap. Older vocab dirs
+    # don't have it → None (model then keeps a parameter row for every motif).
+    _kept_path = Path(f'{base}_kept_motif_ids.pickle')
+    kept_motif_ids = (list(_load_pickle(_kept_path))
+                      if _kept_path.exists() else None)
+
     mask_cache: Dict[str, Dict[int, Dict[str, torch.BoolTensor]]] = {}
     if load_mask_cache:
         for split in ('training', 'valid', 'test', 'all'):
@@ -159,6 +171,7 @@ def load_vocab(
         gmi_train=gmi_train,
         gmi_test=gmi_test,
         mask_cache=mask_cache,
+        kept_motif_ids=kept_motif_ids,
     )
 
 

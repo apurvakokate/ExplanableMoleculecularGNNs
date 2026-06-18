@@ -10,7 +10,7 @@ Unknown nodes (motif_id = -1) use unk_param (fixed or learnable scalar).
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -40,25 +40,45 @@ def _motif_to_node_weights(
     unk_value: float = 0.5,
     ignore_unknowns: bool = False,
     masked_motif: Optional[int] = None,
+    global_to_param: Optional[Tensor] = None,
 ) -> Tensor:
     """Vectorised: map each node to its sigmoid weight per class.
 
     Parameters
     ----------
     node_to_motifs : Tensor [N]
-        Motif index per node (-1 for unknown).
+        GLOBAL motif id per node (-1 for unknown).  When ``global_to_param`` is
+        given these global ids are first remapped to compact parameter rows.
     motif_params : Tensor [M, C] or [M, 1]
+        Indexed by *compact* row when ``global_to_param`` is given (M = number of
+        kept motifs), otherwise directly by global id.
     num_nodes : int
     unk_mode : 'fixed' | 'learnable_shared'
     unk_param : nn.Parameter (scalar) or None  — used when unk_mode='learnable_shared'
     unk_value : float  — used when unk_mode='fixed'
     ignore_unknowns : bool  — if True unknown nodes get weight 0
-    masked_motif : int or None  — set this motif's weight to 0 (for impact eval)
+    masked_motif : int or None  — global id whose weight is set to 0 (for impact eval)
+    global_to_param : Tensor [num_global_motifs] or None
+        Maps each global motif id → compact parameter row, with -1 for motifs
+        that have no parameter (below-threshold / unknown).  None ⇒ identity
+        (node ids index ``motif_params`` directly).
 
     Returns
     -------
     Tensor [N, C]
     """
+    # Remap global motif ids → compact parameter rows.  Kept motifs map to their
+    # row; -1 (unknown) stays -1; any below-threshold global id (defensively)
+    # maps to -1 so it falls through to the unknown path.  This keeps the global
+    # id space stable in the data while motif_params holds only kept rows.
+    if global_to_param is not None:
+        gp = global_to_param.to(node_to_motifs.device)
+        g = node_to_motifs
+        node_to_motifs = torch.where(g >= 0, gp[g.clamp(min=0)], g)
+        if masked_motif is not None and masked_motif >= 0:
+            mm = int(gp[masked_motif].item()) if masked_motif < gp.numel() else -1
+            masked_motif = mm if mm >= 0 else None
+
     n_classes = motif_params.size(1) if motif_params.dim() == 2 else 1
 
     # Determine unknown value
@@ -82,6 +102,46 @@ def _motif_to_node_weights(
         weights[node_to_motifs == masked_motif] = 0.0
 
     return weights  # [N, C]
+
+
+def _init_motif_params(
+    module: nn.Module,
+    num_motifs: int,
+    kept_motif_ids: Optional[Sequence[int]],
+    n_classes: int,
+) -> None:
+    """Allocate ``motif_params`` for the KEPT motifs only and the global→param map.
+
+    The global motif id space (``motif_list`` indices, range ``num_motifs``) stays
+    stable so artifacts, lookups and mask caches remain aligned across variants.
+    ``motif_params`` is sized to the number of kept (above-threshold) motifs, so
+    below-threshold motifs no longer occupy parameter/optimizer state.
+
+    ``kept_motif_ids`` is the ordered list of global ids that get a parameter row.
+    ``None`` ⇒ every id is kept (identity mapping, no reduction — backward
+    compatible with the original full-size parameterisation).
+
+    Sets on ``module``: ``num_motifs`` (global count), ``kept_motif_ids`` (list),
+    the ``motif_params`` parameter (or None), and the ``global_to_param`` buffer.
+    """
+    module.num_motifs = int(num_motifs)
+    if kept_motif_ids is None:
+        kept = list(range(num_motifs))
+    else:
+        kept = [int(g) for g in kept_motif_ids]
+    module.kept_motif_ids = kept
+
+    if num_motifs > 0:
+        n_kept = max(len(kept), 1)  # keep ≥1 row so the parameter always exists
+        module.motif_params = nn.Parameter(torch.zeros(n_kept, n_classes))
+        g2p = torch.full((num_motifs,), -1, dtype=torch.long)
+        for row, gid in enumerate(kept):
+            if 0 <= gid < num_motifs:
+                g2p[gid] = row
+        module.register_buffer('global_to_param', g2p)
+    else:
+        module.register_parameter('motif_params', None)
+        module.register_buffer('global_to_param', None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +175,7 @@ class SingleChannelGNN(nn.Module):
         node_encoder: str = 'onehot',
         apply_layer_norm: bool = False,
         num_motifs: int = 0,
+        kept_motif_ids: Optional[Sequence[int]] = None,
         unk_mode: str = 'fixed',
         unk_value: float = 0.5,
         w_feat: bool = True,
@@ -142,10 +203,7 @@ class SingleChannelGNN(nn.Module):
         )
         self.backbone.lin2 = nn.Linear(hidden_dim, 1)
 
-        if num_motifs > 0:
-            self.motif_params = nn.Parameter(torch.zeros(num_motifs, 1))
-        else:
-            self.register_parameter('motif_params', None)
+        _init_motif_params(self, num_motifs, kept_motif_ids, n_classes=1)
 
         if unk_mode == 'learnable_shared':
             self.unk_param = nn.Parameter(torch.tensor(0.0))  # sigmoid → 0.5 init
@@ -153,11 +211,12 @@ class SingleChannelGNN(nn.Module):
             self.register_parameter('unk_param', None)
 
     def get_motif_scores(self) -> Dict[int, float]:
-        """Return {motif_id: sigmoid(θ_m)} for all known motifs."""
-        if self.motif_params is None:
+        """Return {global_motif_id: sigmoid(θ_m)} for the kept (parameterised) motifs."""
+        if self.motif_params is None or not self.kept_motif_ids:
             return {}
         scores = self.motif_params.squeeze(-1).sigmoid().detach().cpu()
-        return {i: float(s) for i, s in enumerate(scores)}
+        return {int(self.kept_motif_ids[j]): float(scores[j])
+                for j in range(len(self.kept_motif_ids))}
 
     def forward(
         self,
@@ -184,6 +243,7 @@ class SingleChannelGNN(nn.Module):
                 unk_value=self.unk_value,
                 ignore_unknowns=ignore_unknowns,
                 masked_motif=masked_motif,
+                global_to_param=self.global_to_param,
             )  # [N, 1]
 
         graph_emb, _ = self.backbone.get_embedding(
@@ -224,6 +284,7 @@ class MultiChannelGNN(nn.Module):
         apply_layer_norm: bool = False,
         num_classes: int = 12,
         num_motifs: int = 0,
+        kept_motif_ids: Optional[Sequence[int]] = None,
         unk_mode: str = 'fixed',
         unk_value: float = 0.5,
         w_feat: bool = True,
@@ -280,10 +341,7 @@ class MultiChannelGNN(nn.Module):
 
         self.dropout = dropout
 
-        if num_motifs > 0:
-            self.motif_params = nn.Parameter(torch.zeros(num_motifs, num_classes))
-        else:
-            self.register_parameter('motif_params', None)
+        _init_motif_params(self, num_motifs, kept_motif_ids, n_classes=num_classes)
 
         if unk_mode == 'learnable_shared':
             self.unk_param = nn.Parameter(torch.tensor(0.0))
@@ -291,12 +349,13 @@ class MultiChannelGNN(nn.Module):
             self.register_parameter('unk_param', None)
 
     def get_motif_scores(self) -> Dict[str, Dict[int, float]]:
-        """Return {class_idx: {motif_id: score}} for all classes."""
-        if self.motif_params is None:
+        """Return {class_idx: {global_motif_id: score}} for the kept motifs."""
+        if self.motif_params is None or not self.kept_motif_ids:
             return {}
-        scores = self.motif_params.sigmoid().detach().cpu()
+        scores = self.motif_params.sigmoid().detach().cpu()  # [K, C]
         return {
-            c: {i: float(scores[i, c]) for i in range(scores.size(0))}
+            c: {int(self.kept_motif_ids[j]): float(scores[j, c])
+                for j in range(len(self.kept_motif_ids))}
             for c in range(scores.size(1))
         }
 
@@ -352,6 +411,7 @@ class MultiChannelGNN(nn.Module):
                 unk_value=self.unk_value,
                 ignore_unknowns=ignore_unknowns,
                 masked_motif=masked_motif,
+                global_to_param=self.global_to_param,
             )  # [N, C]
 
         h_base = self._encode(x)

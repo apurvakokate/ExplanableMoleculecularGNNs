@@ -114,6 +114,33 @@ class TestMotifToNodeWeights(unittest.TestCase):
         w = _motif_to_node_weights(ntm, p, 10, DEVICE, unk_value=0.7)
         self.assertTrue(torch.allclose(w, torch.full((10, 3), 0.7)))
 
+    def test_global_to_param_remap(self):
+        """global_to_param remaps global ids → compact rows; below-threshold and
+        unknown nodes both fall through to the unk value."""
+        # Global vocab size 5; only ids 1 and 3 are kept (compact rows 0 and 1).
+        g2p = torch.tensor([-1, 0, -1, 1, -1], dtype=torch.long)
+        p = nn.Parameter(torch.tensor([[2.0], [-2.0]]))  # row0=id1, row1=id3
+        ntm = torch.tensor([1, 3, 0, -1])  # kept, kept, below-thr, unknown
+        w = _motif_to_node_weights(ntm, p, 4, DEVICE, unk_value=0.5,
+                                   global_to_param=g2p)
+        self.assertAlmostEqual(float(w[0, 0]),
+                               float(torch.sigmoid(torch.tensor(2.0))), places=5)
+        self.assertAlmostEqual(float(w[1, 0]),
+                               float(torch.sigmoid(torch.tensor(-2.0))), places=5)
+        self.assertAlmostEqual(float(w[2, 0]), 0.5)  # below-threshold → unk
+        self.assertAlmostEqual(float(w[3, 0]), 0.5)  # unknown → unk
+
+    def test_global_to_param_masked_motif_global_id(self):
+        """masked_motif is a GLOBAL id; it is remapped before masking."""
+        g2p = torch.tensor([-1, 0, 1], dtype=torch.long)
+        p = nn.Parameter(torch.zeros(2, 1))
+        ntm = torch.tensor([1, 2, 1])
+        w = _motif_to_node_weights(ntm, p, 3, DEVICE, masked_motif=1,
+                                   global_to_param=g2p)
+        self.assertEqual(float(w[0, 0]), 0.0)  # global id 1 masked
+        self.assertEqual(float(w[2, 0]), 0.0)
+        self.assertNotEqual(float(w[1, 0]), 0.0)  # global id 2 untouched
+
 
 # ── SingleChannelGNN ─────────────────────────────────────────────────────────
 
@@ -214,6 +241,29 @@ class TestSingleChannelGNN(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(m.motif_params.grad)
         self.assertFalse(torch.isnan(m.motif_params.grad).any())
+
+    def test_kept_motif_ids_compact_params(self):
+        """With kept_motif_ids, motif_params shrinks to the kept count, the
+        global→param buffer maps correctly, and get_motif_scores keys are the
+        ORIGINAL global ids."""
+        kept = [1, 3]   # global vocab is 5; keep only ids 1 and 3
+        m = self._model(num_motifs=5, kept_motif_ids=kept)
+        self.assertEqual(m.motif_params.shape, (2, 1))
+        self.assertEqual(m.global_to_param.tolist(), [-1, 0, -1, 1, -1])
+        # set distinct values so we can verify the global id ↔ row mapping
+        m.motif_params.data[0, 0] = 2.0   # row0 = global id 1
+        m.motif_params.data[1, 0] = -2.0  # row1 = global id 3
+        scores = m.get_motif_scores()
+        self.assertEqual(set(scores.keys()), {1, 3})
+        self.assertAlmostEqual(scores[1],
+                               float(torch.sigmoid(torch.tensor(2.0))), places=5)
+        self.assertAlmostEqual(scores[3],
+                               float(torch.sigmoid(torch.tensor(-2.0))), places=5)
+        b = _batch(3, 8, 5)
+        out, att = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)
+        self.assertEqual(out.shape, (3, 1))
+        out.sum().backward()
+        self.assertEqual(m.motif_params.grad.shape, (2, 1))
 
 
 # ── MultiChannelGNN ──────────────────────────────────────────────────────────

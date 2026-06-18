@@ -748,6 +748,7 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
                  lookup_train: dict, lookup_valid: dict, lookup_test: dict,
                  gmi_train: dict, gmi_test: dict,
                  rules: List[dict], labels: np.ndarray,
+                 kept_motif_ids: List[int],
                  test_occ_ctr: dict = None) -> dict:
 
     vdir = out_dir / dataset / variant
@@ -773,6 +774,10 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
                         base + '_motif_class.pickle')
     dump(gmi_train,     base + '_graph_motifidx.pickle')
     dump(gmi_test,      base + '_test_graph_motifidx.pickle')
+    # Ordered global motif ids surviving the threshold. The model allocates
+    # parameters only for these (compact rows) while motif_list / lookups keep
+    # the full stable global id space. = all ids when no threshold was applied.
+    dump(kept_motif_ids, base + '_kept_motif_ids.pickle')
 
     # Additional outputs
     sp.save_npz(str(vdir / 'matrix.npz'), X)
@@ -1287,6 +1292,14 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                                threshold_motifs)
     X          = build_matrix(mol_frags_tracked, frag_to_id, n_all)
 
+    # Compact-parameter map: ordered global ids (motif_list indices) that survive
+    # the threshold. The model allocates motif_params ONLY for these rows, so
+    # below-threshold motifs no longer occupy parameter/optimizer state — while
+    # the global id space stays stable (motif_list, lookups, mask cache unchanged)
+    # for cross-variant comparison. No threshold ⇒ every id (identity, no change).
+    kept_motif_ids = [i for i, s in enumerate(motif_list)
+                      if threshold_motifs is None or s in threshold_motifs]
+
     # Coverage stats
     n_tr  = sum(1 for g in groups_all if g == 'training')
     n_cov = sum(1 for smi, g in zip(smiles_all, groups_all)
@@ -1352,6 +1365,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         lookup_test=lookup_test,
                         gmi_train=gmi_train, gmi_test=gmi_test,
                         rules=rules, labels=labels_all,
+                        kept_motif_ids=kept_motif_ids,
                         test_occ_ctr=_test_occ)
 
     # Statistics CSV

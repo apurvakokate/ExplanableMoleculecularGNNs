@@ -34,7 +34,8 @@ from model import SingleChannelGNN, MultiChannelGNN
 from train import train_mose_gnn
 
 
-def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta):
+def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
+                kept_motif_ids=None):
     """Construct the appropriate model variant."""
     from SharedModules.data.loader import NUM_CLASSES
     num_classes = NUM_CLASSES.get(cfg.dataset, 1)
@@ -47,6 +48,7 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta):
         node_encoder=cfg.node_encoder,   # resolved in run(): CLI for CSV, atom_encoder for OGB
         apply_layer_norm=cfg.apply_layer_norm,
         num_motifs=num_motifs,
+        kept_motif_ids=kept_motif_ids,
         unk_mode=cfg.unk_mode,
         unk_value=cfg.unk_value,
         w_feat=cfg.w_feat,
@@ -144,9 +146,13 @@ def run(cfg: MOSEConfig) -> dict:
                   f"(test loader now GT-backed: {'test' in _gt_loaded})")
 
     # Model
-    model = build_model(cfg, vocab.num_motifs, task_type, meta)
+    model = build_model(cfg, vocab.num_motifs, task_type, meta,
+                        kept_motif_ids=vocab.kept_motif_ids)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'  Model: {model.__class__.__name__}  params={n_params:,}')
+    _n_kept = (len(vocab.kept_motif_ids) if vocab.kept_motif_ids is not None
+               else vocab.num_motifs)
+    print(f'  Model: {model.__class__.__name__}  params={n_params:,}  '
+          f'motif_params rows={_n_kept}/{vocab.num_motifs} (kept/total)')
 
     # Positive class weights
     pos_w = compute_pos_weights(loaders['train'].dataset) \
