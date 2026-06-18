@@ -3,16 +3,20 @@
 
 Matches the notebook (CreateMotifVocab) exactly:
 
-  Count signal:  weighted_count = sum of (1/motif_length) per node-slot.
-                 One motif occurrence always contributes 1.0, regardless of size.
+  Count signal:  weighted_count = sum of (1/motif_length) per node-slot, which
+                 nets to 1.0 per occurrence — i.e. a plain train+val occurrence
+                 count, regardless of motif size. This is the SAME signal the
+                 vocab filter (generate_vocab_rules.run_dataset) thresholds on.
 
-  Global cutoff: int(pct/100 * N_trainval)  where N_trainval is the exact
-                 train+val count read from vocab_meta.json.
+  Global cutoff: int(thr * N_trainval)  where `thr` is the fraction in
+                 CHOSEN_THRESHOLD (e.g. 0.002 = 0.2%) and N_trainval is the
+                 exact train+val count read from vocab_meta.json. (No /100 — thr
+                 is already a fraction; the displayed % is thr*100.)
 
   Minority pass: for class-imbalanced binary datasets (one class >= 60%),
                  rescue motifs that are frequent in the minority class even
                  if rare globally:
-                   mb_cutoff = int(pct/100 * N_minority)
+                   mb_cutoff = int(thr * N_minority)
                    keep m if wt_count[minority][m] >= mb_cutoff
 
   Node coverage: fraction of train+val nodes assigned to a kept motif,

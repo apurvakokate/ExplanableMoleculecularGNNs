@@ -4,37 +4,53 @@ generate_vocab_rules.py  —  MotifSAT-compatible output
 ========================================================
 Produces all files required by MotifSAT (github.com/apurvakokate/MotifSAT).
 
-Fragmentation pipeline
------------------------
-1. rBRICS on whole molecule → level-1 fragments
-2. Exhaustive cascade on each fragment: rBRICS → BRICS → RECAP → Murcko
-3. Structural fallbacks (ring/chain boundary, all-single-bonds) for
-   molecules still un-fragmented after the full cascade
+Fragmentation engines (selected by `method` in run_dataset)
+-----------------------------------------------------------
+* method == 'all'  → v4 cascade + MDL merge (chemfrag_v4_adapter):
+  one global MDL rulebook is learned over the corpus, then every molecule is
+  tokenized by a deterministic per-tree rewrite (consistency by construction).
+  `use_bpe` selects whether the MDL merge is applied (True) or the finest
+  cascade leaves are kept (False). The cascade + structural fallback are built
+  into v4, so `use_fallback` no longer changes the algorithm here.
+* method in {'rbrics','rbrics_old','rbrics_only','brics'} → LEGACY single-pass
+  flat fragmenter (fragment_molecule_tracked): exactly ONE chemistry pass
+  (one BRICS/rBRICS bond cut over the whole molecule), with reBRICS folded into
+  the 'rbrics' cut. No recursive cascade, no structural fallback, no BPE merge
+  (those legacy stages remain in the file only as commented reference blocks).
+  BRICS/rBRICS bond discovery is delegated to the shared `brics_rbrics` module
+  so the same chemistry is identified identically as in the v4 cascade.
 
-Atom tracking
--------------
-Every cut uses atom-map numbers to track which ORIGINAL atom indices land in
-each fragment. The mapping is propagated through ALL recursion levels by
-re-stamping fragment mols with original indices before deeper cuts.
-The lookup key is always the original CSV SMILES — never re-canonicalized —
-so atom indices match the GNN DataLoader exactly.
+Atom tracking (THE invariant)
+-----------------------------
+Fragment annotations are keyed by atom indices in `Chem.MolFromSmiles(orig_smi)`
+iteration order, where `orig_smi` is the exact CSV SMILES — never
+re-canonicalized — so node i in the GNN DataLoader == atom i here. v4 fails
+loud on missing/overlapping atoms; the legacy single-pass guarantees full
+coverage by patching any uncovered atoms into fragment 0.
 
-Stage 4 vocabulary
--------------------
-No filtering. All leaf fragments (including 1-atom trivial pieces) receive a
-motif_id. Every atom in every molecule is mapped to a fragment.
-MIN_SUP filtering is applied only when building rule extraction candidates.
+Vocabulary + optional threshold
+-------------------------------
+build_vocab assigns a motif_id to every leaf fragment (no filtering; trivial
+1-atom pieces included). The full motif_list (global id space) is always kept
+for cross-variant comparison. When --apply_threshold is set, below-threshold
+motifs are remapped to motif_id = -1 in the lookups (but stay in motif_list);
+the surviving global ids are persisted as `kept_motif_ids` and drive the
+compact per-motif parameter table in MOSE-GNN. MIN_SUP is a separate filter
+used only to build rule-extraction candidates.
 
-MotifSAT pickle files (per dataset/variant)
---------------------------------------------
-{base}_graph_lookup.pickle         smiles -> {node_idx: (smarts, motif_id)}
+MotifSAT pickle files (per dataset/variant, under {out_dir}/{dataset}/{variant}/)
+--------------------------------------------------------------------------------
+{base}_graph_lookup.pickle         smiles -> {node_idx: (smarts, motif_id)} (train)
+{base}_valid_graph_lookup.pickle   same for valid split
 {base}_test_graph_lookup.pickle    same for test split
-{base}_motif_list.pickle           list[str] SMARTS, index = motif_id
+{base}_motif_list.pickle           list[str] SMARTS, index = global motif_id
 {base}_motif_counts.pickle         list[int] per-motif molecule counts
 {base}_motif_length.pickle         list[int] per-motif heavy-atom counts
 {base}_motif_class.pickle          {motif_id: {0: n_neg, 1: n_pos}}
-{base}_graph_motifidx.pickle       smiles -> set[motif_id] (train)
-{base}_test_graph_motifidx.pickle  smiles -> set[motif_id] (test)
+{base}_graph_motifidx.pickle       smiles -> set[motif_id] (train, -1 excluded)
+{base}_test_graph_motifidx.pickle  smiles -> set[motif_id] (test,  -1 excluded)
+{base}_kept_motif_ids.pickle       ordered global ids surviving the threshold
+                                   (= all ids when no threshold applied)
 """
 
 import os, sys, re, json, time, copy, pickle, argparse, warnings
@@ -60,7 +76,7 @@ RDLogger.DisableLog('rdApp.*')
 warnings.filterwarnings('ignore')
 
 try:
-    from rBRICS_public import FindrBRICSBonds, FindreBCSBonds
+    from rBRICS_public import FindrBRICSBonds
     RBRICS_OK = True
 except ImportError:
     RBRICS_OK = False
@@ -569,8 +585,11 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
         seen: Set[str] = set()
         is_tv = (groups is None) or (groups[i] in ('training', 'valid'))
         for smarts, atom_set in mol_frags:
-            n_at = max(frag.atom_count(smarts), 1)
-            w    = n_at * (1.0 / n_at)   # = 1.0
+            # Per node-slot 1/length weighting nets to 1.0 per occurrence, so
+            # weighted_count == trainval occurrence count. The threshold filter
+            # (run_dataset) and coverage_vs_threshold.py both threshold on this
+            # same 1.0-per-occurrence signal — keep them in sync.
+            w = 1.0
             raw[smarts]['n_occurrences'] += 1
             if is_tv:
                 raw[smarts]['weighted_count'] += w
@@ -1043,9 +1062,12 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         apply_threshold   — if True, apply the chosen threshold:
                             motifs below the cutoff get motif_id = -1 in the
                             lookup and are excluded from rule candidates.
-        threshold_pct     — override the CHOSEN_THRESHOLD value (0.1–0.9).
+        threshold_pct     — override the CHOSEN_THRESHOLD value. A FRACTION of
+                            N_trainval (e.g. 0.002 = 0.2%), same scale as the
+                            CHOSEN_THRESHOLD dict; cutoff = int(threshold_pct *
+                            N_trainval). Typical range 0.001–0.009.
                             If None and apply_threshold=True, the value is
-                            looked up from CHOSEN_THRESHOLD[method][fallback][bpe][dataset].
+                            looked up from CHOSEN_THRESHOLD[variant][dataset].
     """
     # variant_override lets the caller set a canonical output name (e.g.
     # "rbrics_old") independently of the internal method string
@@ -1075,7 +1097,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             resolved_pct = get_chosen_threshold(variant, dataset)
 
     print(f"\n  method={method}  fallback={use_fallback}  bpe={use_bpe}"
-          f"  threshold={'off' if not apply_threshold else f'{resolved_pct}%'}"
+          f"  threshold={'off' if not apply_threshold else f'{resolved_pct*100:.3f}%'}"
           f"  → {variant}")
 
     # ========================================================================
@@ -1247,7 +1269,11 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     threshold_motifs: Optional[Set[str]] = None
     if apply_threshold and resolved_pct is not None:
         N_tv        = sum(1 for g in groups_all if g in ('training', 'valid'))
-        global_cut  = int((resolved_pct / 100) * N_tv)
+        # resolved_pct is a FRACTION of N_trainval (e.g. 0.002 = 0.2%) — the same
+        # scale as CHOSEN_THRESHOLD and coverage_vs_threshold.py, which uses
+        # global_cut = int(thr * N_tv). No extra /100 (see commit fixing the
+        # 100x-too-small cutoff that made --apply_threshold a near no-op).
+        global_cut  = int(resolved_pct * N_tv)
         n0_tv = sum(1 for g,l in zip(groups_all,labels_all)
                     if g in ('training','valid') and int(l)==0)
         n1_tv = N_tv - n0_tv
@@ -1255,7 +1281,10 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         minority   = (1 if r0 >= 0.6 else (0 if r1 >= 0.6 else None))
         minority_n = (n1_tv if minority==1 else (n0_tv if minority==0 else None))
 
-        # mol_counts per trainval molecule (weighted by 1/length, notebook style)
+        # Support signal = trainval occurrence count (1.0 per occurrence). This
+        # is exactly the `weighted_count` semantics build_vocab stores and the
+        # coverage_vs_threshold sweep thresholds on (per node-slot 1/length nets
+        # to 1.0 per occurrence), so the elbow plot and the applied filter agree.
         from collections import Counter as _Counter
         mol_counts  = _Counter()
         wt_counts_0 = _Counter()
@@ -1263,27 +1292,22 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         for smi, lbl, grp, mf in zip(smiles_all, labels_all, groups_all, mol_frags_tracked):
             if grp not in ('training','valid'): continue
             for smarts, _ in mf:
-                length = max(motif_stats.get(smarts,{}).get('n_atoms',1), 1)
-                mol_counts[smarts] += 1.0 / length
-            if int(lbl) == 0:
-                for smarts, _ in mf:
-                    length = max(motif_stats.get(smarts,{}).get('n_atoms',1), 1)
-                    wt_counts_0[smarts] += 1.0 / length
-            else:
-                for smarts, _ in mf:
-                    length = max(motif_stats.get(smarts,{}).get('n_atoms',1), 1)
-                    wt_counts_1[smarts] += 1.0 / length
+                mol_counts[smarts] += 1.0
+                if int(lbl) == 0:
+                    wt_counts_0[smarts] += 1.0
+                else:
+                    wt_counts_1[smarts] += 1.0
 
         threshold_motifs = {m for m,c in mol_counts.items() if c >= global_cut}
         if minority is not None and minority_n is not None:
-            mb_cut = int((resolved_pct / 100) * minority_n)
+            mb_cut = int(resolved_pct * minority_n)
             wt = wt_counts_1 if minority == 1 else wt_counts_0
             for m, cnt in wt.items():
                 if cnt >= mb_cut:
                     threshold_motifs.add(m)
 
         n_below = len(motif_list) - len(threshold_motifs & set(motif_list))
-        print(f"    Threshold {resolved_pct}%: cutoff={global_cut}  "
+        print(f"    Threshold {resolved_pct*100:.3f}%: cutoff={global_cut}  "
               f"kept={len(threshold_motifs & set(motif_list))}  "
               f"below (→ -1)={n_below}")
 
@@ -1511,7 +1535,9 @@ Examples:
                         '(e.g. "rbrics_old" for method=rbrics_only). '
                         'Controls the subdirectory under out_dir/{dataset}/.')
     p.add_argument('--threshold_pct', type=float, default=None,
-                   help='Override CHOSEN_THRESHOLD with this value (0.1–0.9). '
+                   help='Override CHOSEN_THRESHOLD. Fraction of N_trainval '
+                        '(e.g. 0.002 = 0.2%; typical 0.001-0.009); '
+                        'cutoff = int(value * N_trainval). '
                         'Only used when --apply_threshold is set.')
     p.add_argument('--rule_rank', default='balanced',
                    choices=['balanced', 'pct1'],
