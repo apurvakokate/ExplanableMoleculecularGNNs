@@ -778,12 +778,18 @@ class TestBondIndicesFor(unittest.TestCase):
 
 
 class TestFragmentMoleculeTracked(unittest.TestCase):
-    """Tests fragment_molecule_tracked with all three method options."""
+    """Tests the single-pass legacy engine fragment_molecule_tracked.
 
-    def test_full_coverage_all(self):
+    Legacy is ONE chemistry pass: 'brics', 'rbrics_only', or 'rbrics'
+    (rBRICS + reBRICS sub-pass). The recursive cascade and structural fallback
+    are disabled; 'all' is handled by the v4 adapter, not this function.
+    """
+
+    def test_full_coverage_rbrics_only(self):
         m = mol('O=[N+]([O-])c1ccccc1')
         pieces = gvr.fragment_molecule_tracked(m, 'O=[N+]([O-])c1ccccc1',
-                                                use_fallback=True, method='all')
+                                                use_fallback=False,
+                                                method='rbrics_only')
         covered = {a for _,s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
@@ -806,7 +812,7 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
     def test_no_overlap(self):
         m = mol('CC(=O)Nc1ccc(O)cc1')
         pieces = gvr.fragment_molecule_tracked(m, 'CC(=O)Nc1ccc(O)cc1',
-                                                use_fallback=True, method='all')
+                                                use_fallback=False, method='rbrics')
         seen = set()
         for _, atoms in pieces:
             self.assertTrue(atoms.isdisjoint(seen))
@@ -816,7 +822,8 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         # Non-canonical SMILES — atom order must match Chem.MolFromSmiles(smi)
         smi = 'c1ccc(N)cc1'
         m = Chem.MolFromSmiles(smi)
-        pieces = gvr.fragment_molecule_tracked(m, smi, use_fallback=True, method='all')
+        pieces = gvr.fragment_molecule_tracked(m, smi, use_fallback=False,
+                                                method='rbrics')
         covered = {a for _,s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
@@ -829,12 +836,14 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         # No cut = single piece covering all atoms
         self.assertEqual(len(pieces), 1)
 
-    def test_default_method_is_all(self):
+    def test_default_method_is_rbrics(self):
         smi = 'Cc1ccccc1'
         m = Chem.MolFromSmiles(smi)
-        # Should not raise — uses method='all' by default
+        # Should not raise — uses method='rbrics' by default (legacy single pass)
         pieces = gvr.fragment_molecule_tracked(m, smi, use_fallback=False)
         self.assertGreater(len(pieces), 0)
+        covered = {a for _, s in pieces for a in s}
+        self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
 
 # ─── build_vocab ────────────────────────────────────────────────────────────
@@ -967,8 +976,8 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(X.shape[0], n)
         self.assertEqual(X.shape[1], len(ml))
 
-    def test_method_all(self):
-        self._run('all')
+    def test_method_rbrics_only(self):
+        self._run('rbrics_only')
 
     def test_method_rbrics(self):
         self._run('rbrics')
@@ -976,14 +985,14 @@ class TestIntegration(unittest.TestCase):
     def test_method_brics(self):
         self._run('brics')
 
-    def test_nitro_split_only_with_rbrics_or_all(self):
-        """rBRICS and 'all' split nitrobenzene; BRICS alone does not."""
+    def test_nitro_split_only_with_rbrics(self):
+        """rBRICS-family methods split nitrobenzene; BRICS alone does not."""
         smi = 'O=[N+]([O-])c1ccccc1'
         m = mol(smi)
 
         # rBRICS-dependent assertions — skip if rBRICS not installed
         if frag.RBRICS_OK:
-            for method in ('all', 'rbrics'):
+            for method in ('rbrics', 'rbrics_only'):
                 frag._CACHE.clear()
                 pieces = gvr.fragment_molecule_tracked(m, smi,
                                                         use_fallback=False,

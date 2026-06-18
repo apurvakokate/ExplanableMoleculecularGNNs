@@ -77,25 +77,13 @@ except ImportError:
 # SharedModules/data/loader.py). Falls back to a local copy if SharedModules is
 # not importable (e.g. running vocab generation in isolation), but the values
 # MUST match SharedModules/data/dataset_schema.py — keep them identical.
-try:
-    _shared = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           '..', 'SharedModules')
-    if _shared not in sys.path:
-        sys.path.insert(0, _shared)
-    from data.dataset_schema import DATASET_COLUMN   # type: ignore
-except Exception:
-    DATASET_COLUMN: dict = {
-        'Mutagenicity':      'Mutagenicity',
-        'BBBP':              'BBBP',
-        'hERG':              'hERG',
-        'Lipophilicity':     'Lipophilicity',
-        'esol':              'measured log solubility in mols per litre',
-        'tox21':             'tox21',
-        'Benzene':           'label',
-        'Alkane_Carbonyl':   'label',
-        'Fluoride_Carbonyl': 'label',
-        'mutag':             'label',
-    }
+_shared = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       '..', 'SharedModules')
+if _shared not in sys.path:
+    sys.path.insert(0, _shared)
+# Single source of truth — no local fallback. If SharedModules is not importable
+# the run must fail loudly rather than silently use a stale duplicate schema.
+from data.dataset_schema import DATASET_COLUMN   # type: ignore
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHOSEN THRESHOLD — per variant × dataset
@@ -381,192 +369,167 @@ def _bond_indices_for(mol: Chem.Mol, cut_fn) -> List[int]:
     return []
 
 
-def _cascade_tracked(smarts: str,
-                     orig_set: Set[int],
-                     idx_map: Dict[int, int],
-                     cascade: List,
-                     depth: int = 0,
-                     max_depth: int = 12
-                     ) -> List[Tuple[str, Set[int]]]:
-    """Apply cascade methods exhaustively, tracking original atom indices.
-
-    At each level, creates a mapped mol (atoms stamped with original indices)
-    before calling FragmentOnBonds. This ensures original indices propagate
-    correctly through all recursion levels regardless of canonical SMILES
-    atom ordering.
-
-    Input:
-        smarts   — fragment SMARTS
-        orig_set — set of original atom indices in this fragment
-        idx_map  — {frag_atom_idx: orig_idx} for stamping the mol
-        cascade  — list of cut functions to try
-        depth    — current recursion depth
-    Output:
-        list of (leaf_smarts, {orig_atom_indices}) covering orig_set exactly
-    """
-    if depth >= max_depth or not orig_set:
-        return [(smarts, orig_set)]
-
-    # Create a clean mol for bond-finding, and a mapped mol for cutting
-    fm_clean = frag.to_mol(smarts)
-    if fm_clean is None:
-        return [(smarts, orig_set)]
-
-    fm_mapped = _stamp_mol(smarts, idx_map)
-    if fm_mapped is None:
-        return [(smarts, orig_set)]
-
-    # Strict first-match-wins: try each cut function in order.
-    # The first that produces >=2 non-overlapping pieces covering orig_set wins.
-    # This eliminates any possibility of atom overlap between methods.
-    deduped: List[Tuple[str, Set[int], Dict]] = []
-
-    for cut_fn in cascade:
-        bond_idx = _bond_indices_for(fm_clean, cut_fn)
-        if not bond_idx:
-            continue
-        pieces = _fob_tracked(fm_mapped, bond_idx)
-        if len(pieces) < 2:
-            continue
-
-        # Verify non-overlapping and full coverage of orig_set
-        covered: Set[int] = set()
-        ok = True
-        for _, p_orig, _ in pieces:
-            if p_orig & covered:
-                ok = False
-                break
-            covered |= p_orig
-        if not ok or covered != orig_set:
-            continue
-
-        # Valid cut — accept and stop trying further methods
-        deduped = list(pieces)
-        break
-
-    if not deduped:
-        return [(smarts, orig_set)]
-
-    # Recurse on all children
-    leaves: List[Tuple[str, Set[int]]] = []
-    for p_smi, p_orig, p_map in deduped:
-        leaves.extend(
-            _cascade_tracked(p_smi, p_orig, p_map, cascade, depth + 1, max_depth))
-
-    return leaves if leaves else [(smarts, orig_set)]
+# ── _cascade_tracked: DISABLED (legacy is a single chemistry pass). ──────────
+# Kept commented for reference — this was the recursive, exhaustive
+# first-match-wins cascade used when legacy fragmentation was multi-level. The
+# active legacy path (fragment_molecule_tracked) now performs a single BRICS or
+# rBRICS cut (+ optional reBRICS sub-pass) only. Re-enable by uncommenting this
+# function and the Step 2/Step 3 block in fragment_molecule_tracked.
+#
+# def _cascade_tracked(smarts: str,
+#                      orig_set: Set[int],
+#                      idx_map: Dict[int, int],
+#                      cascade: List,
+#                      depth: int = 0,
+#                      max_depth: int = 12
+#                      ) -> List[Tuple[str, Set[int]]]:
+#     """Apply cascade methods exhaustively, tracking original atom indices."""
+#     if depth >= max_depth or not orig_set:
+#         return [(smarts, orig_set)]
+#     fm_clean = frag.to_mol(smarts)
+#     if fm_clean is None:
+#         return [(smarts, orig_set)]
+#     fm_mapped = _stamp_mol(smarts, idx_map)
+#     if fm_mapped is None:
+#         return [(smarts, orig_set)]
+#     # Strict first-match-wins: first method yielding >=2 non-overlapping pieces
+#     # covering orig_set wins.
+#     deduped: List[Tuple[str, Set[int], Dict]] = []
+#     for cut_fn in cascade:
+#         bond_idx = _bond_indices_for(fm_clean, cut_fn)
+#         if not bond_idx:
+#             continue
+#         pieces = _fob_tracked(fm_mapped, bond_idx)
+#         if len(pieces) < 2:
+#             continue
+#         covered: Set[int] = set()
+#         ok = True
+#         for _, p_orig, _ in pieces:
+#             if p_orig & covered:
+#                 ok = False
+#                 break
+#             covered |= p_orig
+#         if not ok or covered != orig_set:
+#             continue
+#         deduped = list(pieces)
+#         break
+#     if not deduped:
+#         return [(smarts, orig_set)]
+#     leaves: List[Tuple[str, Set[int]]] = []
+#     for p_smi, p_orig, p_map in deduped:
+#         leaves.extend(
+#             _cascade_tracked(p_smi, p_orig, p_map, cascade, depth + 1, max_depth))
+#     return leaves if leaves else [(smarts, orig_set)]
 
 
 def fragment_molecule_tracked(mol: Chem.Mol,
                                orig_smi: str,
                                use_fallback: bool,
-                               method: str = 'all'
+                               method: str = 'rbrics'
                                ) -> List[Tuple[str, Set[int]]]:
-    """Fragment molecule with full atom-index tracking.
+    """Single-pass atom-tracked fragmentation for the legacy methods.
 
     Uses orig_smi (exact CSV SMILES) to create mol, ensuring atom indices
     match the GNN DataLoader (which also calls Chem.MolFromSmiles(orig_smi)).
 
+    Legacy is intentionally ONE chemistry pass (no recursive cascade, no
+    structural fallback):
+        brics        — BRICS bonds
+        rbrics_only  — rBRICS bonds
+        rbrics       — rBRICS bonds + reBRICS sub-pass (long aliphatic chains)
+    BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
+    module — single source of truth with the v4 cascade (chemfrag.py).
+
     Input:
         mol          — Chem.MolFromSmiles(orig_smi)
         orig_smi     — original CSV SMILES string (key for lookup dict)
-        use_fallback — apply structural fallbacks to unfragmented molecules
-        method       — 'rbrics' | 'brics' | 'all'
-                       controls which algorithms participate in the cascade
+        use_fallback — accepted for signature compatibility; the legacy
+                       structural fallback is DISABLED (see commented block).
+        method       — 'rbrics' | 'rbrics_only' | 'brics'
     Output:
         list of (fragment_smarts, {original_atom_indices}) covering ALL n atoms
     """
+    import brics_rbrics as BR
     n = mol.GetNumAtoms()
 
-    # Build cascade from molfragbpe5 — single source of truth for cascade defs
-    chemistry_fns = [cut_fn for _, cut_fn in frag.build_cascade(method)]
-    FALLBACK      = [frag.cut_ring_chain, frag.cut_acyclic_bonds]
-
-    # Stamp all atoms with original indices (idx + 1, 1-indexed)
+    # Stamp all atoms with original indices (idx + 1, 1-indexed) for tracking.
     rw = Chem.RWMol(mol)
     for atom in rw.GetAtoms():
         atom.SetAtomMapNum(atom.GetIdx() + 1)
     mol_mapped = rw.GetMol()
 
-    # Step 1: primary cut on whole molecule — first method in cascade
-    primary_fn = chemistry_fns[0]
-    if primary_fn == frag.cut_rbrics and not RBRICS_OK:
-        primary_fn = frag.cut_brics
+    # Clean (unmapped) mol for bond discovery — same atom indexing as `mol`.
     mol_clean = frag.to_mol(frag.strip(orig_smi)) or mol
-    idx1 = _bond_indices_for(mol_clean, primary_fn)
-    if not idx1 and primary_fn != frag.cut_brics:
-        idx1 = _bond_indices_for(mol_clean, frag.cut_brics)
+
+    # Single primary cut: one BRICS or rBRICS bond set over the whole molecule.
+    if method == 'brics':
+        idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
+    else:  # 'rbrics' / 'rbrics_only'
+        idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
+        if not idx1:                       # rBRICS unavailable / nothing to cut
+            idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
 
     if idx1:
-        level1 = _fob_tracked(mol_mapped, idx1)
+        level1 = _fob_tracked(mol_mapped, sorted(idx1))
     else:
         level1 = [(frag.strip(frag.canon(mol)), set(range(n)),
                    {i: i for i in range(n)})]
 
-    # Step 1b: reBRICS post-processing for rbrics method.
-    # cut_rbrics internally applies reBRICS after FindrBRICSBonds. We mirror
-    # that here with atom tracking so that reBRICS sub-cuts are recorded in
-    # mol_frags_tracked (and therefore in the lookup and the Hierarchy).
-    if method == 'rbrics' and RBRICS_OK:
+    # reBRICS sub-pass (rbrics only): split long aliphatic CCCCCC chains within
+    # each level-1 piece, with atom tracking preserved. Uses the shared module.
+    if method == 'rbrics' and BR.RBRICS_OK:
         rebrics_level1 = []
         for p_smi, p_orig, p_map in level1:
             p_mol = frag.to_mol(p_smi)
-            if p_mol is None or p_mol.GetNumHeavyAtoms() <= 5:
+            if (p_mol is None or p_mol.GetNumHeavyAtoms() <= 5
+                    or not p_mol.HasSubstructMatch(Chem.MolFromSmiles('CCCCCC'))):
                 rebrics_level1.append((p_smi, p_orig, p_map))
                 continue
-            # Only attempt reBRICS if fragment contains CCCCCC chain
-            from rdkit import Chem as _Chem
-            if not p_mol.HasSubstructMatch(_Chem.MolFromSmiles('CCCCCC')):
-                rebrics_level1.append((p_smi, p_orig, p_map))
-                continue
-            try:
-                from rBRICS_public import FindreBRICSBonds as _Fre, BreakrBRICSBonds as _Brk
-                p_mapped = _stamp_mol(p_smi, p_map)
-                re_bonds = list(_Fre(p_mol))
-                if not re_bonds:
-                    rebrics_level1.append((p_smi, p_orig, p_map))
-                    continue
-                re_idx = [p_mol.GetBondBetweenAtoms(a, b).GetIdx()
-                          for (a, b), _ in re_bonds if p_mol.GetBondBetweenAtoms(a, b)]
-                sub_pieces = _fob_tracked(p_mapped, re_idx) if re_idx else []
-                if len(sub_pieces) >= 2:
-                    for sp_smi, sp_orig, sp_map in sub_pieces:
-                        rebrics_level1.append((sp_smi, sp_orig, sp_map))
-                else:
-                    rebrics_level1.append((p_smi, p_orig, p_map))
-            except Exception:
+            p_mapped = _stamp_mol(p_smi, p_map)
+            re_idx = BR.nonring_bond_indices(p_mol, BR.rebrics_bonds(p_mol))
+            sub_pieces = (_fob_tracked(p_mapped, sorted(re_idx))
+                          if (re_idx and p_mapped is not None) else [])
+            if len(sub_pieces) >= 2:
+                rebrics_level1.extend(sub_pieces)
+            else:
                 rebrics_level1.append((p_smi, p_orig, p_map))
         level1 = rebrics_level1
 
-    # Step 2: exhaustive cascade on each level-1 piece
-    cascade = chemistry_fns + (FALLBACK if use_fallback else [])
-    all_pieces: List[Tuple[str, Set[int]]] = []
-    for p_smi, p_orig, p_map in level1:
-        all_pieces.extend(
-            _cascade_tracked(p_smi, p_orig, p_map, cascade))
+    all_pieces: List[Tuple[str, Set[int]]] = [(s, o) for s, o, _ in level1]
 
-    # Step 3: Structural fallback for still-unfragmented molecules
-    if use_fallback and len(all_pieces) == 1:
-        smi0, orig0, map0 = level1[0][0], all_pieces[0][1], level1[0][2]
-        fm0_clean  = frag.to_mol(all_pieces[0][0])
-        fm0_mapped = _stamp_mol(all_pieces[0][0], map0)
-        if fm0_clean is not None and fm0_mapped is not None:
-            for cut_fn in FALLBACK:
-                bond_idx2 = _bond_indices_for(fm0_clean, cut_fn)
-                if not bond_idx2:
-                    continue
-                pieces2 = _fob_tracked(fm0_mapped, bond_idx2)
-                if len(pieces2) >= 2:
-                    covered = set()
-                    ok = True
-                    for _, p_orig2, _ in pieces2:
-                        if p_orig2 & covered:
-                            ok = False; break
-                        covered |= p_orig2
-                    if ok and covered == all_pieces[0][1]:
-                        all_pieces = [(s, o) for s, o, _ in pieces2]
-                        break
+    # ── Step 2 (recursive exhaustive cascade via _cascade_tracked) and Step 3
+    #    (structural fallback) are DISABLED: legacy is a single chemistry pass.
+    #    The previous behaviour is preserved, commented, below (and in the
+    #    also-commented _cascade_tracked definition) for reference.
+    #
+    # chemistry_fns = [cut_fn for _, cut_fn in frag.build_cascade(method)]
+    # FALLBACK      = [frag.cut_ring_chain, frag.cut_acyclic_bonds]
+    # cascade = chemistry_fns + (FALLBACK if use_fallback else [])
+    # all_pieces = []
+    # for p_smi, p_orig, p_map in level1:
+    #     all_pieces.extend(_cascade_tracked(p_smi, p_orig, p_map, cascade))
+    #
+    # if use_fallback and len(all_pieces) == 1:
+    #     map0 = level1[0][2]
+    #     fm0_clean  = frag.to_mol(all_pieces[0][0])
+    #     fm0_mapped = _stamp_mol(all_pieces[0][0], map0)
+    #     if fm0_clean is not None and fm0_mapped is not None:
+    #         for cut_fn in FALLBACK:
+    #             bond_idx2 = _bond_indices_for(fm0_clean, cut_fn)
+    #             if not bond_idx2:
+    #                 continue
+    #             pieces2 = _fob_tracked(fm0_mapped, bond_idx2)
+    #             if len(pieces2) >= 2:
+    #                 covered = set(); ok = True
+    #                 for _, p_orig2, _ in pieces2:
+    #                     if p_orig2 & covered:
+    #                         ok = False; break
+    #                     covered |= p_orig2
+    #                 if ok and covered == all_pieces[0][1]:
+    #                     all_pieces = [(s, o) for s, o, _ in pieces2]
+    #                     break
 
-    # Guarantee: every atom is covered exactly once
+    # Guarantee: every atom is covered exactly once.
     covered = {a for _, atoms in all_pieces for a in atoms}
     missing = set(range(n)) - covered
     if missing and all_pieces:
@@ -1073,7 +1036,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 threshold_pct: Optional[float] = None,
                 variant_override: Optional[str] = None,
                 variant_suffix: str = '',
-                shatter: bool = False,
+                shatter: bool = True,
                 rule_rank: str = 'balanced'):
     """Run the full pipeline for one dataset with given settings.
 
@@ -1158,44 +1121,51 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
 
     if method in _LEGACY_METHODS:
         # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
-        import copy as _copy
+        # NOTE: the legacy prevalence-BPE merge is intentionally DISABLED. The
+        # plain (untracked) fragmentation that fed `frag.bpe_merge`, and the BPE
+        # block itself, are kept COMMENTED below for reference only — we do not
+        # run the legacy engine with BPE for now. To re-enable: uncomment the
+        # `import copy`, the `mol_frags_plain` computation, and the `if use_bpe`
+        # block (and wire `use_bpe` back in at the call site).
+        # import copy as _copy
         mol_frags_tracked: List[List[Tuple[str, Set[int]]]] = []
-        mol_frags_plain:   List[List[str]]                   = []
+        # mol_frags_plain:   List[List[str]]                   = []
         for orig_smi in smiles_all:
             mol = Chem.MolFromSmiles(orig_smi)
             if mol is None:
                 mol_frags_tracked.append([('[INVALID]', {0})])
-                mol_frags_plain.append(['[INVALID]'])
+                # mol_frags_plain.append(['[INVALID]'])
                 continue
             mol_frags_tracked.append(
                 fragment_molecule_tracked(mol, orig_smi, use_fallback, _legacy_method))
-            mol_frags_plain.append(
-                frag.fragment_molecule(mol, hier,
-                                       use_fallback=use_fallback, method=_legacy_method))
+            # mol_frags_plain.append(
+            #     frag.fragment_molecule(mol, hier,
+            #                            use_fallback=use_fallback, method=_legacy_method))
         n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
         n_single = sum(1 for f in mol_frags_tracked if len(f) == 1)
         print(f"    [legacy:{_legacy_method}] Fragmented: {n_valid-n_single}/{n_valid} "
               f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  single-frag: {n_single}")
 
-        if use_bpe:
-            mf_copy = _copy.deepcopy(mol_frags_plain)
-            mf_copy, bpe_history = frag.bpe_merge(
-                mf_copy, hier, n_valid,
-                min_atoms=min_atoms, max_diam=max_diam,
-                sz_max=sz_max, min_abs=min_abs)
-            if bpe_history:
-                merge_map: Dict[str, str] = {}
-                for h in bpe_history:
-                    for child in h['children']:
-                        merge_map[child] = h['parent']
-                def _resolve(s: str) -> str:
-                    seen: Set[str] = set()
-                    while s in merge_map and s not in seen:
-                        seen.add(s); s = merge_map[s]
-                    return s
-                mol_frags_tracked = [
-                    [(_resolve(smi), atoms) for smi, atoms in mf]
-                    for mf in mol_frags_tracked]
+        # ---- legacy prevalence BPE merge (DISABLED — kept for reference) ----
+        # if use_bpe:
+        #     mf_copy = _copy.deepcopy(mol_frags_plain)
+        #     mf_copy, bpe_history = frag.bpe_merge(
+        #         mf_copy, hier, n_valid,
+        #         min_atoms=min_atoms, max_diam=max_diam,
+        #         sz_max=sz_max, min_abs=min_abs)
+        #     if bpe_history:
+        #         merge_map: Dict[str, str] = {}
+        #         for h in bpe_history:
+        #             for child in h['children']:
+        #                 merge_map[child] = h['parent']
+        #         def _resolve(s: str) -> str:
+        #             seen: Set[str] = set()
+        #             while s in merge_map and s not in seen:
+        #                 seen.add(s); s = merge_map[s]
+        #             return s
+        #         mol_frags_tracked = [
+        #             [(_resolve(smi), atoms) for smi, atoms in mf]
+        #             for mf in mol_frags_tracked]
     else:
         # ---- v4 cascade + MDL merge (method == 'all') -----------------------
         import chemfrag_v4_adapter as _v4

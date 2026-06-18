@@ -12,7 +12,9 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
-import rBRICS_public as RB
+# BRICS / rBRICS bond discovery lives in the shared module so the v4 cascade and
+# the legacy engine identify the same chemistry identically.
+import brics_rbrics as BR
 
 # Shared tautomer canonicalizer (created once; reused). Normalizes tautomers so
 # the same compound in different tautomeric forms maps to ONE canonical key,
@@ -88,12 +90,8 @@ def submol_dummies(mol, atomset):
     return None,None
 
 def _nonring_pairs_to_bonds(mol, pairs, within=None):
-    idx=[]
-    for (a,b) in pairs:
-        if within is not None and (a not in within or b not in within): continue
-        bd=mol.GetBondBetweenAtoms(a,b)
-        if bd is not None and not bd.IsInRing(): idx.append(bd.GetIdx())
-    return set(idx)
+    # Thin alias kept for readability at call sites; shared implementation.
+    return BR.nonring_bond_indices(mol, pairs, within)
 
 # ── RECAP single-reaction splits + best-path tree ──
 def recap_split_options(mol, atomset):
@@ -163,12 +161,10 @@ def part_recap(mol):
     return tree_leaves(recap_tree(mol, frozenset(range(mol.GetNumAtoms()))))
 
 def part_brics(mol):
-    pairs=[(a,b) for (a,b),_ in BRICS.FindBRICSBonds(mol)]
-    return components_after_break(mol,_nonring_pairs_to_bonds(mol,pairs))
+    return components_after_break(mol,_nonring_pairs_to_bonds(mol,BR.brics_bonds(mol)))
 
 def part_rbrics(mol):
-    pairs=[(a,b) for (a,b),_ in RB.FindrBRICSBonds(mol)]
-    return components_after_break(mol,_nonring_pairs_to_bonds(mol,pairs))
+    return components_after_break(mol,_nonring_pairs_to_bonds(mol,BR.rbrics_bonds(mol)))
 
 def part_murcko(mol):
     try: scaf=MurckoScaffold.GetScaffoldForMol(mol)
@@ -197,25 +193,24 @@ ALGOS={'recap':part_recap,'brics':part_brics,'rbrics':part_rbrics,
        'murcko':part_murcko,'structural':part_structural}
 
 # ── the cascade (stage cutters, applied in order, refining within fragments) ──
-def _brics_within(mol, atomset):
+def _bonds_within(mol, atomset, pairs_fn):
+    """Shared within-atomset helper: run a bond-discovery primitive on the
+    dummy-capped submol, then map the cut atom pairs back to ORIGINAL non-ring
+    bond indices. Used for both BRICS and rBRICS cascade stages."""
     sm,mp=submol_dummies(mol,atomset); N=mol.GetNumAtoms(); out=set()
     if sm is None: return out
-    for (a,b),_ in BRICS.FindBRICSBonds(sm):
+    for (a,b) in pairs_fn(sm):
         oa,ob=mp.get(a),mp.get(b)
         if oa is None or ob is None or oa>=N or ob>=N: continue
         bd=mol.GetBondBetweenAtoms(oa,ob)
         if bd is not None and not bd.IsInRing(): out.add(bd.GetIdx())
     return out
 
+def _brics_within(mol, atomset):
+    return _bonds_within(mol, atomset, BR.brics_bonds)
+
 def _rbrics_within(mol, atomset):
-    sm,mp=submol_dummies(mol,atomset); N=mol.GetNumAtoms(); out=set()
-    if sm is None: return out
-    for (a,b),_ in RB.FindrBRICSBonds(sm):
-        oa,ob=mp.get(a),mp.get(b)
-        if oa is None or ob is None or oa>=N or ob>=N: continue
-        bd=mol.GetBondBetweenAtoms(oa,ob)
-        if bd is not None and not bd.IsInRing(): out.add(bd.GetIdx())
-    return out
+    return _bonds_within(mol, atomset, BR.rbrics_bonds)
 
 def _murcko_within(mol, atomset):
     ring=[a for a in atomset if mol.GetAtomWithIdx(a).IsInRing()]

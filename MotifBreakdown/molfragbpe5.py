@@ -67,6 +67,10 @@ except ImportError:
     RBRICS_OK = False
     warnings.warn("rBRICS_public.py not found — using BRICS as primary method")
 
+# Shared BRICS / rBRICS bond discovery (single source of truth with chemfrag.py
+# and the legacy tracked engine in generate_vocab_rules.py).
+import brics_rbrics as _BR
+
 RDLogger.DisableLog('rdApp.*')
 warnings.filterwarnings('ignore')
 
@@ -334,13 +338,11 @@ def cut_rbrics_only(mol: Chem.Mol) -> List[str]:
         _CACHE[key] = []
         return []
     try:
-        bonds = list(FindrBRICSBonds(mol))
-        if not bonds:
+        idx = _BR.nonring_bond_indices(mol, _BR.rbrics_bonds(mol))
+        if not idx:
             _CACHE[key] = []
             return []
-        idx = [mol.GetBondBetweenAtoms(a, b).GetIdx()
-               for (a, b), _ in bonds if mol.GetBondBetweenAtoms(a, b)]
-        res = _fob(mol, idx)
+        res = _fob(mol, sorted(idx))
     except Exception:
         res = []
     _CACHE[key] = res
@@ -358,13 +360,11 @@ def cut_brics(mol: Chem.Mol) -> List[str]:
     if key in _CACHE:
         return _CACHE[key]
     try:
-        bonds = list(BRICS.FindBRICSBonds(mol))
-        if not bonds:
+        idx = _BR.nonring_bond_indices(mol, _BR.brics_bonds(mol))
+        if not idx:
             _CACHE[key] = []
             return []
-        idx = [mol.GetBondBetweenAtoms(a, b).GetIdx()
-               for (a, b), _ in bonds if mol.GetBondBetweenAtoms(a, b)]
-        res = _fob(mol, idx)
+        res = _fob(mol, sorted(idx))
     except Exception:
         res = []
     _CACHE[key] = res

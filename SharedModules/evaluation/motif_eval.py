@@ -96,6 +96,73 @@ def _true_label(data: Data) -> Optional[int]:
     return int(y[0].item())
 
 
+def _injection_modes(model) -> Tuple[bool, bool]:
+    """Decide what to ablate when removing a motif, based on WHERE the model
+    injects the motif attention.
+
+    The ablation must mirror the injection point so that "impact" measures the
+    contribution through the same channel the model actually uses:
+      - node-feature injection (``w_feat``) or readout injection (``w_readout``)
+        → mask NODES   (zero the motif's atom features)
+      - edge / message injection (``w_message``)
+        → mask EDGES   (drop every edge incident to the motif's atoms)
+      - all three active → mask BOTH nodes and edges
+
+    Falls back to node masking when the model does not expose injection flags
+    (e.g. VanillaGNN / post-hoc explainers), preserving the previous behaviour.
+
+    Returns
+    -------
+    (mask_nodes, mask_edges) : tuple[bool, bool]
+    """
+    w_feat    = bool(getattr(model, 'w_feat', False))
+    w_message = bool(getattr(model, 'w_message', False))
+    w_readout = bool(getattr(model, 'w_readout', False))
+    if not (w_feat or w_message or w_readout):
+        return True, False
+    return (w_feat or w_readout), w_message
+
+
+def _ablate_motif(
+    data: Data,
+    bool_mask: torch.Tensor,
+    mask_nodes: bool,
+    mask_edges: bool,
+) -> Optional[Data]:
+    """Return a clone of ``data`` with one motif removed.
+
+    Parameters
+    ----------
+    bool_mask : Tensor [n_atoms] (bool)
+        True at the motif's atom indices.
+    mask_nodes : bool
+        Zero the motif atoms' input features (node-level ablation).
+    mask_edges : bool
+        Drop every edge incident to a motif atom, and the matching edge_attr
+        rows (edge-level ablation), fully disconnecting the motif so no message
+        flows through it.
+
+    Returns None when the mask length does not match the graph (atom-index
+    mismatch) so the caller can SKIP rather than silently produce a wrong
+    ablation — this is the node→motif index-consistency guard.
+    """
+    nm = bool_mask.view(-1)
+    if nm.numel() != data.num_nodes:
+        return None
+    out = data.clone()
+    nm = nm.to(out.x.device)
+    if mask_nodes:
+        out.x = out.x * (~nm).float().unsqueeze(-1)
+    if mask_edges and out.edge_index.numel() > 0:
+        src, dst = out.edge_index
+        keep = ~(nm[src] | nm[dst])
+        out.edge_index = out.edge_index[:, keep]
+        ea = getattr(out, 'edge_attr', None)
+        if ea is not None and ea.size(0) == keep.numel():
+            out.edge_attr = ea[keep]
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Mask-based motif impact
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +195,7 @@ def compute_motif_impact(
     mask_cache = _resolve_mask_cache(vocab, data_list, split)
     smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
+    mask_nodes, mask_edges = _injection_modes(model)
 
     motif_ids = sorted(mask_cache.keys())
     if max_motifs is not None:
@@ -141,8 +209,9 @@ def compute_motif_impact(
             orig_p = orig_probs.get(smi)
             if d is None or orig_p is None:
                 continue
-            masked_d = d.clone()
-            masked_d.x = masked_d.x * (~bool_mask.to(device)).float().unsqueeze(-1)
+            masked_d = _ablate_motif(d, bool_mask, mask_nodes, mask_edges)
+            if masked_d is None:
+                continue
             impacts.append(abs(orig_p - _single_prob(model, masked_d, device, task_type)))
 
         if impacts:
@@ -434,6 +503,7 @@ def gt_vs_outside_gt_eval(
     mask_cache = _resolve_mask_cache(vocab, data_list, split)
     smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
+    mask_nodes, mask_edges = _injection_modes(model)
 
     # Partition data_list into the three subsets by smiles
     all_smiles        = {d.smiles for d in data_list}
@@ -465,8 +535,9 @@ def gt_vs_outside_gt_eval(
             orig_p = probs_orig.get(smi)
             if data is None or orig_p is None:
                 continue
-            masked = data.clone()
-            masked.x = masked.x * (~bool_mask.to(device)).float().unsqueeze(-1)
+            masked = _ablate_motif(data, bool_mask, mask_nodes, mask_edges)
+            if masked is None:
+                continue
             impacts.append(abs(orig_p - _single_prob(model, masked, device, task_type)))
         return impacts
 
