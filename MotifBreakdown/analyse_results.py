@@ -64,6 +64,14 @@ def motif_stats_df(d: dict) -> pd.DataFrame:
     n_pos  = int(labels.sum())
     n_neg  = n - n_pos
 
+    # True per-motif ring flag from matrix_columns.csv (frag.has_ring at vocab
+    # build time) — keyed by SMARTS. Avoids guessing ring membership from the
+    # SMILES string or using heavy-atom count as a proxy.
+    ring_map = {}
+    if 'ring' in d['cols'].columns and 'motif_identity' in d['cols'].columns:
+        ring_map = {str(s): bool(r) for s, r in
+                    zip(d['cols']['motif_identity'], d['cols']['ring'])}
+
     rows = []
     for i, smi in enumerate(d['motif_list']):
         cnt  = d['motif_counts'][i]
@@ -79,6 +87,7 @@ def motif_stats_df(d: dict) -> pd.DataFrame:
             'n_mols':     cnt,
             'support_%':  sup,
             'n_atoms':    na,
+            'ring':       ring_map.get(str(smi), False),
             'n_pos':      cls.get(1,0),
             'n_neg':      cls.get(0,0),
             'pct_pos':    p1,
@@ -133,9 +142,8 @@ def plot_motif_distribution(ms: pd.DataFrame, d: dict, out: Path,
 
     # ── Panel 1: support bar chart ──────────────────────────────────────────
     ax = axes[0]
-    colors = [PALETTE['ring'] if '+' in s or
-              any(c.islower() for c in s)
-              else PALETTE['noRing'] for s in top['smarts']]
+    colors = [PALETTE['ring'] if r else PALETTE['noRing']
+              for r in top['ring']]
     bars = ax.barh(range(len(top)), top['support_%'][::-1].values,
                    color=colors[::-1], edgecolor='white', linewidth=0.4)
 
@@ -274,13 +282,13 @@ def write_summary(d: dict, ms: pd.DataFrame, rs: pd.DataFrame, out: Path):
         f"  Above 1%:      {ab1}",
         f"  Above 5%:      {ab5}",
         f"  Mean size:     {ms['n_atoms'].mean():.1f} atoms",
-        f"  Ring-containing: {int((ms['n_atoms']>=6).sum())} of {len(ms)}",
+        f"  Ring-containing: {int(ms['ring'].sum())} of {len(ms)}",
         f"",
         f"  Top-10 motifs by support:",
     ]
     for _, row in ms.head(10).iterrows():
         lines.append(f"    {row['support_%']:5.1f}%  {row['n_atoms']:2d}a  "
-                     f"{'R' if row['n_atoms']>=5 else ' '}  {row['smarts']}")
+                     f"{'R' if row['ring'] else ' '}  {row['smarts']}")
 
     lines += [
         f"",

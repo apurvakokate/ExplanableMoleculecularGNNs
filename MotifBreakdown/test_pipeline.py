@@ -639,11 +639,20 @@ class TestBuildDnfRules(unittest.TestCase):
         for k in ('n_clauses','clauses','ambiguity','n1','n0','pct1','pct0'):
             self.assertIn(k, rules[0])
 
-    def test_sorted_by_coverage(self):
+    def test_sorted_by_tier_then_coverage(self):
+        # build_dnf_rules emits tiers by n_clauses descending (4→1) and, WITHIN
+        # each tier, sorts by n1 descending. It does NOT globally sort by pct1
+        # (a 2-clause rule may out-cover a 3-clause one), so assert exactly the
+        # ordering the code guarantees: n_clauses non-increasing, and n1
+        # non-increasing within each equal-n_clauses run.
         c, m, p, n = self._setup()
         rules = pipe.build_dnf_rules(c[:10], m, p, n)
-        pcts = [r['pct1'] for r in rules]
-        self.assertEqual(pcts, sorted(pcts, reverse=True))
+        ncs = [r['n_clauses'] for r in rules]
+        self.assertEqual(ncs, sorted(ncs, reverse=True))
+        for tier in set(ncs):
+            n1s = [r['n1'] for r in rules if r['n_clauses'] == tier]
+            self.assertEqual(n1s, sorted(n1s, reverse=True),
+                             f"n1 not descending within n_clauses={tier} tier")
 
 
 class TestScoreDnfRules(unittest.TestCase):
