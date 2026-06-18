@@ -60,7 +60,7 @@ RDLogger.DisableLog('rdApp.*')
 warnings.filterwarnings('ignore')
 
 try:
-    from rBRICS_public import FindrBRICSBonds, FindreBRICSBonds
+    from rBRICS_public import FindrBRICSBonds, FindreBCSBonds
     RBRICS_OK = True
 except ImportError:
     RBRICS_OK = False
@@ -435,8 +435,9 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     Legacy is intentionally ONE chemistry pass (no recursive cascade, no
     structural fallback):
         brics        — BRICS bonds
-        rbrics_only  — rBRICS bonds
-        rbrics       — rBRICS bonds + reBRICS sub-pass (long aliphatic chains)
+        rbrics_only  — rBRICS environment bonds (FindrBRICSBonds)
+        rbrics       — rBRICS + reBRICS bonds (the full rBRICS algorithm),
+                       identical to the v4 cascade's rBRICS stage
     BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
     module — single source of truth with the v4 cascade (chemfrag.py).
 
@@ -461,11 +462,21 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     # Clean (unmapped) mol for bond discovery — same atom indexing as `mol`.
     mol_clean = frag.to_mol(frag.strip(orig_smi)) or mol
 
-    # Single primary cut: one BRICS or rBRICS bond set over the whole molecule.
+    # Single primary cut: one bond set over the whole molecule. BRICS/rBRICS
+    # bond discovery is the SAME shared algorithm the v4 cascade uses:
+    #   brics        -> BRICS bonds
+    #   rbrics_only  -> rBRICS environment bonds (FindrBRICSBonds)
+    #   rbrics       -> rBRICS + reBRICS bonds (full rBRICS algorithm, identical
+    #                   to the v4 cascade's rBRICS stage). reBRICS is folded into
+    #                   the single cut, so no separate sub-pass is needed.
     if method == 'brics':
         idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    else:  # 'rbrics' / 'rbrics_only'
+    elif method == 'rbrics_only':
         idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
+        if not idx1:                       # rBRICS unavailable / nothing to cut
+            idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
+    else:  # 'rbrics'
+        idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_full_bonds(mol_clean))
         if not idx1:                       # rBRICS unavailable / nothing to cut
             idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
 
@@ -474,26 +485,6 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     else:
         level1 = [(frag.strip(frag.canon(mol)), set(range(n)),
                    {i: i for i in range(n)})]
-
-    # reBRICS sub-pass (rbrics only): split long aliphatic CCCCCC chains within
-    # each level-1 piece, with atom tracking preserved. Uses the shared module.
-    if method == 'rbrics' and BR.RBRICS_OK:
-        rebrics_level1 = []
-        for p_smi, p_orig, p_map in level1:
-            p_mol = frag.to_mol(p_smi)
-            if (p_mol is None or p_mol.GetNumHeavyAtoms() <= 5
-                    or not p_mol.HasSubstructMatch(Chem.MolFromSmiles('CCCCCC'))):
-                rebrics_level1.append((p_smi, p_orig, p_map))
-                continue
-            p_mapped = _stamp_mol(p_smi, p_map)
-            re_idx = BR.nonring_bond_indices(p_mol, BR.rebrics_bonds(p_mol))
-            sub_pieces = (_fob_tracked(p_mapped, sorted(re_idx))
-                          if (re_idx and p_mapped is not None) else [])
-            if len(sub_pieces) >= 2:
-                rebrics_level1.extend(sub_pieces)
-            else:
-                rebrics_level1.append((p_smi, p_orig, p_map))
-        level1 = rebrics_level1
 
     all_pieces: List[Tuple[str, Set[int]]] = [(s, o) for s, o, _ in level1]
 

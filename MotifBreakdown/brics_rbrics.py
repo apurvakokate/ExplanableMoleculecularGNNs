@@ -58,6 +58,24 @@ def rebrics_bonds(mol: Chem.Mol) -> List[Tuple[int, int]]:
         return []
 
 
+def rbrics_full_bonds(mol: Chem.Mol) -> List[Tuple[int, int]]:
+    """The COMPLETE rBRICS algorithm: rBRICS environment bonds
+    (``FindrBRICSBonds``) PLUS reBRICS long-aliphatic-chain bonds
+    (``FindreBRICSBonds``).
+
+    This is the single shared definition of "rBRICS" used by BOTH the legacy
+    engine (``method='rbrics'``) and the v4 cascade's rBRICS stage, so the same
+    algorithm fragments identically in both. (Use :func:`rbrics_bonds` for the
+    environment-only variant, ``method='rbrics_only'``.)
+
+    Duplicate pairs across the two finders are harmless — callers dedup via
+    :func:`nonring_bond_indices` (a set of bond indices). [] if rBRICS absent.
+    """
+    if not RBRICS_OK:
+        return []
+    return rbrics_bonds(mol) + rebrics_bonds(mol)
+
+
 def nonring_bond_indices(mol: Chem.Mol,
                          pairs: Iterable[Tuple[int, int]],
                          within: Optional[Set[int]] = None) -> Set[int]:

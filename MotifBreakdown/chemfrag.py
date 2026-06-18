@@ -164,7 +164,9 @@ def part_brics(mol):
     return components_after_break(mol,_nonring_pairs_to_bonds(mol,BR.brics_bonds(mol)))
 
 def part_rbrics(mol):
-    return components_after_break(mol,_nonring_pairs_to_bonds(mol,BR.rbrics_bonds(mol)))
+    # Full rBRICS = rBRICS environments + reBRICS long-chain breaks (shared with
+    # the legacy engine's method='rbrics').
+    return components_after_break(mol,_nonring_pairs_to_bonds(mol,BR.rbrics_full_bonds(mol)))
 
 def part_murcko(mol):
     try: scaf=MurckoScaffold.GetScaffoldForMol(mol)
@@ -210,7 +212,9 @@ def _brics_within(mol, atomset):
     return _bonds_within(mol, atomset, BR.brics_bonds)
 
 def _rbrics_within(mol, atomset):
-    return _bonds_within(mol, atomset, BR.rbrics_bonds)
+    # Full rBRICS = rBRICS environments + reBRICS long-chain breaks, the SAME
+    # definition used by the legacy engine's method='rbrics'.
+    return _bonds_within(mol, atomset, BR.rbrics_full_bonds)
 
 def _murcko_within(mol, atomset):
     ring=[a for a in atomset if mol.GetAtomWithIdx(a).IsInRing()]
