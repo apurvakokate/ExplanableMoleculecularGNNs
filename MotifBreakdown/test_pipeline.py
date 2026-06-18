@@ -29,6 +29,7 @@ RDLogger.DisableLog('rdApp.*')
 import molfragbpe5 as frag
 import motif_label_pipeline as pipe
 import generate_vocab_rules as gvr
+import chemfrag_v4_adapter as v4
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1007,6 +1008,118 @@ class TestIntegration(unittest.TestCase):
                                                   method='brics')
         self.assertEqual(len(pieces_b), 1,
                          "BRICS should NOT split Ar-NO2")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# chemfrag_v4_adapter — THE production fragmentation engine (method='all')
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestV4Adapter(unittest.TestCase):
+    """Contract tests for the v4 cascade + MDL-merge tokenizer used in production
+    (generate_vocab_rules.run_dataset routes method='all' through here).
+
+    The atom-index invariant (§2) requires that fragment_tracked_v4 partition a
+    molecule's atoms EXACTLY — full coverage, no overlap — in the raw
+    Chem.MolFromSmiles(smiles) index order, and that it FAIL LOUD rather than
+    emit a silently-corrected (wrong) atom→motif lookup.
+    """
+
+    SMILES = ['O=[N+]([O-])c1ccccc1', 'CC(=O)Nc1ccc(O)cc1', 'c1ccccc1',
+              'CCO', 'CC(=O)Oc1ccccc1C(=O)O']
+
+    def test_exact_coverage_and_disjoint(self):
+        # Both merge modes must conserve atoms exactly on every molecule.
+        for use_merge in (False, True):
+            ruleset, index = v4.learn_corpus_rulebook(self.SMILES, use_merge=use_merge)
+            for smi in self.SMILES:
+                m = mol(smi)
+                toks = v4.fragment_tracked_v4(smi, ruleset, index)
+                covered = set()
+                for _, atoms in toks:
+                    self.assertTrue(atoms.isdisjoint(covered),
+                                    f"overlap in {smi} (merge={use_merge})")
+                    covered |= atoms
+                self.assertEqual(covered, set(range(m.GetNumAtoms())),
+                                 f"coverage gap in {smi} (merge={use_merge})")
+
+    def test_raw_atom_index_order(self):
+        # Non-canonical SMILES: atomsets index into Chem.MolFromSmiles(smi)
+        # directly, so the union must be exactly 0..n-1.
+        smi = 'c1ccc(N)cc1'
+        m = mol(smi)
+        ruleset, index = v4.learn_corpus_rulebook([smi], use_merge=True)
+        toks = v4.fragment_tracked_v4(smi, ruleset, index)
+        covered = {a for _, atoms in toks for a in atoms}
+        self.assertEqual(covered, set(range(m.GetNumAtoms())))
+
+    def test_tokenize_without_index(self):
+        # index=None forces on-the-fly fragmentation; contract must still hold.
+        smi = 'CC(=O)Nc1ccc(O)cc1'
+        ruleset, _ = v4.learn_corpus_rulebook([smi], use_merge=True)
+        toks = v4.fragment_tracked_v4(smi, ruleset, index=None)
+        covered = {a for _, atoms in toks for a in atoms}
+        self.assertEqual(covered, set(range(mol(smi).GetNumAtoms())))
+
+    def test_keys_are_strings(self):
+        ruleset, index = v4.learn_corpus_rulebook(['CC(=O)Nc1ccc(O)cc1'])
+        toks = v4.fragment_tracked_v4('CC(=O)Nc1ccc(O)cc1', ruleset, index)
+        for key, _ in toks:
+            self.assertIsInstance(key, str)
+
+    def test_invalid_smiles_marked(self):
+        ruleset, index = v4.learn_corpus_rulebook(['not_a_smiles'])
+        toks = v4.fragment_tracked_v4('not_a_smiles', ruleset, index)
+        self.assertEqual(toks, [('[INVALID]', {0})])
+
+    def test_fail_loud_on_missing_atom(self):
+        # A corrupt tokenizer that drops atoms must raise, never silently patch
+        # them into token 0 (which would feed a wrong atom→motif lookup).
+        smi = 'CCO'
+        ruleset, index = v4.learn_corpus_rulebook([smi])
+        orig = v4.M.apply_rulebook
+        try:
+            v4.M.apply_rulebook = lambda m, tree, rs: [('[*]C', {0})]  # only atom 0
+            with self.assertRaises(ValueError):
+                v4.fragment_tracked_v4(smi, ruleset, index)
+        finally:
+            v4.M.apply_rulebook = orig
+
+    def test_fail_loud_on_overlap(self):
+        # Full coverage but a duplicated atom across tokens must also raise.
+        smi = 'CCO'
+        n = mol(smi).GetNumAtoms()
+        ruleset, index = v4.learn_corpus_rulebook([smi])
+        orig = v4.M.apply_rulebook
+        try:
+            v4.M.apply_rulebook = lambda m, tree, rs: [('a', set(range(n))),
+                                                       ('b', {0})]
+            with self.assertRaises(ValueError):
+                v4.fragment_tracked_v4(smi, ruleset, index)
+        finally:
+            v4.M.apply_rulebook = orig
+
+
+# ─── v4 integration through build_vocab/lookup/matrix (method='all' path) ────
+
+class TestV4Integration(unittest.TestCase):
+    """End-to-end on the PRODUCTION path: v4 tokens → vocab → lookup → matrix.
+    Mirrors TestIntegration but for method='all' (the default), which
+    TestIntegration never exercises."""
+
+    SMILES = ['O=[N+]([O-])c1ccccc1', 'CC(=O)Nc1ccc(O)cc1', 'c1ccccc1']
+    LABELS = np.array([1, 0, 1])
+
+    def test_full_pipeline_all(self):
+        mf_tracked = v4.fragment_corpus_v4(self.SMILES, use_merge=True)
+        n = len(self.LABELS)
+        ml, fid, stats = gvr.build_vocab(mf_tracked, self.LABELS)
+        lup = gvr.build_lookup(self.SMILES, mf_tracked, fid)
+        X   = gvr.build_matrix(mf_tracked, fid, n)
+        for smi in self.SMILES:
+            self.assertEqual(len(lup[smi]), mol(smi).GetNumAtoms(),
+                             f"[all] {smi}: {len(lup[smi])} mapped != "
+                             f"{mol(smi).GetNumAtoms()}")
+        self.assertEqual(X.shape, (n, len(ml)))
 
 
 if __name__ == '__main__':
