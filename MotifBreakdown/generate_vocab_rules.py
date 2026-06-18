@@ -687,22 +687,28 @@ def extract_rules(motif_list: List[str],
                   motif_stats: Dict[str, dict],
                   X: sp.csr_matrix,
                   labels: np.ndarray,
-                  rank_mode: str = 'balanced') -> List[dict]:
+                  rank_mode: str = 'balanced',
+                  threshold_motifs: Optional[Set[str]] = None) -> List[dict]:
     """Extract DNF rules from the fragment × molecule matrix.
 
-    Motifs with motif_id = -1 (below-threshold unknowns) are never rule
-    candidates even if they have high coverage — they are an aggregate of many
-    rare fragments and not chemically meaningful as a single entity.
+    Below-threshold motifs (mapped to motif_id = -1 in the GNN lookup) are never
+    rule candidates: a rule must reference only KEPT motifs, otherwise it would
+    cite a motif the model treats as unknown. When threshold_motifs is None (no
+    --apply_threshold) every motif is kept and eligible.
 
     Input:
-        motif_list   — full vocabulary list (index = motif_id; -1 rows absent)
-        motif_stats  — from build_vocab()
-        X            — binary matrix (molecules × motifs)
-        labels       — integer label array
-        rank_mode    — 'balanced' (default): sort by the structural
-                       balance × separation × (1-spurious) score, which targets
-                       a 50/50 synthetic split and penalises spurious/subsuming
-                       motifs. 'pct1': legacy sort by positive-coverage only.
+        motif_list       — full vocabulary list (index = global motif_id)
+        motif_stats      — from build_vocab()
+        X                — binary matrix (molecules × motifs)
+        labels           — integer label array
+        rank_mode        — 'balanced' (default): sort by the structural
+                           balance × separation × (1-spurious) score, which
+                           targets a 50/50 synthetic split and penalises
+                           spurious/subsuming motifs. 'pct1': legacy sort by
+                           positive-coverage only.
+        threshold_motifs — set of kept (above-threshold) SMARTS, or None when no
+                           threshold is applied. Below-threshold motifs (→ -1 in
+                           the lookup) are excluded from rule candidates.
     Output:
         list of rule dicts. Sorted by the balance-aware score when
         rank_mode='balanced', else by pct1 descending. Every rule carries the
@@ -713,13 +719,13 @@ def extract_rules(motif_list: List[str],
     Xd = X.toarray().astype(bool)
     fi = {s: i for i, s in enumerate(motif_list)}
 
-    # Rule candidates: above MIN_SUP, ≥ 2 atoms, not trivial, not unknown
+    # Rule candidates: above MIN_SUP, ≥ 2 atoms, not trivial, and KEPT (a
+    # below-threshold motif is -1 in the lookup, so a rule must never cite it).
     rule_cands = [s for s in motif_list
                   if motif_stats[s]['above_min_sup']
                   and frag.atom_count(s) >= 2
                   and s not in frag.TRIVIAL
-                  and s != '[UNKNOWN]'   # explicit unknown sentinel excluded
-                  and motif_stats[s].get('is_unknown', False) is False]
+                  and (threshold_motifs is None or s in threshold_motifs)]
     if not rule_cands:
         return []
 
@@ -982,8 +988,7 @@ def compute_stats(dataset: str, variant: str, fold: int,
         motif_id, smarts, n_atoms, ring,
         freq_count (n molecules containing it),
         freq_pct (% of split molecules),
-        above_threshold (True/False),
-        is_unknown (maps to -1 when threshold applied)
+        above_threshold (True/False; False → motif_id remapped to -1 in lookup)
       — per-molecule section (appended as summary rows):
         n_unfragmented, n_unknown_nodes, mean_frags_per_mol,
         frag_count_distribution
@@ -1353,9 +1358,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     for s, g in zip(smiles_all, groups_all)
                     if g == 'test' and s in lookup_all}
 
-    # Rules
+    # Rules — restricted to kept motifs so a rule never cites a -1 (unknown) motif
     rules = extract_rules(motif_list, motif_stats, X, labels_all,
-                          rank_mode=rule_rank)
+                          rank_mode=rule_rank, threshold_motifs=threshold_motifs)
     if rules:
         r0 = rules[0]
         print(f"    Best rule [{rule_rank}] "
@@ -1372,15 +1377,19 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             print(f"      {sorted(h['children'])} → {h['parent']}  "
                   f"(supp={h['parent_supp']}, {h['parent_atoms']}a)")
 
-    # Per-motif test occurrence count — computed here where mol_frags_tracked is in scope
+    # Per-motif test MOLECULE count (dedup per molecule, matching the train-side
+    # n_mols = build_vocab 'count'). Computed here where mol_frags_tracked is in
+    # scope; written to matrix_columns.csv as n_mols_test.
     from collections import Counter as _Counter2
     _test_occ: dict = _Counter2()
     for smi, grp, mf in zip(smiles_all, groups_all, mol_frags_tracked):
         if grp != 'test':
             continue
+        _seen_test: Set[str] = set()
         for smarts, _ in mf:
-            if smarts in frag_to_id:
-                _test_occ[smarts] += 1.0
+            if smarts in frag_to_id and smarts not in _seen_test:
+                _test_occ[smarts] += 1
+                _seen_test.add(smarts)
 
     meta = save_outputs(out_dir, dataset, variant, smdf,
                         lookup_all=lookup_all, smiles_all=smiles_all, groups_all=groups_all,
