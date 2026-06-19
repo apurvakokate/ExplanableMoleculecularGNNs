@@ -1,9 +1,9 @@
 """model.py — MotifSAT GSAT model.
 
-Implements the five motif_method choices × three noise levels ×
+Implements the motif_method choices × three noise levels ×
 three info loss levels × three attention injection points.
 
-motif_method  : none | loss | node_emb | motif_emb | readout
+motif_method  : none | loss | readout   (motif_emb -> NotImplementedError)
 noise         : none | node | motif
 info_loss_level: none | node | motif
 w_feat / w_message / w_readout : bool flags (orthogonal to method)
@@ -92,9 +92,10 @@ class GSAT(nn.Module):
     motif_method : str
         'none'      — base GSAT, node-level attention only.
         'loss'      — node attention + motif consistency regularisation.
-        'node_emb'  — pool node embeddings to motif level, score, broadcast.
-        'motif_emb' — same as node_emb but treated as the primary extractor.
-        'readout'   — MotifReadoutScorer.
+        'readout'   — MotifReadoutScorer: pool node embeddings to motif level
+                      (max+mean pooling), score each motif, broadcast the motif
+                      score back to its atoms.
+        'motif_emb' — NOT IMPLEMENTED; raises NotImplementedError.
 
     noise : str
         'none' | 'node' | 'motif'
@@ -105,7 +106,7 @@ class GSAT(nn.Module):
     w_feat, w_message, w_readout : bool  (attention injection flags)
     learn_edge_att : bool  (base GSAT edge-level attention; overrides motif_method)
 
-    pool_mode : str  (for node_emb / motif_emb / readout)
+    pool_mode : str  (pooling for 'readout'; default 'max_mean')
     extractor_hidden_mult : int
     extractor_dropout_p : float
 
@@ -136,7 +137,7 @@ class GSAT(nn.Module):
         gin_inner_bn: bool = True,
         # ── Motif method ──
         motif_method: str = 'none',
-        pool_mode: str = 'mean',
+        pool_mode: str = 'max_mean',
         extractor_hidden_mult: int = 2,
         extractor_dropout_p: float = 0.5,
         # ── Noise / IB ──
@@ -161,7 +162,16 @@ class GSAT(nn.Module):
     ):
         super().__init__()
 
-        assert motif_method in ('none', 'loss', 'node_emb', 'motif_emb', 'readout')
+        if motif_method == 'motif_emb':
+            raise NotImplementedError(
+                "motif_method='motif_emb' is not implemented. Use 'readout' for "
+                "the motif-pooling scorer, or 'none'/'loss' for node-level "
+                "attention."
+            )
+        assert motif_method in ('none', 'loss', 'readout'), (
+            f"unknown motif_method={motif_method!r}; "
+            f"expected one of none | loss | readout"
+        )
         assert noise in ('none', 'node', 'motif')
         assert info_loss_level in ('none', 'node', 'motif')
 
@@ -199,7 +209,7 @@ class GSAT(nn.Module):
                                       extractor_dropout_p)
 
         # Motif-level modules
-        if motif_method in ('node_emb', 'motif_emb', 'readout'):
+        if motif_method == 'readout':
             self.motif_scorer = MotifReadoutScorer(
                 in_dim=hidden_dim,
                 pool_mode=pool_mode,
@@ -250,14 +260,7 @@ class GSAT(nn.Module):
             # Edge attention: will be computed in forward; return stub
             return self.extractor(node_emb), None, None
 
-        if self.motif_method in ('node_emb', 'motif_emb') and \
-                nodes_to_motifs is not None:
-            inv_idx, motif_batch, _ = compute_inverse_idx(
-                nodes_to_motifs, batch)
-            motif_logits, node_logits = self.motif_scorer(node_emb, inv_idx)
-            return node_logits, motif_logits, inv_idx
-
-        elif self.motif_method == 'readout' and nodes_to_motifs is not None:
+        if self.motif_method == 'readout' and nodes_to_motifs is not None:
             inv_idx, motif_batch, _ = compute_inverse_idx(
                 nodes_to_motifs, batch)
             motif_logits, node_logits = self.motif_scorer(node_emb, inv_idx)

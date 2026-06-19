@@ -349,18 +349,20 @@ class TestGSAT(unittest.TestCase):
         logits, att, aux = self._fwd(motif_method='loss', w_message=True)
         self.assertEqual(logits.shape, (4, 1))
 
-    def test_node_emb_method_shape(self):
-        logits, att, aux = self._fwd(motif_method='node_emb')
-        self.assertEqual(logits.shape, (4, 1))
-        self.assertIsNotNone(aux['motif_logits'])
+    def test_node_emb_removed(self):
+        # node_emb was removed entirely; it is no longer a valid motif_method.
+        with self.assertRaises(AssertionError):
+            _make_gsat(motif_method='node_emb')
 
-    def test_motif_emb_method_shape(self):
-        logits, att, aux = self._fwd(motif_method='motif_emb')
-        self.assertEqual(logits.shape, (4, 1))
+    def test_motif_emb_not_implemented(self):
+        # motif_emb is a reserved-but-unimplemented method.
+        with self.assertRaises(NotImplementedError):
+            _make_gsat(motif_method='motif_emb')
 
     def test_readout_method_shape(self):
         logits, att, aux = self._fwd(motif_method='readout')
         self.assertEqual(logits.shape, (4, 1))
+        self.assertIsNotNone(aux['motif_logits'])
 
     def test_node_noise(self):
         m = _make_gsat(motif_method='none', noise='node')
@@ -370,7 +372,7 @@ class TestGSAT(unittest.TestCase):
         self.assertEqual(logits.shape, (2, 1))
 
     def test_motif_noise(self):
-        m = _make_gsat(motif_method='node_emb', noise='motif')
+        m = _make_gsat(motif_method='readout', noise='motif')
         m.train()
         b = _batch(2, 6, 3)
         logits, att, _ = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)
@@ -450,7 +452,7 @@ class TestGSAT(unittest.TestCase):
         self.assertIn('info_loss', breakdown)
 
     def test_gradients_flow_all_methods(self):
-        for method in ('none', 'loss', 'node_emb', 'motif_emb', 'readout'):
+        for method in ('none', 'loss', 'readout'):
             m = _make_gsat(motif_method=method, info_loss_coef=1.0)
             m.train()
             b = _batch(2, 6, 3)
@@ -480,7 +482,7 @@ class TestGSAT(unittest.TestCase):
         self.assertGreaterEqual(float(m.r), 0.1)
 
     def test_no_nan_in_output(self):
-        for method in ('none', 'node_emb', 'readout'):
+        for method in ('none', 'readout'):
             m = _make_gsat(motif_method=method)
             b = _batch(4, 6, 3)
             logits, att, _ = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)

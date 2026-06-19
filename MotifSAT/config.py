@@ -29,8 +29,8 @@ class MotifSATConfig:
     dropout: float = 0.5
 
     # Motif method (orthogonal to noise and info loss)
-    motif_method: str = 'none'         # none | loss | node_emb | motif_emb | readout
-    pool_mode: str = 'mean'            # mean | max | max_mean | multi
+    motif_method: str = 'none'         # none | loss | readout (motif_emb -> NotImplemented)
+    pool_mode: str = 'max_mean'        # mean | max | max_mean | multi (used by 'readout')
     extractor_hidden_mult: int = 2
     extractor_dropout_p: float = 0.5
 

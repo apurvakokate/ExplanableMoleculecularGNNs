@@ -196,7 +196,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         mm = df['motif_method'].fillna('none').astype(str)
         fam = fam.where(~need, mm.map(
             lambda m: 'mose' if m == 'mose'
-            else ('motifsat' if m in ('readout', 'node_emb', 'motif_emb', 'loss')
+            else ('motifsat' if m in ('readout', 'loss')
                   else 'vanilla')))
     df['family'] = _prefer(df, 'family', fam)
 

@@ -52,7 +52,7 @@ def _meta(run_dir: Path):
             mm = (d.get('motif_method') or '').lower()
             if 'mose' in mt or mm == 'mose':
                 fam = 'mose'
-            elif 'motifsat' in mt or 'gsat' in mt or mm in ('readout', 'node_emb', 'motif_emb', 'loss'):
+            elif 'motifsat' in mt or 'gsat' in mt or mm in ('readout', 'loss'):
                 fam = 'motifsat'
             elif 'vanilla' in mt or mm == 'none':
                 fam = 'vanilla'

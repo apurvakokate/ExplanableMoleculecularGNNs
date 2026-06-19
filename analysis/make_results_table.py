@@ -34,8 +34,7 @@ def build(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if 'motif_method' in df.columns:
         mm = df['motif_method'].fillna('none').astype(str)
         df['family'] = mm.map(lambda m: 'mose' if m == 'mose'
-                              else ('motifsat' if m in ('readout', 'node_emb',
-                                                        'motif_emb', 'loss')
+                              else ('motifsat' if m in ('readout', 'loss')
                                     else 'vanilla'))
     elif 'family' not in df.columns:
         df['family'] = df['exp_dir'].str.split('/').str[0]

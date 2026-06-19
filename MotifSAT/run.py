@@ -4,7 +4,7 @@
 Usage
 -----
     python run.py --dataset Mutagenicity --fold 0 --backbone GIN \
-        --motif_method node_emb --noise none --info_loss_level node \
+        --motif_method readout --noise none --info_loss_level node \
         --w_message --vocab_root ./vocab_output --data_root ./FOLDS
     python run.py --config config.yaml
 """
@@ -392,7 +392,7 @@ def run(cfg: MotifSATConfig) -> dict:
     pipeline.print_summary(results)
 
     # Multi-explanation analysis (motif_method=readout only, noise comparison)
-    if cfg.run_multi_explanation and cfg.motif_method in ("readout", "node_emb", "motif_emb"):
+    if cfg.run_multi_explanation and cfg.motif_method == "readout":
         try:
             print("\n  Running multi-explanation analysis ...")
             # Use aggregated attention as motif scores for MotifSAT
@@ -498,7 +498,7 @@ def main():
     parser.add_argument("--node_encoder",    default="onehot",
                         choices=["onehot","linear","atom_encoder"])
     parser.add_argument("--motif_method",    default="none",
-                        choices=["none","loss","node_emb","motif_emb","readout"])
+                        choices=["none","loss","readout","motif_emb"])
     parser.add_argument("--noise",           default="none",
                         choices=["none","node","motif"])
     parser.add_argument("--info_loss_level", default="node",
