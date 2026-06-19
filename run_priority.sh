@@ -134,7 +134,9 @@ human_key() {
 #                                   $6 use_gt(0/1)     $7 gt_cache_dir
 
 run_one_vanilla() {
-    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5
+    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    local gt_args=""
+    [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
         --dataset "$ds" --fold "$fold" --backbone "$bb" \
         --node_encoder "$NODE_ENCODER" --epochs "$EPOCHS" \
@@ -142,14 +144,18 @@ run_one_vanilla() {
         --no_gnnexplainer --no_pgexplainer --no_mage \
         --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$8/vanilla" $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/vanilla" $gt_args $WANDB_FLAGS
 }
 
 run_one_baselines() {
     # Post-hoc explainers loaded from the vanilla checkpoint just trained.
     # run_vanilla.py appends {dataset}/fold{fold}/{tag} to --load_weights_from,
     # so point it at the vanilla family root, NOT the per-dataset/fold dir.
-    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 key=$8
+    # When use_gt=1 the test graphs are GT-backed, so the explainers also get
+    # GT-ROC, and the GT-trained vanilla checkpoint (gt tag) is the one loaded.
+    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    local gt_args=""
+    [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
         --dataset "$ds" --fold "$fold" --backbone "$bb" \
         --node_encoder "$NODE_ENCODER" --epochs 0 \
@@ -157,7 +163,7 @@ run_one_baselines() {
         --load_weights_from "$OUT_ROOT/$key/vanilla" \
         --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/baselines" $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/baselines" $gt_args $WANDB_FLAGS
 }
 
 run_one_mose() {
@@ -237,8 +243,8 @@ for key in $VARIANTS_RUN; do
         for ds in $DATASETS; do
             for bb in $BACKBONES; do
                 echo " [$key fold=$fold $ds $bb] vanilla → baselines → mose → gsat → motifsat"
-                run_one_vanilla   "$bb" "$ds" "$fold" "$vv" "$cn" "" "" "$key"
-                run_one_baselines "$bb" "$ds" "$fold" "$vv" "$cn" "" "" "$key"
+                run_one_vanilla   "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
+                run_one_baselines "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
                 run_one_mose      "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
                 run_one_gsat      "$bb" "$ds" "$fold" "$vv" "$cn" "" "" "$key"
                 run_one_motifsat  "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"

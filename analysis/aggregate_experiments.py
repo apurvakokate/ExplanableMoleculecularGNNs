@@ -250,14 +250,23 @@ PERF = 'performance'
 # Metrics reported per experiment by default (filtered to those present). This is
 # the FULL result set, not just model performance: prediction + every
 # explainability metric the eval pipeline writes into summary.json.
-DEFAULT_REPORT_METRICS = [PERF, 'pearson', 'spearman', 'gt_roc_auc_mean',
+DEFAULT_REPORT_METRICS = [PERF, 'pearson', 'spearman',
+                          'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
+                          'gnnexplainer_gt_roc_node_auc_mean',
+                          'pgexplainer_gt_roc_node_auc_mean',
+                          'mage_gt_roc_node_auc_mean',
                           'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman']
 
 METRIC_LABELS = {
     PERF:                  'predictive performance (auc / pearson by task)',
     'pearson':             'score-vs-impact correlation (pearson)',
     'spearman':            'score-vs-impact correlation (spearman)',
-    'gt_roc_auc_mean':     'explanation GT-ROC AUC',
+    'gt_roc_auc_mean':     'explanation GT-ROC AUC (primary level)',
+    'gt_roc_node_auc_mean': 'explanation GT-ROC AUC (node level)',
+    'gt_roc_edge_auc_mean': 'explanation GT-ROC AUC (edge level)',
+    'gnnexplainer_gt_roc_node_auc_mean': 'GNNExplainer GT-ROC AUC (node)',
+    'pgexplainer_gt_roc_node_auc_mean':  'PGExplainer GT-ROC AUC (node)',
+    'mage_gt_roc_node_auc_mean':         'MAGE GT-ROC AUC (node)',
     'top_k_abs_disc':      'top-k motif |discriminativeness|',
     'mean_abs_disc':       'mean motif |discriminativeness|',
     'score_disc_spearman': 'score-vs-discriminativeness (spearman)',

@@ -52,9 +52,11 @@ def main():
     ap.add_argument('csv')
     ap.add_argument('--metric', default='auc',
                     help='Any numeric column in the CSV. Common: auc, val_auc, '
-                         'train_auc, gt_roc_auc_mean, pearson, spearman, '
+                         'train_auc, gt_roc_auc_mean, gt_roc_node_auc_mean, '
+                         'gt_roc_edge_auc_mean, pearson, spearman, '
                          'top_k_abs_disc, score_disc_spearman; baseline columns '
-                         'like gnnexplainer_mean_pearson also work.')
+                         'like gnnexplainer_mean_pearson and '
+                         'gnnexplainer_gt_roc_node_auc_mean also work.')
     ap.add_argument('--md', default=None, help='Optional markdown output path.')
     args = ap.parse_args()
 
