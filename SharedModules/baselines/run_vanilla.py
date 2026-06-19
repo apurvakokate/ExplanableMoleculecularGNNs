@@ -328,8 +328,9 @@ def run(cfg: VanillaConfig) -> dict:
     # each post-hoc explainer: broadcast the explainer's per-motif score onto its
     # atoms (node_att[i] = score[nodes_to_motifs[i]]) and score that node
     # attribution against the synthetic GT, reusing compute_gt_roc's node_att_fn
-    # path. Uses the 'mean' aggregation (the primary per-motif score). Requires
-    # --use_gt so the test graphs carry node_label / edge_label.
+    # path. The explainer already reduces its per-node mask to per-motif scores
+    # by mean AND max, so we score BOTH aggregations (the agg IS the node→motif
+    # reduction). Requires --use_gt so the test graphs carry node/edge labels.
     _gt_present = any(
         getattr(d, 'node_label', None) is not None
         or getattr(d, 'edge_label', None) is not None
@@ -337,16 +338,17 @@ def run(cfg: VanillaConfig) -> dict:
     )
     if _gt_present:
         for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
-            _sc_mean = results.get(f'{_ex}_mean', {})
-            if not _sc_mean:
-                continue
-            _fn = _motif_score_node_att_fn(_sc_mean)
-            _gn = compute_gt_roc(model, test_list, device,
-                                 node_att_fn=_fn, level='node')
-            _ge = compute_gt_roc(model, test_list, device,
-                                 node_att_fn=_fn, level='edge')
-            explainer_metrics[f'{_ex}_gt_roc_node_auc_mean'] = _gn['auc_mean']
-            explainer_metrics[f'{_ex}_gt_roc_edge_auc_mean'] = _ge['auc_mean']
+            for _agg in ('mean', 'max'):
+                _sc = results.get(f'{_ex}_{_agg}', {})
+                if not _sc:
+                    continue
+                _fn = _motif_score_node_att_fn(_sc)
+                _gn = compute_gt_roc(model, test_list, device,
+                                     node_att_fn=_fn, level='node')
+                _ge = compute_gt_roc(model, test_list, device,
+                                     node_att_fn=_fn, level='edge')
+                explainer_metrics[f'{_ex}_{_agg}_gt_roc_node_auc_mean'] = _gn['auc_mean']
+                explainer_metrics[f'{_ex}_{_agg}_gt_roc_edge_auc_mean'] = _ge['auc_mean']
 
     summary = {
         'dataset':          cfg.dataset,

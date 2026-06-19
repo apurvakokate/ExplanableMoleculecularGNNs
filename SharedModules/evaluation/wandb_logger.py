@@ -201,6 +201,8 @@ class WandbLogger:
         extra: dict = None,
         gt_roc_node: dict = None,
         gt_roc_edge: dict = None,
+        gt_roc_node_mean: dict = None,
+        gt_roc_node_max: dict = None,
     ) -> None:
         """Log post-training evaluation results to W&B summary.
 
@@ -218,6 +220,10 @@ class WandbLogger:
         gt_roc_node, gt_roc_edge : dict or None
             Node- and edge-level GT ROC dicts (same shape as gt_roc), logged
             as final/gt_roc_node_* and final/gt_roc_edge_*.
+        gt_roc_node_mean, gt_roc_node_max : dict or None
+            Node-level GT ROC where the model's per-node attention is reduced to
+            motif level by mean / max and broadcast back. Logged as
+            final/gt_roc_node_mean_* and final/gt_roc_node_max_*.
         top_bottom : dict or None
             Output of top_bottom_motif_eval()
         extra : dict or None
@@ -256,6 +262,12 @@ class WandbLogger:
             payload['final/gt_roc_edge_auc_mean'] = gt_roc_edge.get('auc_mean', float('nan'))
             payload['final/gt_roc_edge_auc_std']  = gt_roc_edge.get('auc_std',  float('nan'))
             payload['final/gt_roc_edge_n_graphs'] = gt_roc_edge.get('n_graphs', 0)
+        if gt_roc_node_mean:
+            payload['final/gt_roc_node_mean_auc_mean'] = gt_roc_node_mean.get('auc_mean', float('nan'))
+            payload['final/gt_roc_node_mean_auc_std']  = gt_roc_node_mean.get('auc_std',  float('nan'))
+        if gt_roc_node_max:
+            payload['final/gt_roc_node_max_auc_mean']  = gt_roc_node_max.get('auc_mean', float('nan'))
+            payload['final/gt_roc_node_max_auc_std']   = gt_roc_node_max.get('auc_std',  float('nan'))
 
         if top_bottom:
             payload['final/top_mean_impact']    = top_bottom.get('top_mean_impact',    float('nan'))

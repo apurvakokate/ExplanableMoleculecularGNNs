@@ -47,10 +47,15 @@ if str(REPO) not in sys.path:
 ANALYSIS = REPO / 'analysis'
 DEFAULT_METRICS = ['auc', 'val_auc', 'train_auc',
                    'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
-                   # Post-hoc baseline GT-ROC (node level): one per explainer.
-                   'gnnexplainer_gt_roc_node_auc_mean',
-                   'pgexplainer_gt_roc_node_auc_mean',
-                   'mage_gt_roc_node_auc_mean',
+                   # Node attention reduced to motif level by mean / max.
+                   'gt_roc_node_mean_auc_mean', 'gt_roc_node_max_auc_mean',
+                   # Post-hoc baseline GT-ROC (node level): per explainer × agg.
+                   'gnnexplainer_mean_gt_roc_node_auc_mean',
+                   'gnnexplainer_max_gt_roc_node_auc_mean',
+                   'pgexplainer_mean_gt_roc_node_auc_mean',
+                   'pgexplainer_max_gt_roc_node_auc_mean',
+                   'mage_mean_gt_roc_node_auc_mean',
+                   'mage_max_gt_roc_node_auc_mean',
                    'pearson', 'spearman', 'top_k_abs_disc',
                    'score_disc_spearman']
 
@@ -142,9 +147,13 @@ def step_collect(args) -> int:
                         'encoder_norm', 'weight_vocab_variant', 'seed',
                         'train_auc', 'val_auc', 'auc', 'rmse',
                         'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
-                        'gnnexplainer_gt_roc_node_auc_mean',
-                        'pgexplainer_gt_roc_node_auc_mean',
-                        'mage_gt_roc_node_auc_mean',
+                        'gt_roc_node_mean_auc_mean', 'gt_roc_node_max_auc_mean',
+                        'gnnexplainer_mean_gt_roc_node_auc_mean',
+                        'gnnexplainer_max_gt_roc_node_auc_mean',
+                        'pgexplainer_mean_gt_roc_node_auc_mean',
+                        'pgexplainer_max_gt_roc_node_auc_mean',
+                        'mage_mean_gt_roc_node_auc_mean',
+                        'mage_max_gt_roc_node_auc_mean',
                         'pearson', 'spearman',
                         'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman',
                         'score_min', 'score_max', 'score_mean', 'score_std',

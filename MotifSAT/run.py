@@ -366,17 +366,28 @@ def run(cfg: MotifSATConfig) -> dict:
         results = pipeline.run(run_motif_impact=False)
         summary_scores = gsat_agg.get("mean", {})
     else:
-        # readout/motif-aware: aggregate attention to per-motif scores so the
-        # correlation, discriminativeness and score-distribution stats populate.
-        summary_scores = _aggregate_att_to_motif(
+        # readout/motif-aware: aggregate node attention to per-motif scores so
+        # the correlation, discriminativeness and score-distribution stats
+        # populate. Run once per aggregation (mean & max) — same treatment as
+        # base GSAT — so both flavours are saved. The 'mean' run is the headline
+        # used for summary.json.
+        motif_agg = _aggregate_att_to_motif(
             model, test_list, device,
             learn_edge_att=cfg.learn_edge_att,
             max_graphs=cfg.max_motifs_eval or 500,
-        ).get("mean", {})
-        results = pipeline.run(
-            motif_scores=summary_scores if summary_scores else None,
-            run_motif_impact=cfg.run_motif_impact,
         )
+        results = None
+        for agg in ("mean", "max"):
+            agg_scores = motif_agg.get(agg, {})
+            r = pipeline.run(
+                motif_scores=agg_scores if agg_scores else None,
+                run_motif_impact=cfg.run_motif_impact,
+            )
+            for name, df in pipeline.to_dataframe(r).items():
+                df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
+            if agg == "mean":
+                results = r
+        summary_scores = motif_agg.get("mean", {})
 
     pipeline.print_summary(results)
 
@@ -410,6 +421,8 @@ def run(cfg: MotifSATConfig) -> dict:
     corr = results.get("correlation", {})
     gt   = results.get("gt_roc", {})
     gt_node = results.get("gt_roc_node", {})
+    gt_node_mean = results.get("gt_roc_node_mean", {})
+    gt_node_max  = results.get("gt_roc_node_max", {})
     gt_edge = results.get("gt_roc_edge", {})
     tdc  = results.get("top_disc_check", {})
     from SharedModules.evaluation.metrics import motif_score_stats
@@ -429,6 +442,9 @@ def run(cfg: MotifSATConfig) -> dict:
         "w_readout":        cfg.w_readout,
         "noise":            cfg.noise,
         "info_loss_coef":   cfg.info_loss_coef,
+        "motif_loss_coef":  cfg.motif_loss_coef,
+        "within_node_coef": cfg.within_node_coef,
+        "between_motif_coef": cfg.between_motif_coef,
         "learn_edge_att":   cfg.learn_edge_att,
         "gt_level":         gt_level,
         # prediction
@@ -444,6 +460,8 @@ def run(cfg: MotifSATConfig) -> dict:
         "gt_roc_auc_mean": gt.get("auc_mean", float("nan")),
         "gt_roc_n_graphs": gt.get("n_graphs", 0),
         "gt_roc_node_auc_mean": gt_node.get("auc_mean", float("nan")),
+        "gt_roc_node_mean_auc_mean": gt_node_mean.get("auc_mean", float("nan")),
+        "gt_roc_node_max_auc_mean":  gt_node_max.get("auc_mean", float("nan")),
         "gt_roc_edge_auc_mean": gt_edge.get("auc_mean", float("nan")),
         # top-scored motifs class-discriminative?
         "top_k_abs_disc":      tdc.get("top_k_abs_disc", float("nan")),
@@ -462,6 +480,8 @@ def run(cfg: MotifSATConfig) -> dict:
             correlation=results.get('correlation'),
             gt_roc=results.get('gt_roc'),
             gt_roc_node=results.get('gt_roc_node'),
+            gt_roc_node_mean=results.get('gt_roc_node_mean'),
+            gt_roc_node_max=results.get('gt_roc_node_max'),
             gt_roc_edge=results.get('gt_roc_edge'),
             top_bottom=results.get('top_bottom'),
         )
@@ -490,7 +510,21 @@ def main():
     parser.add_argument("--hidden_dim",      type=int, default=64)
     parser.add_argument("--num_layers",      type=int, default=3)
     parser.add_argument("--info_loss_coef",  type=float, default=1.0)
-    parser.add_argument("--motif_loss_coef", type=float, default=0.0)
+    parser.add_argument("--motif_loss_coef", type=float, default=0.0,
+                        help="Outer multiplier on the motif consistency loss. "
+                             "The consistency term is "
+                             "motif_loss_coef * (within_node_coef*within_var "
+                             "- between_motif_coef*between_var), so this must be "
+                             ">0 AND at least one of the two coefs below set for "
+                             "the consistency loss to have any effect.")
+    parser.add_argument("--within_node_coef", type=float, default=0.0,
+                        help="Weight on within-motif attention variance "
+                             "(penalise; encourages consistent attention within "
+                             "a motif). Gated by --motif_loss_coef.")
+    parser.add_argument("--between_motif_coef", type=float, default=0.0,
+                        help="Weight on between-motif attention variance "
+                             "(reward; encourages discrimination across motifs). "
+                             "Gated by --motif_loss_coef.")
     parser.add_argument("--epochs",          type=int, default=100)
     parser.add_argument("--lr",              type=float, default=1e-3)
     parser.add_argument("--data_root",       default="./datasets/FOLDS")
@@ -545,6 +579,8 @@ def main():
             hidden_dim=args.hidden_dim, num_layers=args.num_layers,
             info_loss_coef=args.info_loss_coef,
             motif_loss_coef=args.motif_loss_coef,
+            within_node_coef=args.within_node_coef,
+            between_motif_coef=args.between_motif_coef,
             epochs=args.epochs, lr=args.lr,
             data_root=args.data_root, vocab_root=args.vocab_root,
             vocab_variant=args.vocab_variant, out_dir=args.out_dir,

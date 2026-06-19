@@ -692,6 +692,74 @@ def explainer_roc_vs_gt(
         return float('nan')
 
 
+def model_node_att_fn(model: torch.nn.Module, device: torch.device):
+    """Return a callable ``data -> Tensor[N]`` giving the model's per-node
+    attention, mirroring ``compute_gt_roc``'s internal extraction.
+
+    Prefers the noise-free ``node_att_soft`` from the aux dict when present,
+    falling back to ``out[1]``.  Returns ``None`` (inside the callable) when the
+    model exposes no node attention (e.g. VanillaGNN), so callers can skip.
+    """
+    @torch.no_grad()
+    def _fn(data: Data):
+        data_dev = data.to(device)
+        batch = getattr(data_dev, 'batch', None)
+        if batch is None:
+            batch = torch.zeros(data_dev.x.size(0), dtype=torch.long, device=device)
+        out = model(data_dev.x, data_dev.edge_index, batch,
+                    getattr(data_dev, 'nodes_to_motifs', None),
+                    getattr(data_dev, 'edge_attr', None))
+        node_att = None
+        if len(out) >= 3 and isinstance(out[2], dict) \
+                and out[2].get('node_att_soft') is not None:
+            node_att = out[2]['node_att_soft']
+        if node_att is None and len(out) >= 2:
+            node_att = out[1]
+        if node_att is None:
+            return None
+        return node_att.view(-1)
+    return _fn
+
+
+def motif_broadcast_att_fn(base_fn, agg: str = 'mean'):
+    """Wrap a per-node attribution fn so node scores are aggregated to motif
+    level (``mean`` or ``max``) over each motif's atoms and broadcast back.
+
+    This is the node→motif reduction used everywhere else in the evaluation
+    (score-vs-impact, plots): every atom of a motif instance receives that
+    motif's aggregated attribution.  Because ``node_label`` is uniform within a
+    motif, scoring the broadcast attribution at node level is a motif-granular
+    GT-ROC in the requested aggregation flavour.
+
+    Atoms with ``nodes_to_motifs < 0`` (no motif assignment) keep their raw
+    per-node score.  Returns ``None`` when ``base_fn`` returns ``None`` so
+    ``compute_gt_roc`` can skip.
+    """
+    if agg not in ('mean', 'max'):
+        raise ValueError(f"agg must be 'mean' or 'max', got {agg!r}")
+
+    def _fn(data: Data):
+        att = base_fn(data)
+        if att is None:
+            return None
+        att = att.view(-1)
+        n2m = getattr(data, 'nodes_to_motifs', None)
+        if n2m is None:
+            return att
+        n2m = n2m.view(-1).to(att.device)
+        out = att.clone()
+        for mid in torch.unique(n2m).tolist():
+            if mid < 0:
+                continue
+            sel = n2m == mid
+            vals = att[sel]
+            if vals.numel() == 0:
+                continue
+            out[sel] = vals.mean() if agg == 'mean' else vals.max()
+        return out
+    return _fn
+
+
 def compute_gt_roc(
     model: torch.nn.Module,
     data_list: List[Data],
@@ -762,7 +830,11 @@ def compute_gt_roc(
         # Get node attention
         _is_edge_score = False
         if node_att_fn is not None:
-            node_att = node_att_fn(data_dev).view(-1)
+            _na = node_att_fn(data_dev)
+            if _na is None:
+                n_skipped += 1
+                continue
+            node_att = _na.view(-1)
         else:
             out = model(data_dev.x, data_dev.edge_index,
                         getattr(data_dev, 'batch',

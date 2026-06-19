@@ -25,6 +25,8 @@ from .motif_eval import (
     top_bottom_motif_eval,
     gt_vs_outside_gt_eval,
     compute_gt_roc,
+    model_node_att_fn,
+    motif_broadcast_att_fn,
     motif_class_discriminativeness,
     top_motifs_discriminative_check,
 )
@@ -145,6 +147,20 @@ class EvalPipeline:
                                  if self.gt_level == 'node'
                                  else results['gt_roc_edge'])
 
+            # Motif-aggregated node-level GT-ROC. The raw per-node AUC above is
+            # kept as-is; here we additionally reduce the model's per-node
+            # attention to motif level (mean / max over each motif's atoms) and
+            # broadcast it back, matching the mean/max motif framing used by
+            # score-vs-impact and the plots. For models whose node attention is
+            # already a motif-broadcast weight (e.g. MOSE), mean == max == raw.
+            _base_att = self.node_att_fn or model_node_att_fn(self.model, self.device)
+            for _agg in ('mean', 'max'):
+                results[f'gt_roc_node_{_agg}'] = compute_gt_roc(
+                    self.model, self.test_list, self.device,
+                    node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
+                    level='node',
+                )
+
 
 
 
@@ -224,6 +240,10 @@ class EvalPipeline:
             dfs['gt_roc'] = pd.DataFrame([results['gt_roc']])
         if 'gt_roc_node' in results:
             dfs['gt_roc_node'] = pd.DataFrame([results['gt_roc_node']])
+        if 'gt_roc_node_mean' in results:
+            dfs['gt_roc_node_mean'] = pd.DataFrame([results['gt_roc_node_mean']])
+        if 'gt_roc_node_max' in results:
+            dfs['gt_roc_node_max'] = pd.DataFrame([results['gt_roc_node_max']])
         if 'gt_roc_edge' in results:
             dfs['gt_roc_edge'] = pd.DataFrame([results['gt_roc_edge']])
 
@@ -327,6 +347,11 @@ class EvalPipeline:
                     print(f"  [{_lvl}] auc_mean={r['auc_mean']:.4f}  "
                           f"auc_std={r['auc_std']:.4f}  "
                           f"n_graphs={r['n_graphs']}  n_skipped={r['n_skipped']}")
+            for _agg in ("mean", "max"):
+                r = results.get(f"gt_roc_node_{_agg}")
+                if r and r.get("n_graphs", 0) > 0:
+                    print(f"  [node/{_agg}-motif] auc_mean={r['auc_mean']:.4f}  "
+                          f"auc_std={r['auc_std']:.4f}  n_graphs={r['n_graphs']}")
         elif "gt_roc" in results:
             r = results["gt_roc"]
             print("\nExplainer ROC vs ground truth:")

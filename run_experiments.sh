@@ -618,6 +618,7 @@ if rows:
                         "ent_reg","size_reg","num_layers","explainer_lr","gnn_lr","conv_normalize","gin_inner_bn",
                         "train_auc","val_auc","auc",
                         "gt_roc_auc_mean","gt_roc_node_auc_mean","gt_roc_edge_auc_mean",
+                        "gt_roc_node_mean_auc_mean","gt_roc_node_max_auc_mean",
                         "pearson","spearman",
                         "top_k_abs_disc","mean_abs_disc","score_disc_spearman",
                         "score_min","score_max","score_mean","score_std",
