@@ -261,6 +261,8 @@ def run(cfg: VanillaConfig) -> dict:
     pred  = all_preds.get('test', {})
     corr  = eval_results.get('correlation', {})
     gt    = eval_results.get('gt_roc', {})
+    gt_node = eval_results.get('gt_roc_node', {})
+    gt_edge = eval_results.get('gt_roc_edge', {})
 
     # Per-explainer score-vs-impact correlation, top-motif discriminativeness,
     # and score distribution. The post-hoc explainer's attribution IS its motif
@@ -312,6 +314,8 @@ def run(cfg: VanillaConfig) -> dict:
         'pearson':          corr.get('pearson', float('nan')),
         'spearman':         corr.get('spearman', float('nan')),
         'gt_roc_auc_mean':  gt.get('auc_mean', float('nan')),
+        'gt_roc_node_auc_mean': gt_node.get('auc_mean', float('nan')),
+        'gt_roc_edge_auc_mean': gt_edge.get('auc_mean', float('nan')),
         **explainer_metrics,
     }
     with open(out_dir / 'summary.json', 'w') as f:

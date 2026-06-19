@@ -199,6 +199,8 @@ class WandbLogger:
         gt_roc: dict = None,
         top_bottom: dict = None,
         extra: dict = None,
+        gt_roc_node: dict = None,
+        gt_roc_edge: dict = None,
     ) -> None:
         """Log post-training evaluation results to W&B summary.
 
@@ -212,6 +214,10 @@ class WandbLogger:
             {'pearson': float, 'spearman': float}
         gt_roc : dict or None
             {'auc_mean': float, 'auc_std': float, 'n_graphs': int}
+            (the configured primary level, for backward compatibility)
+        gt_roc_node, gt_roc_edge : dict or None
+            Node- and edge-level GT ROC dicts (same shape as gt_roc), logged
+            as final/gt_roc_node_* and final/gt_roc_edge_*.
         top_bottom : dict or None
             Output of top_bottom_motif_eval()
         extra : dict or None
@@ -239,6 +245,17 @@ class WandbLogger:
             payload['final/gt_roc_auc_mean']  = gt_roc.get('auc_mean',  float('nan'))
             payload['final/gt_roc_auc_std']   = gt_roc.get('auc_std',   float('nan'))
             payload['final/gt_roc_n_graphs']  = gt_roc.get('n_graphs',  0)
+
+        # Node- and edge-level GT ROC reported side by side (the repo headline is
+        # the node-level metric; edge-level is logged alongside).
+        if gt_roc_node:
+            payload['final/gt_roc_node_auc_mean'] = gt_roc_node.get('auc_mean', float('nan'))
+            payload['final/gt_roc_node_auc_std']  = gt_roc_node.get('auc_std',  float('nan'))
+            payload['final/gt_roc_node_n_graphs'] = gt_roc_node.get('n_graphs', 0)
+        if gt_roc_edge:
+            payload['final/gt_roc_edge_auc_mean'] = gt_roc_edge.get('auc_mean', float('nan'))
+            payload['final/gt_roc_edge_auc_std']  = gt_roc_edge.get('auc_std',  float('nan'))
+            payload['final/gt_roc_edge_n_graphs'] = gt_roc_edge.get('n_graphs', 0)
 
         if top_bottom:
             payload['final/top_mean_impact']    = top_bottom.get('top_mean_impact',    float('nan'))

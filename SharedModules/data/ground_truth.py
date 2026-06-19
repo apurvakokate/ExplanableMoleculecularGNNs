@@ -51,9 +51,18 @@ GT_SUPPORTED_DATASETS = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# File bridge: translate vocab output names to what motif_label_pipeline wants
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# DORMANT — COMMENTED OUT (not used in production).
+#
+# attach_ground_truth() and its helpers below are the original in-process GT
+# annotation path. They are superseded by SharedModules/baselines/apply_gt.py
+# (Phase 4), which precomputes {split}_with_gt.pt caches (with data.node_label
+# and data.edge_label) that the trainers load directly. Nothing calls
+# attach_ground_truth(); it is kept here (inert, inside a triple-quoted block)
+# for reference only. If revived, mirror apply_gt.annotate_split: set
+# node_label [N] (rule-motif atoms) and edge_label [E] = AND of both endpoints.
+# ═════════════════════════════════════════════════════════════════════════════
+_DORMANT_GROUND_TRUTH = r'''
 
 def _prepare_rulebook_dir(
     vocab_root: str,
@@ -182,9 +191,11 @@ def attach_ground_truth(
         rulebook_root, force=force_rebuild,
     )
 
-    # Try cache first
+    # Try cache first. rule_index is part of the key: a cache built for one rule
+    # must never be served for a different rule selection.
     if cache_root and not force_rebuild:
-        cached = _load_cache(cache_root, dataset, fold, variant, relabel_graphs)
+        cached = _load_cache(cache_root, dataset, fold, variant,
+                             relabel_graphs, rule_index)
         if cached is not None:
             return cached
 
@@ -280,7 +291,8 @@ def attach_ground_truth(
         rj = Path(cache_root) / dataset / f'fold{fold}' / variant / 'selected_rule.json'
         rj.parent.mkdir(parents=True, exist_ok=True)
         save_rulebook_json(rulebook, selected_rule, rj)
-        _save_cache(out, cache_root, dataset, fold, variant, relabel_graphs)
+        _save_cache(out, cache_root, dataset, fold, variant, relabel_graphs,
+                    rule_index)
 
     return out, debug
 
@@ -372,26 +384,36 @@ def _empty_agg(split_name: str) -> Dict[str, Any]:
 
 
 def _cache_paths(cache_root: str, dataset: str, fold: int,
-                 variant: str, relabel: bool) -> Dict[str, Path]:
+                 variant: str, relabel: bool,
+                 rule_index: Optional[int]) -> Dict[str, Path]:
     tag = 'relabel1' if relabel else 'relabel0'
-    base = Path(cache_root) / dataset / f'fold{fold}' / variant / tag
+    # rule_index is part of the path so different rule selections never share a
+    # cache. None (interactive/auto-selected rule) is tagged 'ruleauto'; such
+    # caches may collide if the auto-choice changes — pass an explicit
+    # rule_index for reproducible caching.
+    rtag = f'rule{rule_index}' if rule_index is not None else 'ruleauto'
+    base = Path(cache_root) / dataset / f'fold{fold}' / variant / rtag / tag
     base.mkdir(parents=True, exist_ok=True)
     return {s: base / f'{s}_with_gt.pt' for s in ('train', 'valid', 'test')}
 
 
 def _save_cache(out: Dict[str, list], cache_root: str, dataset: str,
-                fold: int, variant: str, relabel: bool) -> None:
-    paths = _cache_paths(cache_root, dataset, fold, variant, relabel)
+                fold: int, variant: str, relabel: bool,
+                rule_index: Optional[int]) -> None:
+    paths = _cache_paths(cache_root, dataset, fold, variant, relabel, rule_index)
     for split_name, data_list in out.items():
         torch.save(data_list, paths[split_name])
 
 
 def _load_cache(cache_root: str, dataset: str, fold: int,
-                variant: str, relabel: bool) -> Optional[Tuple]:
-    paths = _cache_paths(cache_root, dataset, fold, variant, relabel)
+                variant: str, relabel: bool,
+                rule_index: Optional[int]) -> Optional[Tuple]:
+    paths = _cache_paths(cache_root, dataset, fold, variant, relabel, rule_index)
     if not all(p.exists() for p in paths.values()):
         return None
     out = {s: torch.load(paths[s], weights_only=False)
            for s in ('train', 'valid', 'test')}
     debug = {s: {'loaded_from_cache': True} for s in ('train', 'valid', 'test')}
     return out, debug
+
+'''  # ── end DORMANT _DORMANT_GROUND_TRUTH ──────────────────────────────────

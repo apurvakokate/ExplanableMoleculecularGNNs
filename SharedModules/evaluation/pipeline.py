@@ -39,8 +39,9 @@ class EvalPipeline:
     vocab : VocabData
     test_loader : DataLoader
     test_list : list of Data
-        Raw test Data objects.  If ``attach_ground_truth`` has been called,
-        these will already have ``data.edge_label`` set.
+        Raw test Data objects.  If the GT cache from ``apply_gt.py`` has been
+        loaded, these will already have ``data.node_label`` / ``data.edge_label``
+        set.
     device : torch.device
     task_type : str
     max_motifs_eval : int or None
@@ -82,9 +83,10 @@ class EvalPipeline:
         self.gt_level = gt_level
 
     def _has_ground_truth(self) -> bool:
-        """Check whether test_list has edge_label annotations."""
+        """Check whether test_list has node_label or edge_label annotations."""
         return any(
             getattr(d, 'edge_label', None) is not None
+            or getattr(d, 'node_label', None) is not None
             for d in self.test_list
         )
 
@@ -124,13 +126,24 @@ class EvalPipeline:
             self.model, self.test_loader, self.device, self.task_type
         )
 
-        # 2. GT explainer ROC (runs whenever edge_label is present)
+        # 2. GT explainer ROC — computed at BOTH node and edge level and
+        #    reported together. The repo primarily uses node scores, so the
+        #    node-level AUC (model attention vs the authoritative node_label)
+        #    is the headline; edge-level (vs the AND edge_label) is reported
+        #    alongside. results['gt_roc'] stays as the configured primary level
+        #    (self.gt_level) for backward compatibility with existing consumers.
         if self._has_ground_truth():
-            results['gt_roc'] = compute_gt_roc(
+            results['gt_roc_node'] = compute_gt_roc(
                 self.model, self.test_list, self.device,
-                node_att_fn=self.node_att_fn,
-                level=self.gt_level,
+                node_att_fn=self.node_att_fn, level='node',
             )
+            results['gt_roc_edge'] = compute_gt_roc(
+                self.model, self.test_list, self.device,
+                node_att_fn=self.node_att_fn, level='edge',
+            )
+            results['gt_roc'] = (results['gt_roc_node']
+                                 if self.gt_level == 'node'
+                                 else results['gt_roc_edge'])
 
 
 
@@ -209,6 +222,10 @@ class EvalPipeline:
 
         if 'gt_roc' in results:
             dfs['gt_roc'] = pd.DataFrame([results['gt_roc']])
+        if 'gt_roc_node' in results:
+            dfs['gt_roc_node'] = pd.DataFrame([results['gt_roc_node']])
+        if 'gt_roc_edge' in results:
+            dfs['gt_roc_edge'] = pd.DataFrame([results['gt_roc_edge']])
 
         if 'motif_impact' in results:
             rows = [{'motif_id': mid, **stats}
@@ -298,7 +315,19 @@ class EvalPipeline:
         for k, v in results.get("prediction", {}).items():
             print(f"  {k}: {v:.4f}")
 
-        if "gt_roc" in results:
+        if "gt_roc_node" in results or "gt_roc_edge" in results:
+            print("\nExplainer ROC vs ground truth:")
+            for _lvl in ("node", "edge"):
+                r = results.get(f"gt_roc_{_lvl}")
+                if not r:
+                    continue
+                if r.get("n_graphs", 0) == 0:
+                    print(f"  [{_lvl}] no graphs with valid GT labels")
+                else:
+                    print(f"  [{_lvl}] auc_mean={r['auc_mean']:.4f}  "
+                          f"auc_std={r['auc_std']:.4f}  "
+                          f"n_graphs={r['n_graphs']}  n_skipped={r['n_skipped']}")
+        elif "gt_roc" in results:
             r = results["gt_roc"]
             print("\nExplainer ROC vs ground truth:")
             if r.get("n_graphs", 0) == 0:

@@ -308,6 +308,8 @@ def run(cfg: MOSEConfig) -> dict:
     pred = results.get('prediction', {})
     corr = results.get('correlation', {})
     gt   = results.get('gt_roc', {})
+    gt_node = results.get('gt_roc_node', {})
+    gt_edge = results.get('gt_roc_edge', {})
     tdc  = results.get('top_disc_check', {})
     from SharedModules.evaluation.metrics import motif_score_stats
     sstats = motif_score_stats(flat_scores)
@@ -341,9 +343,11 @@ def run(cfg: MOSEConfig) -> dict:
         # correlation (score vs impact)
         'pearson':   corr.get('pearson',  float('nan')),
         'spearman':  corr.get('spearman', float('nan')),
-        # GT ROC
+        # GT ROC (primary = configured level; node & edge reported alongside)
         'gt_roc_auc_mean': gt.get('auc_mean', float('nan')),
         'gt_roc_n_graphs': gt.get('n_graphs', 0),
+        'gt_roc_node_auc_mean': gt_node.get('auc_mean', float('nan')),
+        'gt_roc_edge_auc_mean': gt_edge.get('auc_mean', float('nan')),
         # top-scored motifs class-discriminative?
         'top_k_abs_disc':      tdc.get('top_k_abs_disc', float('nan')),
         'mean_abs_disc':       tdc.get('mean_abs_disc', float('nan')),
@@ -367,6 +371,8 @@ def run(cfg: MOSEConfig) -> dict:
             split_metrics=split_metrics,
             correlation=results.get('correlation'),
             gt_roc=results.get('gt_roc'),
+            gt_roc_node=results.get('gt_roc_node'),
+            gt_roc_edge=results.get('gt_roc_edge'),
             top_bottom=results.get('top_bottom'),
         )
 

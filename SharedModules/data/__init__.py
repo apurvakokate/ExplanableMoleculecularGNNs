@@ -15,10 +15,10 @@ from .graph_to_smiles import (
     build_mutag_smiles_df,
     MUTAG_ATOM_TYPE_MAP,
 )
-from .ground_truth import (
-    attach_ground_truth,
-    GT_SUPPORTED_DATASETS,
-)
+# attach_ground_truth is DORMANT (commented out in ground_truth.py) — the live
+# GT path is SharedModules/baselines/apply_gt.py. Only GT_SUPPORTED_DATASETS is
+# still exported.
+from .ground_truth import GT_SUPPORTED_DATASETS
 
 __all__ = [
     'VocabData', 'load_vocab', 'compute_mask_cache',
@@ -30,5 +30,5 @@ __all__ = [
     'verify_ogb_index_alignment', 'verify_mutag_index_alignment',
     'apply_motif_lookup_with_index_map', 'build_mutag_smiles_df',
     'MUTAG_ATOM_TYPE_MAP',
-    'attach_ground_truth', 'GT_SUPPORTED_DATASETS',
+    'GT_SUPPORTED_DATASETS',
 ]

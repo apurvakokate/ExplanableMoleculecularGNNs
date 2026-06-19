@@ -634,6 +634,7 @@ def explainer_roc_vs_gt(
     edge_label: torch.Tensor,
     level: str = 'node',
     edge_score: bool = False,
+    node_label: torch.Tensor = None,
 ) -> float:
     """ROC-AUC between explainer attention and ground truth.
 
@@ -645,10 +646,12 @@ def explainer_roc_vs_gt(
     edge_index : Tensor [2, E]
     edge_label : Tensor [E]
         Float ground truth -- 1.0 for GT edges, 0.0 otherwise.
-        Produced by attach_ground_truth (stored as data.edge_label).
+        Produced by apply_gt.py (stored as data.edge_label, AND of endpoints).
     level : str
-        'node' (default) -- compare node_att directly against the node-level
-        GT mask derived from edge_label.  Use for all node-attention models.
+        'node' (default) -- compare node_att against the node-level GT.  When
+        ``node_label`` is given it is used directly (authoritative); otherwise
+        the node GT is derived from edge_label (legacy/back-compat).  Use for
+        all node-attention models.
 
         'edge' -- compare edge-level attention against edge_label directly.
         Use only for base GSAT with learn_edge_att=True.
@@ -657,16 +660,22 @@ def explainer_roc_vs_gt(
         per-edge score [E] (e.g. the model's soft edge attention) and is used
         directly.  If False (legacy), edge scores are derived from node
         attention as att[src]*att[dst].
+    node_label : Tensor [N] or None
+        Explicit node-level GT (1.0 = rule-motif atom), as produced by
+        apply_gt.py (data.node_label).  Preferred for level='node'.
 
     Returns
     -------
     float  AUC, or NaN if only one class present in GT.
     """
     if level == 'node':
-        n = node_att.view(-1).size(0)
-        gt_nodes = _gt_node_mask(edge_label, edge_index, n)
-        y_score  = node_att.view(-1).cpu().numpy()
-        y_true   = gt_nodes.cpu().numpy().astype(float)
+        y_score = node_att.view(-1).cpu().numpy()
+        if node_label is not None:
+            y_true = node_label.view(-1).cpu().numpy().astype(float)
+        else:
+            n = node_att.view(-1).size(0)
+            gt_nodes = _gt_node_mask(edge_label, edge_index, n)
+            y_true = gt_nodes.cpu().numpy().astype(float)
     else:
         if edge_score:
             y_score = node_att.view(-1).cpu().numpy()
@@ -692,7 +701,7 @@ def compute_gt_roc(
 ) -> Dict[str, float]:
     """Compute mean explainer ROC-AUC vs ground truth across all test graphs.
 
-    Each graph that has ``data.edge_label`` set (by ``attach_ground_truth``)
+    Each graph that has ``data.edge_label`` set (by ``apply_gt.py``)
     and at least one positive and one negative edge contributes one AUC value.
     Graphs without ``edge_label`` or with degenerate labels are skipped.
 
@@ -723,11 +732,28 @@ def compute_gt_roc(
 
     for data in data_list:
         edge_label = getattr(data, 'edge_label', None)
-        if edge_label is None:
-            n_skipped += 1
-            continue
-        el = edge_label.view(-1)
-        if el.sum() == 0 or el.sum() == len(el):
+        node_label = getattr(data, 'node_label', None)
+
+        # GT vector for THIS level (used for the degeneracy/skip check).
+        # node level prefers the authoritative node_label, falling back to the
+        # legacy mask derived from edge_label for older caches.
+        if level == 'node':
+            if node_label is not None:
+                gt_vec = node_label.view(-1)
+            elif edge_label is not None:
+                gt_vec = _gt_node_mask(
+                    edge_label, data.edge_index, data.num_nodes).float().view(-1)
+            else:
+                n_skipped += 1
+                continue
+        else:  # edge level
+            if edge_label is None:
+                n_skipped += 1
+                continue
+            gt_vec = edge_label.view(-1)
+
+        _s = float(gt_vec.sum().item())
+        if _s == 0 or _s == gt_vec.numel():
             n_skipped += 1
             continue
 
@@ -766,8 +792,10 @@ def compute_gt_roc(
             node_att = node_att_raw.view(-1)
 
         auc = explainer_roc_vs_gt(
-            node_att, data_dev.edge_index, el.to(device),
+            node_att, data_dev.edge_index,
+            edge_label.to(device) if edge_label is not None else None,
             level=level, edge_score=_is_edge_score,
+            node_label=node_label.to(device) if node_label is not None else None,
         )
         if not (auc != auc):   # not NaN
             aucs.append(auc)

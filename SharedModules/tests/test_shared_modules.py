@@ -1253,17 +1253,21 @@ class TestExplainerRocVsGt(unittest.TestCase):
         self.assertTrue(np.isnan(result['auc_mean']))
 
     def test_compute_gt_roc_skips_degenerate_labels(self):
-        """Graphs where all edge_label = 0 or all = 1 are skipped."""
+        """Graphs with degenerate GT are skipped. compute_gt_roc checks
+        degeneracy at the EVALUATED level: for the default node level the node
+        GT must be all-0 or all-1. A 3-node cycle (every node is an endpoint)
+        makes all-edges-0 → node GT all-0 and all-edges-1 → node GT all-1, so
+        both graphs are degenerate at the node level and skipped."""
         from SharedModules.evaluation.motif_eval import compute_gt_roc
         from torch_geometric.data import Data
         model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
         data_list = []
         for v in [0.0, 1.0]:
-            d = Data(x=torch.randn(5, NUM_ATOM_TYPES),
+            d = Data(x=torch.randn(3, NUM_ATOM_TYPES),
                      edge_index=torch.tensor([[0,1,2],[1,2,0]]),
                      edge_label=torch.full((3,), v),
                      y=torch.tensor([1.0]),
-                     nodes_to_motifs=torch.full((5,), -1, dtype=torch.long))
+                     nodes_to_motifs=torch.full((3,), -1, dtype=torch.long))
             data_list.append(d)
         result = compute_gt_roc(model, data_list, DEVICE,
                                 node_att_fn=lambda d: torch.rand(d.x.size(0)))
@@ -1330,6 +1334,8 @@ class TestGroundTruthHelpers(unittest.TestCase):
     """Tests for ground_truth.py helper functions that don't require
     the full motif_label_pipeline (which needs real vocab files)."""
 
+    @unittest.skip("ground_truth._build_edge_label is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_build_edge_label_active_ids(self):
         from SharedModules.data.ground_truth import _build_edge_label
         from torch_geometric.data import Data
@@ -1353,6 +1359,8 @@ class TestGroundTruthHelpers(unittest.TestCase):
             self.assertAlmostEqual(float(edge_label[i]), expected,
                                    msg=f"Edge ({s},{d})")
 
+    @unittest.skip("ground_truth._build_edge_label is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_build_edge_label_empty_active(self):
         from SharedModules.data.ground_truth import _build_edge_label
         from torch_geometric.data import Data
@@ -1364,6 +1372,8 @@ class TestGroundTruthHelpers(unittest.TestCase):
         self.assertEqual(n_pos, 0)
         self.assertTrue((el == 0).all())
 
+    @unittest.skip("ground_truth._build_edge_label is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_build_edge_label_no_n2m(self):
         from SharedModules.data.ground_truth import _build_edge_label
         from torch_geometric.data import Data
@@ -1373,6 +1383,8 @@ class TestGroundTruthHelpers(unittest.TestCase):
         el, n_pos = _build_edge_label(data, {0, 1})
         self.assertEqual(n_pos, 0)
 
+    @unittest.skip("ground_truth._motif_name_to_ids is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_motif_name_to_ids(self):
         from SharedModules.data.ground_truth import _motif_name_to_ids
         motif_list = ['[*]c1ccccc1', '[*]N', '[*]c1ccccc1']  # dupe
@@ -1381,10 +1393,14 @@ class TestGroundTruthHelpers(unittest.TestCase):
         self.assertEqual(m2id['[*]c1ccccc1'], {0, 2})
         self.assertEqual(m2id['[*]N'], {1})
 
+    @unittest.skip("ground_truth._motif_name_to_ids is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_motif_name_to_ids_none(self):
         from SharedModules.data.ground_truth import _motif_name_to_ids
         self.assertEqual(_motif_name_to_ids(None), {})
 
+    @unittest.skip("ground_truth._resolve_active_ids is DORMANT (commented out); "
+                   "live GT path is apply_gt.py")
     def test_resolve_active_ids(self):
         from SharedModules.data.ground_truth import _resolve_active_ids, _motif_name_to_ids
         motif_list = ['A', 'B', 'C']
@@ -1398,6 +1414,8 @@ class TestGroundTruthHelpers(unittest.TestCase):
         self.assertIn('Benzene', GT_SUPPORTED_DATASETS)
         self.assertNotIn('ba_2motifs', GT_SUPPORTED_DATASETS)
 
+    @unittest.skip("ground_truth._prepare_rulebook_dir is DORMANT (commented "
+                   "out); live GT path is apply_gt.py")
     def test_prepare_rulebook_dir(self):
         """_prepare_rulebook_dir copies/renames files correctly."""
         import tempfile, os

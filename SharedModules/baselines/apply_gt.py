@@ -6,8 +6,13 @@ picks the rule at --rule_index, then for every split of the dataset annotates ea
 PyG Data object:
 
   data.y          replaced with 1/0 based on whether the rule fires
-  data.edge_label float [E] — 1.0 for edges whose endpoints are in a rule-motif,
-                  0.0 otherwise.  Used by the explainer ROC evaluation.
+  data.node_label float [N] — 1.0 for atoms that belong to a rule-motif, 0.0
+                  otherwise.  The authoritative node-level explanation target.
+  data.edge_label float [E] — 1.0 for edges whose BOTH endpoints are rule-motif
+                  atoms (AND), 0.0 otherwise.  Used by the edge-level explainer
+                  ROC; AND (not OR) so motif-boundary edges don't penalise a
+                  correctly motif-focused explainer and so the edge GT matches
+                  the att[src]*att[dst] edge score used in evaluation.
 
 Output structure:
   {out_dir}/{dataset}/fold{fold}/{variant}/relabel1/
@@ -122,12 +127,17 @@ def annotate_split(data_list: List,
                   A clause fires when ALL its motifs are present (AND logic).
     graph_lookup: {smiles: {node_idx: (smarts, motif_id)}}
 
+    Sets data.node_label [N] (1.0 = rule-motif atom) and data.edge_label [E]
+    (1.0 = BOTH endpoints are rule-motif atoms; AND).
+
     Returns (annotated_data_list, stats_dict).
     """
     n_rule_pos = 0
     n_relabelled = 0
     n_pos_edges = 0
     n_total_edges = 0
+    n_pos_nodes = 0
+    n_total_nodes = 0
 
     out = []
     for data in data_list:
@@ -154,28 +164,34 @@ def annotate_split(data_list: List,
             if old_y != gt_y:
                 n_relabelled += 1
 
-        # Build edge_label [E]: 1.0 for edges touching rule-motif atoms
+        # Build node-level GT (authoritative target) and edge-level GT from it.
+        #   node_label[i] = 1.0  iff atom i belongs to a rule-clause motif
+        #   edge_label[e] = 1.0  iff BOTH endpoints are rule-motif atoms (AND)
+        n_nodes = data.x.size(0)
         n_edges = data.edge_index.size(1)
+        n_total_nodes += n_nodes
         n_total_edges += n_edges
+        node_label = torch.zeros(n_nodes, dtype=torch.float32)
         edge_label = torch.zeros(n_edges, dtype=torch.float32)
 
         if rule_fires and node_map:
             # Nodes whose fragment belongs to any motif in any rule clause
             all_rule_motifs = {m for cl in rule_clauses for m in cl}
-            rule_nodes = torch.tensor(
-                [idx for idx, (smarts, _mid) in node_map.items()
-                 if smarts in all_rule_motifs],
-                dtype=torch.long
-            )
-            if rule_nodes.numel() > 0:
-                n_nodes = data.x.size(0)
+            rule_nodes = [idx for idx, (smarts, _mid) in node_map.items()
+                          if smarts in all_rule_motifs]
+            if rule_nodes:
                 active = torch.zeros(n_nodes, dtype=torch.bool)
-                active[rule_nodes.clamp(0, n_nodes - 1)] = True
-                src, dst = data.edge_index
-                pos = active[src] | active[dst]
-                edge_label[pos] = 1.0
-                n_pos_edges += int(pos.sum().item())
+                idx_t = torch.tensor(rule_nodes, dtype=torch.long).clamp(0, n_nodes - 1)
+                active[idx_t] = True
+                node_label[active] = 1.0
+                n_pos_nodes += int(active.sum().item())
+                if n_edges > 0:
+                    src, dst = data.edge_index
+                    pos = active[src] & active[dst]   # AND of both endpoints
+                    edge_label[pos] = 1.0
+                    n_pos_edges += int(pos.sum().item())
 
+        data.node_label = node_label
         data.edge_label = edge_label
         out.append(data)
 
@@ -183,6 +199,10 @@ def annotate_split(data_list: List,
         'n_graphs':       len(out),
         'n_rule_pos':     n_rule_pos,
         'n_relabelled':   n_relabelled,
+        'n_pos_nodes':    n_pos_nodes,
+        'n_total_nodes':  n_total_nodes,
+        'node_pos_frac':  (n_pos_nodes / n_total_nodes
+                           if n_total_nodes > 0 else 0.0),
         'n_pos_edges':    n_pos_edges,
         'n_total_edges':  n_total_edges,
         'edge_pos_frac':  (n_pos_edges / n_total_edges
@@ -312,12 +332,12 @@ Examples
         torch.save(annotated, pt_path)
 
         all_stats[split_name] = stats
-        pos_frac = stats['edge_pos_frac']
         print(f'\n  [{split_name}]'
               f'  n={stats["n_graphs"]}'
               f'  rule_pos={stats["n_rule_pos"]}'
               f'  relabelled={stats["n_relabelled"]}'
-              f'  edge_pos_frac={pos_frac:.4f}'
+              f'  node_pos_frac={stats["node_pos_frac"]:.4f}'
+              f'  edge_pos_frac={stats["edge_pos_frac"]:.4f}'
               f'  → {pt_path.name}')
 
     # ── Save selected rule JSON ───────────────────────────────────────────────
