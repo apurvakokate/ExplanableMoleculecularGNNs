@@ -26,9 +26,12 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from SharedModules.data.vocab import load_vocab
-from SharedModules.data.loader import get_loaders, compute_pos_weights, TASK_TYPE
+from SharedModules.data.loader import (
+    get_loaders, compute_pos_weights, apply_gt_loaders, TASK_TYPE
+)
 from SharedModules.evaluation.pipeline import EvalPipeline
 from SharedModules.evaluation.metrics import evaluate_predictions
+from SharedModules.evaluation.motif_eval import compute_gt_roc
 from SharedModules.utils import set_seed, get_device
 from SharedModules.baselines.vanilla_gnn import VanillaGNN, train_vanilla_gnn
 from SharedModules.baselines.gnn_explainer import run_gnnexplainer
@@ -77,6 +80,13 @@ class VanillaConfig:
     use_wandb: bool = False
     wandb_project: str = 'ChemIntuit'
     wandb_entity: Optional[str] = None
+    # Synthetic ground-truth (Phase 4). When use_gt=True the train/valid/test
+    # loaders are swapped for the rule-relabelled caches written by
+    # SharedModules/data/apply_gt.py, exactly like MOSE-GNN / MotifSAT. This
+    # makes the test graphs carry node_label/edge_label so the post-hoc
+    # explainers can be scored with GT-ROC.
+    use_gt: bool = False
+    gt_cache: Optional[str] = None
 
     def variant_tag(self) -> str:
         enc = self.node_encoder
@@ -86,12 +96,16 @@ class VanillaConfig:
         # NOTE: epochs is deliberately NOT in the tag. A baseline/explainer run
         # uses --epochs 0 to LOAD the checkpoint trained at epochs>0; if epochs
         # were in the tag the load would look in the wrong directory.
+        # Synthetic-GT marker so GT and real-label runs never share a dir/
+        # checkpoint (mirrors MOSE/MotifSAT config tags). Kept in lockstep with
+        # the _ckpt_tag built in run().
+        _gt = 'gt' if getattr(self, 'use_gt', False) else 'real'
         try:
             from SharedModules.data.loader import hp_suffix
             hp = hp_suffix(self)
         except Exception:
             hp = ''
-        base = f'{self.backbone}_{enc}_norm-{_norm}_{self.vocab_variant}'
+        base = f'{self.backbone}_{enc}_norm-{_norm}_{_gt}_{self.vocab_variant}'
         return f'{base}_{hp}' if hp else base
 
     def to_dict(self) -> Dict:
@@ -129,6 +143,17 @@ def run(cfg: VanillaConfig) -> dict:
         vocab=vocab, processed_root=cfg.processed_root,
         batch_size=cfg.batch_size, normalize=(task_type == 'Regression'),
     )
+
+    # ── GT loader replacement (use_gt=True: synthetic rule labels) ─────────────
+    # Swap all three loaders for the apply_gt.py caches so the baseline trains
+    # on/eval against the same rule target as MOSE-GNN / MotifSAT, and the test
+    # graphs carry node_label/edge_label for post-hoc explainer GT-ROC.
+    if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
+        loaders, test_ds = apply_gt_loaders(
+            loaders, test_ds,
+            gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
+            vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
+        )
 
     from SharedModules.data.loader import NUM_CLASSES, resolve_node_encoder
     num_classes = NUM_CLASSES.get(cfg.dataset, 1)
@@ -177,12 +202,13 @@ def run(cfg: VanillaConfig) -> dict:
     # baseline evaluates under a filtered vocab but loads weights trained on the
     # unfiltered one. Keep this in lockstep with variant_tag().
     _norm = 'layernorm' if cfg.apply_layer_norm else getattr(cfg, 'conv_normalize', 'l2')
+    _gt = 'gt' if getattr(cfg, 'use_gt', False) else 'real'
     try:
         from SharedModules.data.loader import hp_suffix as _hp_suffix
         _hp = _hp_suffix(cfg)
     except Exception:
         _hp = ''
-    _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}_{_ckpt_variant}'
+    _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}_{_gt}_{_ckpt_variant}'
     if _hp:
         _ckpt_tag = f'{_ckpt_tag}_{_hp}'
     if not cfg.load_weights_from:
@@ -297,6 +323,31 @@ def run(cfg: VanillaConfig) -> dict:
             explainer_metrics[f'{_pfx}_score_mean'] = _st['score_mean']
             explainer_metrics[f'{_pfx}_score_std']  = _st['score_std']
 
+    # ── Per-explainer GT-ROC (node & edge) ─────────────────────────────────────
+    # The vanilla model has no intrinsic node attention, so its GT-ROC comes from
+    # each post-hoc explainer: broadcast the explainer's per-motif score onto its
+    # atoms (node_att[i] = score[nodes_to_motifs[i]]) and score that node
+    # attribution against the synthetic GT, reusing compute_gt_roc's node_att_fn
+    # path. Uses the 'mean' aggregation (the primary per-motif score). Requires
+    # --use_gt so the test graphs carry node_label / edge_label.
+    _gt_present = any(
+        getattr(d, 'node_label', None) is not None
+        or getattr(d, 'edge_label', None) is not None
+        for d in test_list
+    )
+    if _gt_present:
+        for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+            _sc_mean = results.get(f'{_ex}_mean', {})
+            if not _sc_mean:
+                continue
+            _fn = _motif_score_node_att_fn(_sc_mean)
+            _gn = compute_gt_roc(model, test_list, device,
+                                 node_att_fn=_fn, level='node')
+            _ge = compute_gt_roc(model, test_list, device,
+                                 node_att_fn=_fn, level='edge')
+            explainer_metrics[f'{_ex}_gt_roc_node_auc_mean'] = _gn['auc_mean']
+            explainer_metrics[f'{_ex}_gt_roc_edge_auc_mean'] = _ge['auc_mean']
+
     summary = {
         'dataset':          cfg.dataset,
         'fold':             cfg.fold,
@@ -355,6 +406,26 @@ def run(cfg: VanillaConfig) -> dict:
             print(f'  [warn] wandb logging failed ({_e}); continuing without W&B.')
 
     return results
+
+
+def _motif_score_node_att_fn(motif_scores: Dict[int, float]):
+    """Build a node_att_fn for compute_gt_roc from per-motif scores.
+
+    Broadcasts the per-motif score onto each atom via nodes_to_motifs:
+    ``node_att[i] = motif_scores[nodes_to_motifs[i]]`` (0.0 for unassigned
+    atoms, motif id < 0). This turns a post-hoc explainer's motif-level
+    attribution into a per-node attribution comparable against the
+    (motif-granular) synthetic GT.
+    """
+    def fn(data):
+        n2m = getattr(data, 'nodes_to_motifs', None)
+        n = data.x.size(0)
+        if n2m is None:
+            return torch.zeros(n, device=data.x.device)
+        vals = [float(motif_scores.get(int(m), 0.0)) if int(m) >= 0 else 0.0
+                for m in n2m.tolist()]
+        return torch.tensor(vals, dtype=torch.float32, device=data.x.device)
+    return fn
 
 
 def _save_explainer_scores(
@@ -427,6 +498,12 @@ def main():
                         help='Initialise a W&B run and log the final summary.')
     parser.add_argument('--wandb_project',   default='ChemIntuit')
     parser.add_argument('--wandb_entity',    default=None)
+    parser.add_argument('--use_gt',          action='store_true',
+                        help='Load ground-truth relabelled graphs from gt_cache '
+                             '(Phase 4) so post-hoc explainers get GT-ROC.')
+    parser.add_argument('--gt_cache',        default=None,
+                        help='Path to gt_cache directory written by phase4 '
+                             '(SharedModules/data/apply_gt.py).')
     args = parser.parse_args()
 
     # Make processed_root variant-specific so rbrics_old / rbrics / all_fallback_bpe
@@ -451,6 +528,8 @@ def main():
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
+        use_gt=args.use_gt,
+        gt_cache=args.gt_cache,
     )
     run(cfg)
 

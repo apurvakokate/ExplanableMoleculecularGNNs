@@ -198,13 +198,23 @@ def train_vanilla_gnn(
 
 
 def _compute_loss(criterion, out, y, task_type):
-    out = out.view_as(y) if out.shape == y.shape else out.view(-1)
-    y = y.view(-1) if task_type != 'MultiLabel' else y
-    valid = ~torch.isnan(y)
     if task_type == 'MultiLabel':
-        out_v = out[valid.any(dim=1)]
-        y_v = y[valid.any(dim=1)]
-        return criterion(out_v, y_v.float())
+        # out, y are [B, C]. Mask NaN targets PER ELEMENT (a molecule may have
+        # observed labels for only some tasks), then average BCE over the
+        # observed entries only. Masking per-row (valid.any) would still feed
+        # NaN targets from unobserved columns into the loss → NaN gradient.
+        if out.shape != y.shape:
+            out = out.view_as(y)
+        valid = ~torch.isnan(y)
+        y0 = torch.nan_to_num(y, nan=0.0).float()
+        per = F.binary_cross_entropy_with_logits(
+            out, y0, pos_weight=getattr(criterion, 'pos_weight', None),
+            reduction='none')
+        per = per[valid]
+        return per.mean() if per.numel() > 0 else (out.sum() * 0.0)
+    out = out.view_as(y) if out.shape == y.shape else out.view(-1)
+    y = y.view(-1)
+    valid = ~torch.isnan(y)
     return criterion(out[valid], y[valid].float())
 
 

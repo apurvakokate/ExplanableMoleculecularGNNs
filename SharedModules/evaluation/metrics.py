@@ -69,7 +69,6 @@ def evaluate_predictions(
     loader,
     device: torch.device,
     task_type: str,
-    node_att_fn=None,
 ) -> Dict[str, float]:
     """Run model on a DataLoader and compute prediction metrics.
 
@@ -81,9 +80,6 @@ def evaluate_predictions(
     device : torch.device
     task_type : str
         ``'BinaryClass'``, ``'Regression'``, or ``'MultiLabel'``.
-    node_att_fn : callable or None
-        If provided, called as ``node_att_fn(data)`` and the result is passed
-        as ``node_att`` to the model.  Used for GSAT-style models.
 
     Returns
     -------

@@ -188,7 +188,11 @@ class BaseGNN(nn.Module):
         Returns
         -------
         graph_emb : Tensor [B, hidden_dim]
-        node_emb  : Tensor [N, hidden_dim]  (before pooling, after readout weight)
+            Pooled graph embedding (the w_readout weighting, when enabled, is
+            applied to node embeddings before this pooling).
+        node_emb  : Tensor [N, hidden_dim]
+            Conv-stack output BEFORE any w_readout weighting (the raw node
+            embeddings; w_readout only affects the pooled graph_emb).
         """
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)

@@ -220,6 +220,8 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
     if exp == 'vanilla':
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr)]
         if en == 'on': cmd += ['--apply_layer_norm']
+        if syn == 'on':
+            cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp == 'baselines':
         # Post-hoc explainers: load the trained vanilla weights, no training.
         # Resolve the EXACT vanilla run dir (final layout) for this config so the
@@ -234,6 +236,10 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
                 '--load_weights_from', str(vdir),
                 '--weight_vocab_variant', weight_variant]
         if en == 'on': cmd += ['--apply_layer_norm']
+        if syn == 'on':
+            # GT-backed test set so the post-hoc explainers get GT-ROC; loads the
+            # GT-trained vanilla checkpoint (weights dir already encodes syn).
+            cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp in ('mose',):
         cmd += ['--epochs', str(epochs)]
         if w_feat: cmd += ['--w_feat']
