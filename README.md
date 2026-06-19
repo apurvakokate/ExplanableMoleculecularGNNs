@@ -89,10 +89,10 @@ The fragmentation engine and rule generator.
 
 Common code used by every model.
 
-- **`data/`** — `dataset.py` (CSV → PyG graphs), `loader.py` (train/val/test loader factory), `vocab.py` (loads motif pickles), `ground_truth.py` (attaches synthetic GT), `dataset_schema.py` (single source of truth for label columns).
+- **`data/`** — `dataset.py` (CSV → PyG graphs), `loader.py` (train/val/test loader factory), `vocab.py` (loads motif pickles), `apply_gt.py` (Phase 4: writes synthetic-GT relabelled `{split}_with_gt.pt` caches with `node_label`/`edge_label`), `ground_truth.py` (`GT_SUPPORTED_DATASETS`; the in-process GT path is dormant), `dataset_schema.py` (single source of truth for label columns).
 - **`models/`** — `gnn_base.py` (the shared `BaseGNN` backbone) and `conv_layers.py` (GIN/GCN/GAT/SAGE/PNA layers with attention scaling).
 - **`evaluation/`** — `pipeline.py` (the orchestrator) plus `metrics.py`, `motif_eval.py` (mask-removal impact, correlations), `multi_explanation.py`, `embedding_viz.py`, `wandb_logger.py`.
-- **`baselines/`** — `vanilla_gnn.py` (plain GNN), `run_vanilla.py` (trains it + runs post-hoc explainers), the post-hoc explainers `gnn_explainer.py` / `pg_explainer.py` / `mage.py`, and `apply_gt.py` (Phase 4).
+- **`baselines/`** — `vanilla_gnn.py` (plain GNN), `run_vanilla.py` (trains it + runs post-hoc explainers), and the post-hoc explainers `gnn_explainer.py` / `pg_explainer.py` / `mage.py`.
 
 ### `MOSE-GNN/` — ante-hoc model with global motif importance
 

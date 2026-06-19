@@ -223,7 +223,7 @@ def main():
 Examples
 --------
   export RULE_INDEX=0
-  source ../experiment_config.sh
+  source ../../experiment_config.sh
   python apply_gt.py \\
       --dataset Mutagenicity --fold 0 \\
       --vocab_root "$VOCAB_ROOT" \\

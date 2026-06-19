@@ -525,6 +525,98 @@ def get_loaders(
     return loaders, test_ds, meta
 
 
+def apply_gt_loaders(
+    loaders: Dict[str, DataLoader],
+    test_ds,
+    *,
+    gt_cache: str,
+    dataset: str,
+    fold: int,
+    vocab_variant: str,
+    batch_size: int,
+    num_workers: int = 0,
+    relabel: bool = True,
+    verbose: bool = True,
+) -> Tuple[Dict[str, DataLoader], object]:
+    """Swap train/valid/test loaders for the GT-relabelled graphs cached by
+    ``SharedModules/data/apply_gt.py`` (Phase 4).
+
+    apply_gt.py writes ``{split}_with_gt.pt`` under::
+
+        {gt_cache}/{dataset}/fold{fold}/{vocab_variant}/relabel1/
+
+    where each cached Data object carries the rule-derived ``data.y`` plus
+    ``data.node_label`` and ``data.edge_label``.  When GT training is requested
+    ALL three splits are replaced, so the model trains on (and is evaluated
+    against) the synthetic rule target rather than the original activity label.
+
+    Fails fast (``FileNotFoundError``) if the cache is incomplete instead of
+    silently mixing GT and original-label loaders — a partial swap would train
+    on a different target than intended and corrupt the experiment.
+
+    Parameters
+    ----------
+    loaders : dict[str, DataLoader]
+        Existing loaders from :func:`get_loaders`; returned with GT-backed
+        entries swapped in.
+    test_ds
+        Raw test dataset; replaced by the GT test list when present.
+    gt_cache : str
+        Root of the gt_cache directory written by phase 4.
+    dataset, fold, vocab_variant : str / int / str
+        Identify which cache subtree to load.
+    batch_size, num_workers : int
+        DataLoader settings for the replacement loaders.
+    relabel : bool
+        Load the ``relabel1`` (rule-relabelled ``y``) subtree when True,
+        ``relabel0`` otherwise.
+    verbose : bool
+        Print per-split load lines and the replacement summary.
+
+    Returns
+    -------
+    (loaders, test_ds) with GT-backed entries substituted.
+    """
+    gt_base = (Path(gt_cache) / dataset / f'fold{fold}' / vocab_variant
+               / ('relabel1' if relabel else 'relabel0'))
+    gt_loaded: Dict[str, list] = {}
+    gt_missing: List[str] = []
+    for split in ('train', 'valid', 'test'):
+        gt_path = gt_base / f'{split}_with_gt.pt'
+        if gt_path.exists():
+            gt_loaded[split] = torch.load(gt_path, weights_only=False)
+            if verbose:
+                print(f'  GT {split}: {len(gt_loaded[split])} graphs '
+                      f'← {gt_path.name}')
+        else:
+            gt_missing.append(str(gt_path))
+
+    if gt_missing:
+        raise FileNotFoundError(
+            "use_gt=True but the ground-truth cache is incomplete. Missing:\n  "
+            + "\n  ".join(gt_missing)
+            + f"\nRun phase-4 relabelling (SharedModules/data/apply_gt.py) for "
+              f"dataset={dataset} fold={fold} variant={vocab_variant} first, "
+              f"or unset --use_gt.")
+
+    for split, shuffle in (('train', True), ('valid', False), ('test', False)):
+        if split in gt_loaded:
+            loaders[split] = DataLoader(
+                gt_loaded[split], batch_size=batch_size,
+                shuffle=shuffle, num_workers=num_workers,
+            )
+    if 'test' in gt_loaded:
+        test_ds = gt_loaded['test']
+
+    if verbose and gt_loaded:
+        print('  Training on GT-relabelled data '
+              '(data.y = rule-based synthetic labels)')
+        print(f'  GT loaders replaced: {sorted(gt_loaded.keys())} '
+              f"(test loader now GT-backed: {'test' in gt_loaded})")
+
+    return loaders, test_ds
+
+
 def compute_deg_histogram(dataset) -> torch.Tensor:
     """Compute node degree histogram from a dataset for use with PNA.
 

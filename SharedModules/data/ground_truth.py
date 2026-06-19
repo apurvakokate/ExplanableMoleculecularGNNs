@@ -55,7 +55,7 @@ GT_SUPPORTED_DATASETS = {
 # DORMANT — COMMENTED OUT (not used in production).
 #
 # attach_ground_truth() and its helpers below are the original in-process GT
-# annotation path. They are superseded by SharedModules/baselines/apply_gt.py
+# annotation path. They are superseded by SharedModules/data/apply_gt.py
 # (Phase 4), which precomputes {split}_with_gt.pt caches (with data.node_label
 # and data.edge_label) that the trainers load directly. Nothing calls
 # attach_ground_truth(); it is kept here (inert, inside a triple-quoted block)

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from SharedModules.data.vocab import load_vocab
 from SharedModules.data.loader import (
-    get_loaders, compute_pos_weights, TASK_TYPE
+    get_loaders, compute_pos_weights, apply_gt_loaders, TASK_TYPE
 )
 from SharedModules.evaluation.pipeline import EvalPipeline
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger, build_impact_cache_from_eval
@@ -103,47 +103,16 @@ def run(cfg: MOSEConfig) -> dict:
                                             meta.node_encoder)
 
     # ── GT loader replacement (use_gt=True: train on synthetic rule labels) ──
-    # apply_gt.py writes train/valid/test_with_gt.pt for every split.
-    # When use_gt=True ALL three loaders are replaced so the model trains
-    # to predict the rule-derived label, not the original activity label.
-    # pos_weights are recomputed below from the GT training distribution.
+    # apply_gt.py writes train/valid/test_with_gt.pt for every split; the shared
+    # helper swaps all three loaders (fail-fast on an incomplete cache) so the
+    # model trains on/eval against the rule label. pos_weights are recomputed
+    # below from the GT training distribution.
     if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
-        from torch_geometric.loader import DataLoader as _DataLoader
-        _gt_base = (Path(cfg.gt_cache) / cfg.dataset
-                    / f'fold{cfg.fold}' / cfg.vocab_variant / 'relabel1')
-        _gt_loaded: dict = {}
-        _gt_missing: list = []
-        for _split in ('train', 'valid', 'test'):
-            _gt_path = _gt_base / f'{_split}_with_gt.pt'
-            if _gt_path.exists():
-                _gt_loaded[_split] = torch.load(_gt_path, weights_only=False)
-                print(f'  GT {_split}: {len(_gt_loaded[_split])} graphs ← {_gt_path.name}')
-            else:
-                _gt_missing.append(str(_gt_path))
-        # FAIL FAST: use_gt was explicitly requested, so a partial/missing GT
-        # cache must NOT silently fall back to mixing GT and original-label
-        # loaders (that trains on a different target than intended and corrupts
-        # the synthetic-relabel experiment).
-        if _gt_missing:
-            raise FileNotFoundError(
-                "use_gt=True but the ground-truth cache is incomplete. Missing:\n  "
-                + "\n  ".join(_gt_missing)
-                + f"\nRun phase-4 relabelling for dataset={cfg.dataset} "
-                  f"fold={cfg.fold} variant={cfg.vocab_variant} first, or unset --use_gt.")
-        for _split, _shuffle in (('train', True), ('valid', False), ('test', False)):
-            if _split in _gt_loaded:
-                loaders[_split] = _DataLoader(
-                    _gt_loaded[_split], batch_size=cfg.batch_size,
-                    shuffle=_shuffle, num_workers=0,
-                )
-        if 'test' in _gt_loaded:
-            test_ds = _gt_loaded['test']
-        if _gt_loaded:
-            print('  Training on GT-relabelled data '
-                  '(data.y = rule-based synthetic labels)')
-            print(f'  [FIX#6 active] GT loaders replaced: '
-                  f'{sorted(_gt_loaded.keys())} '
-                  f"(test loader now GT-backed: {'test' in _gt_loaded})")
+        loaders, test_ds = apply_gt_loaders(
+            loaders, test_ds,
+            gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
+            vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
+        )
 
     # Model
     model = build_model(cfg, vocab.num_motifs, task_type, meta,

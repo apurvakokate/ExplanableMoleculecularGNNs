@@ -289,7 +289,7 @@ apply_gt() {
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
     for ds in $DATASETS; do
         for fold in $FOLDS; do
-            python3 "$PROJECT/SharedModules/baselines/apply_gt.py" \
+            python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
                 --fold       "$fold" \
                 --vocab_root "$VOCAB_ROOT" \

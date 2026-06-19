@@ -115,7 +115,7 @@ ensure_gt_cache() {
             if [ -f "$done_marker" ]; then
                 continue
             fi
-            python3 "$PROJECT/SharedModules/baselines/apply_gt.py" \
+            python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset "$ds" --fold "$fold" \
                 --vocab_root "$VOCAB_ROOT" --variant "$vv" \
                 --rule_index "$rule_idx" \
