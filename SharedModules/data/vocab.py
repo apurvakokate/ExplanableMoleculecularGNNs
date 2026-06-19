@@ -46,13 +46,18 @@ class VocabData:
     motif_class : dict[int, dict[int, int]]
         {motif_id: {0: n_neg, 1: n_pos}}.
     lookup_train : dict[str, dict[int, tuple[str, int]]]
-        {smiles: {node_idx: (smarts, motif_id)}} — training + valid split.
+        {smiles: {node_idx: (smarts, motif_id)}} — training split only
+        (valid is in lookup_valid; older vocab dirs without a separate valid
+        file may have folded valid in here).
+    lookup_valid : dict[str, dict[int, tuple[str, int]]]
+        {smiles: {node_idx: (smarts, motif_id)}} — valid split (empty for
+        older vocab dirs produced before the valid file existed).
     lookup_test : dict[str, dict[int, tuple[str, int]]]
         {smiles: {node_idx: (smarts, motif_id)}} — test split.
     gmi_train : dict[str, set[int]]
-        {smiles: set[motif_id]} — training + valid.
+        {smiles: set[motif_id]} — training split only (-1 excluded).
     gmi_test : dict[str, set[int]]
-        {smiles: set[motif_id]} — test.
+        {smiles: set[motif_id]} — test split (-1 excluded).
     mask_cache : dict[str, dict[int, dict[str, torch.BoolTensor]]]
         {split: {motif_id: {smiles: bool_mask [n_atoms]}}}.
         Empty dict if cache files are absent (use compute_mask_cache()).

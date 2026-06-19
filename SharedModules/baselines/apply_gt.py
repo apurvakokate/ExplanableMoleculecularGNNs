@@ -274,12 +274,17 @@ Examples
     # ── Load data loaders to get Data objects ─────────────────────────────────
     print('  Loading data loaders...')
     task_type = TASK_TYPE.get(args.dataset, 'BinaryClass')
+    # processed_root MUST be variant-specific: the cached .pt bakes in
+    # nodes_to_motifs from THIS variant's vocab lookup. Sharing a path across
+    # variants (as the old non-variant path did) makes the second variant reuse
+    # the first variant's motif annotations → wrong edge_label / relabels.
     loaders, test_ds, meta = get_loaders(
         dataset=args.dataset,
         data_root=args.data_root,
         fold=args.fold,
         vocab=vocab,
-        processed_root=f'/tmp/apply_gt_processed/{args.dataset}_fold{args.fold}',
+        processed_root=(f'/tmp/apply_gt_processed/'
+                        f'{args.dataset}_fold{args.fold}/{args.variant}'),
         batch_size=args.batch_size,
     )
     print(f'    train={len(loaders["train"].dataset)}  '

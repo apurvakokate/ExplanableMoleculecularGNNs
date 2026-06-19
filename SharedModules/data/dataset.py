@@ -1,7 +1,8 @@
 """dataset.py — PyG InMemoryDataset for molecular property prediction.
 
 Builds Data objects with:
-    x              float [N, 51]   atom one-hot features (or raw for linear encoder)
+    x              float [N, 52]   atom one-hot features (51 elements + wildcard;
+                                    or raw for linear encoder)
     edge_index     long  [2, E]
     edge_attr      float [E, 8]    bond type (4) + stereo (4)
     y              float           label(s)
