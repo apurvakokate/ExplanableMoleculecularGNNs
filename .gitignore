@@ -28,6 +28,8 @@ env/
 *.pth
 *.pickle
 *.ckpt
+data/mutag/processed/
+data/mutag/raw/Mutagenicity.pkl
 
 # ── OS / editor ─────────────────────────────────────────────────────────────
 .DS_Store

@@ -91,6 +91,11 @@ class MotifSATConfig:
     use_gt: bool = False
     gt_cache: Optional[str] = None
 
+    # mutag motif-annotation artifacts (optional overrides; default to the
+    # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
+    mutag_index_maps_path: Optional[str] = None
+    mutag_smiles_csv_path: Optional[str] = None
+
     # W&B
     use_wandb: bool = False
     wandb_project: str = 'ChemIntuit'

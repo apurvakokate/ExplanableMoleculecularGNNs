@@ -47,6 +47,15 @@ TRAINERS = {
     'gsat':      'MotifSAT/run.py',                           # motif_method=none
 }
 
+# Datasets that support synthetic GT relabelling (mirror of
+# SharedModules/data/ground_truth.py::GT_SUPPORTED_DATASETS). For any other
+# dataset (mutag source GT, regression sets, OGB) the synthetic axis is forced
+# off so we never request a non-existent GT cache.
+GT_SUPPORTED_DATASETS = {
+    'Mutagenicity', 'Benzene', 'BBBP', 'hERG',
+    'Alkane_Carbonyl', 'Fluoride_Carbonyl',
+}
+
 PRESETS = {
     'onehot_nonorm': dict(features='onehot', layer_norm='none',      encoder_norm='off'),
     'linear_norm':   dict(features='linear', layer_norm='layernorm', encoder_norm='on'),
@@ -303,6 +312,11 @@ def main():
     planned = []           # de-duped (vanilla/baselines collapse inj/ep sweeps)
     seen_dirs = set()
     for exp, ds, fold, variant, cfg, inj, epochs, syn in runs:
+        # Non-GT datasets (mutag source GT, regression, OGB) never relabel:
+        # force the synthetic axis off so out_dir/config/cmd stay consistent and
+        # we don't request a GT cache that phase-4 intentionally skips.
+        if syn == 'on' and ds not in GT_SUPPORTED_DATASETS:
+            syn = 'off'
         cmd, out_dir = make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn)
         if str(out_dir) in seen_dirs:
             # vanilla/baseline slug drops inj/ep, so an inj/epoch sweep maps many

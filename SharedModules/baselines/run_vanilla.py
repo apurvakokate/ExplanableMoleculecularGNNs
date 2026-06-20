@@ -88,6 +88,11 @@ class VanillaConfig:
     use_gt: bool = False
     gt_cache: Optional[str] = None
 
+    # mutag motif-annotation artifacts (optional overrides; default to the
+    # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
+    mutag_index_maps_path: Optional[str] = None
+    mutag_smiles_csv_path: Optional[str] = None
+
     def variant_tag(self) -> str:
         enc = self.node_encoder
         # Effective inter-layer norm (none|l2|layernorm). apply_layer_norm=True
@@ -142,6 +147,8 @@ def run(cfg: VanillaConfig) -> dict:
         dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
         vocab=vocab, processed_root=cfg.processed_root,
         batch_size=cfg.batch_size, normalize=(task_type == 'Regression'),
+        mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
+        mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
     )
 
     # ── GT loader replacement (use_gt=True: synthetic rule labels) ─────────────
@@ -230,9 +237,14 @@ def run(cfg: VanillaConfig) -> dict:
     )
 
     # ── Prediction performance on all splits ──────────────────────────────────
+    # For regression, also report MAE/RMSE in the original target units
+    # (denormalised via the train z-score std).
+    _denorm = ((meta.norm_mean, meta.norm_std)
+               if task_type == 'Regression' else None)
     all_preds = {}
     for split_name in ('train', 'valid', 'test'):
-        m = evaluate_predictions(model, loaders[split_name], device, task_type)
+        m = evaluate_predictions(model, loaders[split_name], device, task_type,
+                                 denorm=_denorm)
         all_preds[split_name] = m
         print(f'  {split_name}: {m}')
 
@@ -362,6 +374,11 @@ def run(cfg: VanillaConfig) -> dict:
         'motif_method':     'none',
         'auc':              pred.get('auc', pred.get('auc_mean', float('nan'))),
         'rmse':             pred.get('rmse', float('nan')),
+        'mae':              pred.get('mae', float('nan')),
+        # regression metrics in original target units (denormalised); NaN for
+        # classification tasks
+        'rmse_orig':        pred.get('rmse_orig', float('nan')),
+        'mae_orig':         pred.get('mae_orig', float('nan')),
         'train_auc':        all_preds.get('train', {}).get('auc', float('nan')),
         'val_auc':          all_preds.get('valid', {}).get('auc', float('nan')),
         'pearson':          corr.get('pearson', float('nan')),
@@ -506,6 +523,13 @@ def main():
     parser.add_argument('--gt_cache',        default=None,
                         help='Path to gt_cache directory written by phase4 '
                              '(SharedModules/data/apply_gt.py).')
+    parser.add_argument('--mutag_index_maps_path', default=None,
+                        help='mutag only: override path to '
+                             'mutag_<fold>_index_maps.pkl (default: convention '
+                             'under --data_root).')
+    parser.add_argument('--mutag_smiles_csv_path', default=None,
+                        help='mutag only: override path to mutag_<fold>.csv '
+                             '(default: convention under --data_root).')
     args = parser.parse_args()
 
     # Make processed_root variant-specific so rbrics_old / rbrics / all_fallback_bpe
@@ -532,6 +556,8 @@ def main():
         wandb_entity=args.wandb_entity,
         use_gt=args.use_gt,
         gt_cache=args.gt_cache,
+        mutag_index_maps_path=args.mutag_index_maps_path,
+        mutag_smiles_csv_path=args.mutag_smiles_csv_path,
     )
     run(cfg)
 

@@ -69,6 +69,7 @@ def evaluate_predictions(
     loader,
     device: torch.device,
     task_type: str,
+    denorm: Optional[tuple] = None,
 ) -> Dict[str, float]:
     """Run model on a DataLoader and compute prediction metrics.
 
@@ -108,10 +109,19 @@ def evaluate_predictions(
     elif task_type == 'Regression':
         preds_r = preds.ravel()
         labels_r = labels.ravel()
-        return {
+        out = {
             'mae':  mae_score(labels_r, preds_r),
             'rmse': rmse_score(labels_r, preds_r),
         }
+        # Optionally also report metrics in the ORIGINAL target units. With
+        # z-score normalisation y_norm = (y - mean) / std, the error scales
+        # exactly by std (the mean cancels in differences), so the
+        # denormalised MAE/RMSE are the normalised values times std.
+        if denorm is not None:
+            _mean, _std = denorm
+            out['mae_orig']  = out['mae']  * float(_std)
+            out['rmse_orig'] = out['rmse'] * float(_std)
+        return out
 
     else:  # MultiLabel
         if preds.ndim == 1:

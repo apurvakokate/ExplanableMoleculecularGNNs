@@ -89,6 +89,8 @@ def run(cfg: MOSEConfig) -> dict:
         processed_root=cfg.processed_root,
         batch_size=cfg.batch_size,
         normalize=(task_type == 'Regression'),
+        mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
+        mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
     )
     print(f'  Task: {task_type}  train={len(loaders["train"].dataset)}'
           f'  val={len(loaders["valid"].dataset)}'
@@ -233,10 +235,15 @@ def run(cfg: MOSEConfig) -> dict:
             wandb_logger=wandb_logger,
         )
 
-    # Evaluate all splits (train / valid / test)
+    # Evaluate all splits (train / valid / test). For regression, also report
+    # MAE/RMSE in the original target units (denormalised via the train z-score
+    # std) alongside the normalised values.
+    _denorm = ((meta.norm_mean, meta.norm_std)
+               if task_type == 'Regression' else None)
     split_metrics = {}
     for split_name in ('train', 'valid', 'test'):
-        m = evaluate_predictions(model, loaders[split_name], device, task_type)
+        m = evaluate_predictions(model, loaders[split_name], device, task_type,
+                                 denorm=_denorm)
         split_metrics[split_name] = m
         if cfg.verbose:
             print(f'  {split_name}: {m}')
@@ -322,6 +329,10 @@ def run(cfg: MOSEConfig) -> dict:
         'auc':       pred.get('auc', pred.get('auc_mean', float('nan'))),
         'rmse':      pred.get('rmse', float('nan')),
         'mae':       pred.get('mae',  float('nan')),
+        # regression metrics in original target units (denormalised); NaN for
+        # classification tasks
+        'rmse_orig': split_metrics.get('test', {}).get('rmse_orig', float('nan')),
+        'mae_orig':  split_metrics.get('test', {}).get('mae_orig',  float('nan')),
         # correlation (score vs impact)
         'pearson':   corr.get('pearson',  float('nan')),
         'spearman':  corr.get('spearman', float('nan')),
@@ -405,6 +416,13 @@ def main():
                         help='Load ground-truth relabelled graphs from gt_cache')
     parser.add_argument('--gt_cache',    default=None,
                         help='Path to gt_cache directory written by phase4')
+    parser.add_argument('--mutag_index_maps_path', default=None,
+                        help='mutag only: override path to '
+                             'mutag_<fold>_index_maps.pkl (default: convention '
+                             'under --data_root).')
+    parser.add_argument('--mutag_smiles_csv_path', default=None,
+                        help='mutag only: override path to mutag_<fold>.csv '
+                             '(default: convention under --data_root).')
     parser.add_argument('--final_out_dir', action='store_true',
                         help='Treat --out_dir as the FINAL run dir (no '
                              '<dataset>/fold<k>/<variant_tag> append). Set by the '
@@ -465,6 +483,8 @@ def main():
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
             use_gt=args.use_gt, gt_cache=args.gt_cache,
+            mutag_index_maps_path=args.mutag_index_maps_path,
+            mutag_smiles_csv_path=args.mutag_smiles_csv_path,
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,

@@ -182,6 +182,8 @@ def run(cfg: MotifSATConfig) -> dict:
         processed_root=cfg.processed_root,
         batch_size=cfg.batch_size,
         normalize=(task_type == "Regression"),
+        mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
+        mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
     )
     print(f"  Task: {task_type}  "
           f"train={len(loaders['train'].dataset)}  "
@@ -215,6 +217,19 @@ def run(cfg: MotifSATConfig) -> dict:
     print(f"  [FIX#5 active] injection flags from CLI/config: "
           f"w_feat={cfg.w_feat} w_message={cfg.w_message} w_readout={cfg.w_readout} "
           f"(w_message is now opt-in, not forced True)")
+
+    # Guard (parity with MOSE): with no injection AND no edge-attention path the
+    # sampled/extracted attention is never applied in the 2nd forward pass, so it
+    # receives no task gradient and the explanation is inert — the model reduces
+    # to a plain backbone. learn_edge_att applies attention via edge_atten
+    # regardless of the w_* flags, so it is exempt.
+    if (not getattr(cfg, 'learn_edge_att', False)
+            and not (cfg.w_feat or cfg.w_message or cfg.w_readout)):
+        print("  [WARN] No attention injection enabled "
+              "(w_feat/w_message/w_readout all False) and learn_edge_att off: "
+              "the extractor attention is never applied, so it gets no task "
+              "gradient and the explanation is inert. Pass at least one --w_* "
+              "flag (or --learn_edge_att for base GSAT).")
 
     # Positive class weights
     pos_w = (compute_pos_weights(loaders["train"].dataset)
@@ -313,10 +328,14 @@ def run(cfg: MotifSATConfig) -> dict:
             wandb_logger=wandb_logger,
         )
 
-    # Evaluate all splits
+    # Evaluate all splits. For regression, also report MAE/RMSE in the original
+    # target units (denormalised via the train z-score std).
+    _denorm = ((meta.norm_mean, meta.norm_std)
+               if task_type == 'Regression' else None)
     split_metrics = {}
     for split_name in ("train", "valid", "test"):
-        m = evaluate_predictions(model, loaders[split_name], device, task_type)
+        m = evaluate_predictions(model, loaders[split_name], device, task_type,
+                                 denorm=_denorm)
         split_metrics[split_name] = m
         if cfg.verbose:
             print(f"  {split_name}: {m}")
@@ -453,6 +472,10 @@ def run(cfg: MotifSATConfig) -> dict:
         "auc":    pred.get("auc", pred.get("auc_mean", float("nan"))),
         "rmse":   pred.get("rmse", float("nan")),
         "mae":    pred.get("mae",  float("nan")),
+        # regression metrics in original target units (denormalised); NaN for
+        # classification tasks
+        "rmse_orig": split_metrics.get("test", {}).get("rmse_orig", float("nan")),
+        "mae_orig":  split_metrics.get("test", {}).get("mae_orig",  float("nan")),
         # correlation (score vs impact)
         "pearson":  corr.get("pearson",  float("nan")),
         "spearman": corr.get("spearman", float("nan")),
@@ -544,6 +567,13 @@ def main():
                              "model trains on the rule-derived synthetic label")
     parser.add_argument("--gt_cache",        default=None,
                         help="Path to gt_cache directory written by phase4")
+    parser.add_argument("--mutag_index_maps_path", default=None,
+                        help="mutag only: override path to "
+                             "mutag_<fold>_index_maps.pkl (default: convention "
+                             "under --data_root).")
+    parser.add_argument("--mutag_smiles_csv_path", default=None,
+                        help="mutag only: override path to mutag_<fold>.csv "
+                             "(default: convention under --data_root).")
     parser.add_argument("--final_out_dir",   action="store_true",
                         help="Treat --out_dir as the FINAL run dir (no "
                              "<dataset>/fold<k>/<variant_tag> append). Set by the "
@@ -593,6 +623,8 @@ def main():
             wandb_entity=args.wandb_entity,
             use_gt=args.use_gt,
             gt_cache=args.gt_cache,
+            mutag_index_maps_path=args.mutag_index_maps_path,
+            mutag_smiles_csv_path=args.mutag_smiles_csv_path,
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,

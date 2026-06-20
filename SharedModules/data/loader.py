@@ -61,6 +61,11 @@ class LoaderMeta:
     deg: Optional[torch.Tensor] = None
     # Degree histogram [max_deg+1] computed from training set.
     # Required for PNA backbone; None for all others.
+    norm_mean: float = 0.0
+    norm_std: float = 1.0
+    # Regression target normalisation stats (z-score) computed from the TRAIN
+    # split. Identity (0.0 / 1.0) when normalize=False. Used to denormalise
+    # MAE/RMSE back to the original target units for reporting.
 
 
 def resolve_node_encoder(cli_value: Optional[str], meta_value: str) -> str:
@@ -183,11 +188,17 @@ def write_hparams(out_dir, cfg) -> None:
 # ── mutag TUDataset ──────────────────────────────────────────────────────────
 
 class MutagTUDataset(torch.utils.data.Dataset):
-    """Wraps a list of mutag PyG Data objects, optionally attaching
-    ``nodes_to_motifs`` from a pre-computed index_map + vocab lookup.
+    """Wraps mutag ``Data`` objects from ``datasets.mutag.Mutag``, attaching
+    ChemIntuit ``nodes_to_motifs`` from the vocab lookup + index map.
 
-    The 14-dim node features (``data.x``) are kept exactly as loaded from
-    the TUDataset PKL — no re-encoding to the 52-dim one-hot.
+    Source ground truth: each ``Data`` from ``Mutag.process()`` already carries
+    ``node_label`` [N] and ``edge_label`` [E] (from ``Mutagenicity_edge_gt.txt``).
+    ``clone()`` preserves them; do NOT use ``--use_gt`` / synthetic relabelling
+    for mutag.
+
+    Motif annotations: this wrapper sets ``nodes_to_motifs`` (plural) from the
+    Phase-1 vocab lookup. That is independent of Mutag's optional built-in
+    ``node_to_motifs`` (BRICS, only when ``Mutag(add_motifs=True)``).
 
     Parameters
     ----------
@@ -233,6 +244,13 @@ class MutagTUDataset(torch.utils.data.Dataset):
         data = self._data[idx].clone()
         n = data.x.size(0)
 
+        # Source ground-truth explanation labels. mutag ships GT in its source
+        # (no synthetic relabelling). data.clone() preserves any node_label /
+        # edge_label the external Mutag loader already attached; if it instead
+        # uses common alias names (edge_mask / node_mask), normalise them to the
+        # canonical node_label / edge_label the eval pipeline reads.
+        _normalize_source_gt_labels(data)
+
         if self._vocab is None or not self._smiles[idx]:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
             return data
@@ -244,13 +262,110 @@ class MutagTUDataset(torch.utils.data.Dataset):
         return data
 
 
+class OGBMotifDataset(torch.utils.data.Dataset):
+    """Wrap OGB graph indices, attaching ``nodes_to_motifs`` from vocab lookup.
+
+    OGB SMILES (from ``mol.csv.gz``) use the same atom order as the PyG graph,
+    so canonical-SMILES lookup applies without an index map.
+    """
+
+    def __init__(
+        self,
+        ogb_dataset,
+        indices,
+        vocab: Optional[VocabData] = None,
+        split: str = 'training',
+    ):
+        self._ds = ogb_dataset
+        self._indices = list(indices)
+        self._lookup = vocab.lookup_for_split(split) if vocab else {}
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, idx: int):
+        from .graph_to_smiles import apply_motif_lookup_canonical
+        i = self._indices[idx]
+        data = self._ds[i].clone()
+        n = data.num_nodes
+        smiles = getattr(data, 'smiles', None)
+        if self._lookup and smiles:
+            data.nodes_to_motifs = apply_motif_lookup_canonical(
+                n, smiles, self._lookup)
+        else:
+            data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
+        return data
+
+
+def _normalize_source_gt_labels(data) -> None:
+    """In-place: ensure ``node_label`` / ``edge_label`` (float) are present for
+    source-GT datasets like mutag.
+
+    ``datasets.mutag.Mutag`` already attaches canonical ``node_label`` and
+    ``edge_label`` on each ``Data`` (from ``Mutagenicity_edge_gt.txt``). For
+    mutag specifically (``Mutagenicity_label_readme.txt``: ``y=0`` mutagen,
+    ``y=1`` nonmutagen):
+      - ``edge_label`` [E]: 1 on NO2/NH2 motif edges (from edge_gt).
+      - ``node_label`` [N]: 1 on nodes incident to those edges, but ONLY when
+        ``y == 0`` (mutagen); non-mutagen graphs (``y == 1``) have both labels
+        zeroed by the loader.
+      - Mutagen graphs (``y == 0``) with no motif edges are dropped at process
+        time.
+
+    ``MutagTUDataset`` calls this after ``clone()`` as a fallback for loaders
+    that use alias names (``edge_mask``, etc.). No-op when canonical labels exist.
+    """
+    if getattr(data, 'edge_label', None) is None:
+        for _alias in ('edge_mask', 'edge_gt', 'edge_y', 'ground_truth_mask'):
+            _v = getattr(data, _alias, None)
+            if _v is not None:
+                data.edge_label = _v.float().view(-1)
+                break
+    if getattr(data, 'node_label', None) is None:
+        for _alias in ('node_mask', 'node_gt', 'node_y'):
+            _v = getattr(data, _alias, None)
+            if _v is not None:
+                data.node_label = _v.float().view(-1)
+                break
+
+
+def _import_mutag_class(data_root: str):
+    """Import ``datasets.mutag.Mutag`` from the repo or legacy HPC layout.
+
+    Search order (first match wins):
+      1. ``{repo_root}/``               — vendored ``datasets/mutag.py``
+      2. ``{data_root.parent}/src/``    — legacy cluster layout
+      3. ``{data_root}/``               — data dir on PYTHONPATH
+    """
+    import sys
+    from pathlib import Path as _P
+    _here = _P(__file__).resolve()
+    _repo = _here.parents[2]   # SharedModules/data/loader.py → repo root
+    for cand in (_repo, _P(data_root).parent / 'src', _P(data_root)):
+        p = str(cand)
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from datasets.mutag import Mutag
+        return Mutag
+    except ImportError as e:
+        raise ImportError(
+            "Cannot import datasets.mutag.Mutag. Expected datasets/mutag.py "
+            f"under the repo root ({_repo}) or on PYTHONPATH. Original: {e}"
+        ) from e
+
+
 def _get_mutag_loaders(
     data_root: str,
     vocab: Optional[VocabData],
     batch_size: int,
     num_workers: int,
+    fold: int = 0,
     index_maps_path: Optional[str] = None,
     smiles_csv_path: Optional[str] = None,
+    splits_path: Optional[str] = None,
+    mutag_seed: int = 42,
+    mutag_x: bool = True,
 ):
     """Build loaders for the mutag TUDataset.
 
@@ -270,21 +385,36 @@ def _get_mutag_loaders(
         Path to the ``mutag_0.csv`` produced by ``export_mutag_dataset_to_csv.py``
         (columns: smiles, label, group, graph_id).  Used to recover the
         per-graph mapped SMILES and split assignments.
+    splits_path : str or None
+        Path to ``mutag_{fold}_splits.pkl`` (GSAT-style indices).  Preferred over
+        the CSV ``group`` column when present.
+    mutag_seed : int
+        Base RNG seed; effective seed = ``mutag_seed + fold`` when splits are
+        computed on the fly (fallback only).
+    mutag_x : bool
+        GSAT explanation split when computing splits on the fly.
     """
-    try:
-        import sys
-        from pathlib import Path as _P
-        _src = str(_P(data_root).parent / 'src')
-        if _src not in sys.path:
-            sys.path.insert(0, _src)
-        from datasets.mutag import Mutag
-    except ImportError:
-        raise ImportError(
-            "Cannot import datasets.mutag.Mutag. "
-            "Ensure the MotifSAT src directory is on PYTHONPATH or pass "
-            "data_root pointing to a directory with datasets/ accessible.")
-
+    Mutag = _import_mutag_class(data_root)
     dataset = Mutag(root=str(Path(data_root) / 'mutag'))
+
+    # Fail fast: a vocab was supplied (caller wants motif annotations) but the
+    # index maps / mapped-SMILES CSV are absent. Without them every node would
+    # silently become motif_id=-1 (a degenerate, all-unknown run that looks like
+    # it succeeded). Require the export artifacts instead of degrading silently.
+    if vocab is not None:
+        _missing = []
+        if not (index_maps_path and Path(index_maps_path).exists()):
+            _missing.append(index_maps_path or
+                            f'{data_root}/mutag_{fold}_index_maps.pkl')
+        if not (smiles_csv_path and Path(smiles_csv_path).exists()):
+            _missing.append(smiles_csv_path or f'{data_root}/mutag_{fold}.csv')
+        if _missing:
+            raise FileNotFoundError(
+                "mutag vocab was provided but its motif-annotation artifacts are "
+                "missing:\n  " + "\n  ".join(_missing) +
+                "\nRun MotifBreakdown/export_mutag_dataset_to_csv.py first to "
+                "produce mutag_<fold>.csv + mutag_<fold>_index_maps.pkl, or pass "
+                "vocab=None to run mutag without motif annotations.")
 
     # Load index_maps and smiles_csv if provided
     index_maps: Dict = {}
@@ -303,28 +433,49 @@ def _get_mutag_loaders(
             smiles_by_graph[gid] = str(row['smiles'])
             split_by_graph[gid]  = str(row.get('group', 'training'))
 
-    # Partition by split
-    train_items: List[Tuple[int, object]] = []
-    val_items:   List[Tuple[int, object]] = []
-    test_items:  List[Tuple[int, object]] = []
+    if smiles_csv_path and Path(smiles_csv_path).exists():
+        import pandas as pd
+        df_smi = pd.read_csv(smiles_csv_path)
+        for _, row in df_smi.iterrows():
+            gid = int(row['graph_id'])
+            smiles_by_graph[gid] = str(row['smiles'])
+            split_by_graph[gid]  = str(row.get('group', 'training'))
 
-    for i in range(len(dataset)):
-        grp = split_by_graph.get(i, 'training')
-        if grp == 'valid':
-            val_items.append(i)
-        elif grp == 'test':
-            test_items.append(i)
-        else:
-            train_items.append(i)
+    # Resolve train/valid/test indices (GSAT splits pickle preferred)
+    train_items: List[int] = []
+    val_items:   List[int] = []
+    test_items:  List[int] = []
 
-    # When no CSV is provided, use a fixed 80/10/10 split
-    if not smiles_csv_path:
-        n = len(dataset)
-        n_train = int(0.8 * n)
-        n_val   = int(0.1 * n)
-        train_items = list(range(n_train))
-        val_items   = list(range(n_train, n_train + n_val))
-        test_items  = list(range(n_train + n_val, n))
+    _splits_file = splits_path or f'{data_root}/mutag_{fold}_splits.pkl'
+    if Path(_splits_file).exists():
+        from .mutag_splits import load_mutag_splits
+        split_idx = load_mutag_splits(_splits_file)
+        train_items = list(split_idx['train'])
+        val_items   = list(split_idx['valid'])
+        test_items  = list(split_idx['test'])
+    elif split_by_graph:
+        for i in range(len(dataset)):
+            grp = split_by_graph.get(i, 'training')
+            if grp == 'valid':
+                val_items.append(i)
+            elif grp == 'test':
+                test_items.append(i)
+            else:
+                train_items.append(i)
+        if not val_items and not test_items:
+            raise ValueError(
+                f"mutag CSV {smiles_csv_path} has no valid/test groups. "
+                f"Re-run export_mutag_dataset_to_csv.py (writes mutag_{fold}_splits.pkl).")
+    else:
+        from .mutag_splits import get_mutag_split_idx
+        print(f"  [mutag] no splits file; computing on-the-fly "
+              f"(seed={mutag_seed + fold}, mutag_x={mutag_x}). "
+              f"Run export_mutag_dataset_to_csv.py for reproducible splits.")
+        split_idx = get_mutag_split_idx(
+            dataset, seed=mutag_seed + fold, mutag_x=mutag_x)
+        train_items = list(split_idx['train'])
+        val_items   = list(split_idx['valid'])
+        test_items  = list(split_idx['test'])
 
     def _build_ds(indices, split_name):
         data_list   = [dataset[i] for i in indices]
@@ -350,7 +501,7 @@ def _get_mutag_loaders(
         num_classes=1,
         task_type='BinaryClass',
         dataset='mutag',
-        fold=0,
+        fold=fold,
         node_encoder='onehot',   # 14-dim pre-baked features, identity passthrough
     )
     return loaders, test_ds, meta
@@ -361,6 +512,7 @@ def _get_ogb_loaders(
     data_root: str,
     batch_size: int = 128,
     num_workers: int = 0,
+    vocab: Optional[VocabData] = None,
 ):
     """Build loaders for an OGB molecular dataset.
 
@@ -374,9 +526,12 @@ def _get_ogb_loaders(
     task_type = TASK_TYPE.get(dataset, 'BinaryClass')
     num_classes = NUM_CLASSES.get(dataset, 1)
 
-    train_ds = ogb_dataset[split_idx['train']]
-    val_ds   = ogb_dataset[split_idx['valid']]
-    test_ds  = ogb_dataset[split_idx['test']]
+    train_ds = OGBMotifDataset(
+        ogb_dataset, split_idx['train'], vocab, split='training')
+    val_ds = OGBMotifDataset(
+        ogb_dataset, split_idx['valid'], vocab, split='valid')
+    test_ds = OGBMotifDataset(
+        ogb_dataset, split_idx['test'], vocab, split='test')
 
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size, shuffle=True,
@@ -386,6 +541,7 @@ def _get_ogb_loaders(
         'test':  DataLoader(test_ds,  batch_size=batch_size, shuffle=False,
                             num_workers=num_workers),
     }
+    _deg = compute_deg_histogram(train_ds)
     meta = LoaderMeta(
         x_dim=OGB_NODE_FEAT_DIM,
         edge_attr_dim=OGB_EDGE_FEAT_DIM,
@@ -394,6 +550,7 @@ def _get_ogb_loaders(
         dataset=dataset,
         fold=0,
         node_encoder='atom_encoder',
+        deg=_deg,
     )
     return loaders, test_ds, meta
 
@@ -410,6 +567,9 @@ def get_loaders(
     force_reprocess: bool = False,
     mutag_index_maps_path: Optional[str] = None,
     mutag_smiles_csv_path: Optional[str] = None,
+    mutag_splits_path: Optional[str] = None,
+    mutag_seed: int = 42,
+    mutag_x: bool = True,
 ) -> Tuple[Dict[str, DataLoader], object, LoaderMeta]:
     """Build train/val/test DataLoaders for a dataset fold.
 
@@ -435,6 +595,10 @@ def get_loaders(
     mutag_smiles_csv_path : str or None
         Path to ``mutag_0.csv`` exported by ``export_mutag_dataset_to_csv.py``
         (mutag only). Provides split assignments and mapped SMILES per graph.
+    mutag_splits_path : str or None
+        Path to ``mutag_{fold}_splits.pkl`` (mutag only).
+    mutag_seed, mutag_x
+        Fallback split parameters when no splits pickle exists (mutag only).
 
     Returns
     -------
@@ -444,14 +608,22 @@ def get_loaders(
     """
     # ── OGB datasets ──────────────────────────────────────────────────────
     if dataset in OGB_DATASET_NAMES:
-        return _get_ogb_loaders(dataset, data_root, batch_size, num_workers)
+        return _get_ogb_loaders(
+            dataset, data_root, batch_size, num_workers, vocab=vocab)
 
     # ── mutag TUDataset (14-dim pre-baked features) ───────────────────────
     if dataset == 'mutag':
+        _imp = mutag_index_maps_path or f'{data_root}/mutag_{fold}_index_maps.pkl'
+        _scsv = mutag_smiles_csv_path or f'{data_root}/mutag_{fold}.csv'
+        _splits = mutag_splits_path or f'{data_root}/mutag_{fold}_splits.pkl'
         return _get_mutag_loaders(
             data_root, vocab, batch_size, num_workers,
-            index_maps_path=mutag_index_maps_path,
-            smiles_csv_path=mutag_smiles_csv_path,
+            fold=fold,
+            index_maps_path=_imp,
+            smiles_csv_path=_scsv,
+            splits_path=_splits,
+            mutag_seed=mutag_seed,
+            mutag_x=mutag_x,
         )
 
     # ── CSV-based molecular datasets ──────────────────────────────────────
@@ -522,6 +694,8 @@ def get_loaders(
         fold=fold,
         node_encoder='onehot',   # 52-dim atom-type one-hot, identity passthrough
         deg=_deg,
+        norm_mean=(train_ds.mean if normalize else 0.0),
+        norm_std=(train_ds.std if normalize else 1.0),
     )
     return loaders, test_ds, meta
 

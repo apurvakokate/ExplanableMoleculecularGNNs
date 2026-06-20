@@ -251,6 +251,19 @@ Examples
     set_seed(args.seed)
     relabel = not args.no_relabel
 
+    # Guard: synthetic relabelling only makes sense for the classification
+    # datasets that have a motif-rule GT pipeline. Regression sets (esol,
+    # Lipophilicity) have no rule-fires label, and mutag ships SOURCE GT and must
+    # NOT be synthetically relabelled. Fail fast rather than silently writing a
+    # bogus 0/1 cache.
+    from SharedModules.data.ground_truth import GT_SUPPORTED_DATASETS
+    if args.dataset not in GT_SUPPORTED_DATASETS:
+        raise ValueError(
+            f"--dataset {args.dataset!r} is not in GT_SUPPORTED_DATASETS "
+            f"({sorted(GT_SUPPORTED_DATASETS)}). Synthetic GT relabelling is only "
+            f"defined for these classification datasets. Regression datasets and "
+            f"mutag (which has source GT) must not be relabelled.")
+
     print(f'\n{"="*60}')
     print(f'  Phase 4 — GT annotation')
     print(f'  dataset    = {args.dataset}')

@@ -290,6 +290,7 @@ def verify_mutag_index_alignment(
 def build_mutag_smiles_df(
     data_list,
     split_name: str = 'all',
+    groups: Optional[List[str]] = None,
     verify: bool = True,
 ) -> Tuple[pd.DataFrame, Dict[str, int]]:
     """Convert a mutag PyG dataset to a DataFrame with mapped SMILES.
@@ -305,7 +306,10 @@ def build_mutag_smiles_df(
         Must have .x (feature matrix), .y (label), .node_type (int tensor),
         .edge_index (LongTensor [2, E]).
     split_name : str
-        Value to use in the 'group' column of the output CSV.
+        Default value for the 'group' column when ``groups`` is not provided.
+    groups : list[str] or None
+        Per-graph group labels (``training`` | ``valid`` | ``test``), one per
+        graph in ``data_list``.  When given, overrides ``split_name``.
     verify : bool
         Run verify_mutag_index_alignment on each graph.
 
@@ -332,9 +336,11 @@ def build_mutag_smiles_df(
         mapped_smiles, g2s = graph_to_mapped_smiles(
             node_types, edge_src, edge_dst)
 
+        grp = groups[i] if groups is not None else split_name
+
         if mapped_smiles is None:
             stats['failed'] += 1
-            rows.append({'smiles': None, 'label': label, 'group': split_name,
+            rows.append({'smiles': None, 'label': label, 'group': grp,
                          'graph_id': i, 'conversion_ok': False,
                          'verify_ok': False})
             continue
@@ -351,7 +357,7 @@ def build_mutag_smiles_df(
         index_maps[mapped_smiles] = g2s
         rows.append({'smiles':        mapped_smiles,
                      'label':         label,
-                     'group':         split_name,
+                     'group':         grp,
                      'graph_id':      i,
                      'conversion_ok': True,
                      'verify_ok':     verify_ok})
@@ -409,6 +415,26 @@ def verify_ogb_dataset_alignment(
 # ─────────────────────────────────────────────────────────────────────────────
 # MolDataset helper: apply index_map when building nodes_to_motifs
 # ─────────────────────────────────────────────────────────────────────────────
+
+def apply_motif_lookup_canonical(
+    n_nodes: int,
+    smiles: str,
+    lookup: Dict[str, Dict[int, Tuple[str, int]]],
+) -> torch.Tensor:
+    """Build ``nodes_to_motifs`` for OGB / canonical-SMILES datasets.
+
+    OGB ``smiles2graph`` uses the same atom order as ``Chem.MolFromSmiles``,
+    so motif lookup keys (canonical SMILES atom indices) map directly to graph
+    node indices — no atom-map index translation needed.
+    """
+    ntm = torch.full((n_nodes,), -1, dtype=torch.long)
+    smi_lookup = lookup.get(str(smiles), {})
+    for node_idx, entry in smi_lookup.items():
+        ni = int(node_idx)
+        if 0 <= ni < n_nodes and entry is not None:
+            ntm[ni] = entry[1]
+    return ntm
+
 
 def apply_motif_lookup_with_index_map(
     n_nodes: int,

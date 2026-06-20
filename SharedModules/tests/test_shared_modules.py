@@ -959,6 +959,19 @@ class TestMutagTUDataset(unittest.TestCase):
         # x must still be 14-dim
         self.assertEqual(out.x.shape[1], MUTAG_X_DIM)
 
+    def test_source_gt_labels_preserved_for_eval(self):
+        """Mutagen (y=0) source GT must survive clone for compute_gt_roc."""
+        from SharedModules.data.loader import MutagTUDataset
+        data = self._make_data(label=0.0)
+        data.edge_label = torch.tensor([0., 1., 1., 0., 0., 0., 1., 1., 0.])
+        data.node_label = torch.tensor([0., 0., 0., 0., 0., 0., 1., 1., 1.])
+        out = MutagTUDataset([data], vocab=None)[0]
+        self.assertIsNotNone(out.edge_label)
+        self.assertIsNotNone(out.node_label)
+        self.assertGreater(float(out.edge_label.sum()), 0.0)
+        self.assertGreater(float(out.node_label.sum()), 0.0)
+        self.assertLess(float(out.node_label.sum()), out.node_label.numel())
+
     def test_meta_x_dim_is_14(self):
         """LoaderMeta for mutag must report x_dim = MUTAG_X_DIM = 14."""
         from SharedModules.data.loader import MUTAG_X_DIM, LoaderMeta
@@ -1681,6 +1694,47 @@ class TestMultiExplanation(unittest.TestCase):
         total = (summary["mean_ratio_H0"] + summary["mean_ratio_H1"] + summary["mean_ratio_H2"]).round(4)
         # Each row's mean ratios should sum to approximately 1
         self.assertTrue((total > 0.9).all() and (total <= 1.01).all())
+
+
+class TestMutagSplits(unittest.TestCase):
+    """GSAT-style mutag train/valid/test indexing."""
+
+    @staticmethod
+    def _mock_dataset(specs):
+        """specs: list of (y, n_gt_edges)"""
+        out = []
+        for y, n_gt in specs:
+            e = max(n_gt, 1)
+            d = Data(
+                y=torch.tensor([[float(y)]]),
+                edge_label=torch.tensor([1.0] * n_gt + [0.0] * (e - n_gt)),
+                x=torch.zeros(3, 14),
+            )
+            out.append(d)
+        return out
+
+    def test_standard_split_disjoint(self):
+        from SharedModules.data.mutag_splits import get_mutag_split_idx
+        ds = self._mock_dataset([(0, 1)] * 20)
+        idx = get_mutag_split_idx(ds, seed=0, mutag_x=False)
+        all_idx = idx['train'] + idx['valid'] + idx['test']
+        self.assertEqual(len(all_idx), len(ds))
+        self.assertEqual(len(set(all_idx)), len(all_idx))
+
+    def test_mutag_x_test_is_mutagen_with_motif_gt(self):
+        """mutag_x test = y==0 (mutagen) graphs with edge_label > 0."""
+        from SharedModules.data.mutag_splits import get_mutag_split_idx
+        # (y, n_gt): y=0 mutagen, y=1 nonmutagen
+        ds = self._mock_dataset([(0, 2), (1, 0), (0, 0), (0, 1)])
+        idx = get_mutag_split_idx(ds, seed=0, mutag_x=True)
+        self.assertEqual(set(idx['test']), {0, 3})
+        self.assertEqual(len(idx['train']) + len(idx['valid']), len(ds))
+
+    def test_group_for_graph_mutag_x_priority(self):
+        from SharedModules.data.mutag_splits import group_for_graph
+        split_idx = {'train': [0, 1], 'valid': [2], 'test': [1]}
+        self.assertEqual(group_for_graph(1, split_idx, mutag_x=True), 'test')
+        self.assertEqual(group_for_graph(0, split_idx, mutag_x=True), 'training')
 
 
 if __name__ == '__main__':

@@ -109,7 +109,16 @@ ensure_vocab() {
 ensure_gt_cache() {
     local vv=$1 rule_idx=$2
     echo "   [phase4] ensuring GT cache for vocab=$vv rule_index=$rule_idx"
+    # Synthetic relabelling is only defined for these classification datasets
+    # (mirror of SharedModules/data/ground_truth.py::GT_SUPPORTED_DATASETS).
+    # Regression sets and mutag (source GT) are skipped — apply_gt.py raises for
+    # them, which would otherwise abort the whole variant.
+    local GT_OK=" Mutagenicity Benzene BBBP hERG Alkane_Carbonyl Fluoride_Carbonyl "
     for ds in $DATASETS; do
+        case "$GT_OK" in
+            *" $ds "*) : ;;
+            *) echo "   [phase4] skip $ds (no synthetic GT; source/regression)"; continue ;;
+        esac
         for fold in $FOLDS; do
             local done_marker="$GT_CACHE/$ds/fold$fold/$vv/relabel1/train_with_gt.pt"
             if [ -f "$done_marker" ]; then
@@ -181,7 +190,9 @@ run_one_mose() {
 }
 
 run_one_gsat() {
-    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 key=$8
+    local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    local gt_args=""
+    [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/MotifSAT/run.py" \
         --dataset "$ds" --fold "$fold" --backbone "$bb" \
         --node_encoder "$NODE_ENCODER" --motif_method none \
@@ -189,7 +200,7 @@ run_one_gsat() {
         --info_loss_coef 1.0 --epochs "$EPOCHS" --conv_normalize "$cn" \
         --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/gsat" $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/gsat" $gt_args $WANDB_FLAGS
 }
 
 run_one_motifsat() {
@@ -239,15 +250,27 @@ for key in $VARIANTS_RUN; do
         fi
     fi
 
+    GT_OK=" Mutagenicity Benzene BBBP hERG Alkane_Carbonyl Fluoride_Carbonyl "
     for fold in $FOLDS; do
         for ds in $DATASETS; do
+            # Synthetic GT only exists for the supported classification sets; for
+            # mutag (source GT) and regression sets, force real labels even in a
+            # synthetic variant so they train on their own target instead of
+            # crashing on a missing GT cache.
+            ds_use_gt="$use_gt"
+            if [ "$use_gt" = "1" ]; then
+                case "$GT_OK" in
+                    *" $ds "*) : ;;
+                    *) ds_use_gt=0 ;;
+                esac
+            fi
             for bb in $BACKBONES; do
-                echo " [$key fold=$fold $ds $bb] vanilla → baselines → mose → gsat → motifsat"
-                run_one_vanilla   "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
-                run_one_baselines "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
-                run_one_mose      "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
-                run_one_gsat      "$bb" "$ds" "$fold" "$vv" "$cn" "" "" "$key"
-                run_one_motifsat  "$bb" "$ds" "$fold" "$vv" "$cn" "$use_gt" "$GT_CACHE" "$key"
+                echo " [$key fold=$fold $ds $bb labels_gt=$ds_use_gt] vanilla → baselines → mose → gsat → motifsat"
+                run_one_vanilla   "$bb" "$ds" "$fold" "$vv" "$cn" "$ds_use_gt" "$GT_CACHE" "$key"
+                run_one_baselines "$bb" "$ds" "$fold" "$vv" "$cn" "$ds_use_gt" "$GT_CACHE" "$key"
+                run_one_mose      "$bb" "$ds" "$fold" "$vv" "$cn" "$ds_use_gt" "$GT_CACHE" "$key"
+                run_one_gsat      "$bb" "$ds" "$fold" "$vv" "$cn" "$ds_use_gt" "$GT_CACHE" "$key"
+                run_one_motifsat  "$bb" "$ds" "$fold" "$vv" "$cn" "$ds_use_gt" "$GT_CACHE" "$key"
             done
         done
     done
