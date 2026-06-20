@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import sys, os
@@ -21,10 +22,19 @@ from SharedModules.utils import save_checkpoint
 
 def _task_loss(criterion, out, y, task_type):
     if task_type == 'MultiLabel':
+        # out, y are [B, C]. Mask NaN targets PER ELEMENT (a molecule may have
+        # observed labels for only some tasks), then average BCE over the
+        # observed entries only. Masking per-row (valid.any) would still feed
+        # NaN targets from unobserved columns into the loss → NaN gradient.
+        if out.shape != y.shape:
+            out = out.view_as(y)
         valid = ~torch.isnan(y)
-        if not valid.any():
-            return torch.tensor(0.0, device=out.device, requires_grad=True)
-        return criterion(out[valid.any(dim=1)], y[valid.any(dim=1)].float())
+        y0 = torch.nan_to_num(y, nan=0.0).float()
+        per = F.binary_cross_entropy_with_logits(
+            out, y0, pos_weight=getattr(criterion, 'pos_weight', None),
+            reduction='none')
+        per = per[valid]
+        return per.mean() if per.numel() > 0 else (out.sum() * 0.0)
     valid = ~torch.isnan(y.view(-1))
     return criterion(out.view(-1)[valid], y.view(-1)[valid].float())
 

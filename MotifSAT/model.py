@@ -168,12 +168,21 @@ class GSAT(nn.Module):
                 "the motif-pooling scorer, or 'none'/'loss' for node-level "
                 "attention."
             )
-        assert motif_method in ('none', 'loss', 'readout'), (
-            f"unknown motif_method={motif_method!r}; "
-            f"expected one of none | loss | readout"
-        )
-        assert noise in ('none', 'node', 'motif')
-        assert info_loss_level in ('none', 'node', 'motif')
+        # Explicit raises (not assert) so validation survives `python -O`, where
+        # asserts are stripped — otherwise a removed method like 'node_emb' would
+        # silently fall back to the base-GSAT extractor path.
+        if motif_method not in ('none', 'loss', 'readout'):
+            raise ValueError(
+                f"unknown motif_method={motif_method!r}; "
+                f"expected one of none | loss | readout"
+            )
+        if noise not in ('none', 'node', 'motif'):
+            raise ValueError(f"unknown noise={noise!r}; expected none | node | motif")
+        if info_loss_level not in ('none', 'node', 'motif'):
+            raise ValueError(
+                f"unknown info_loss_level={info_loss_level!r}; "
+                f"expected none | node | motif"
+            )
 
         self.motif_method = motif_method
         self.noise = noise

@@ -1,6 +1,6 @@
 """losses.py — MotifSAT training losses.
 
-info_loss         — GSAT-style KL(Bernoulli(att) ‖ Beta(r)) per node/motif
+info_loss         — GSAT-style KL(Bernoulli(att) ‖ Bernoulli(r)) per node/motif
 motif_size_weight — normalise info loss by motif size
 motif_consistency_loss — vectorised within/between motif variance (replaces O(M) Python loop)
 """
@@ -17,9 +17,16 @@ except ImportError:
     def scatter_mean(src, index, dim=0, dim_size=None):
         return _sc(src, index, dim=dim, dim_size=dim_size, reduce="mean")
     def scatter_var(src, index, dim=0, dim_size=None):
+        # Unbiased variance (÷ (n-1)) to match torch_scatter.scatter_var's
+        # default (unbiased=True). The naive scatter_mean of squared deviations
+        # would be biased (÷ n) and silently rescale the consistency loss
+        # depending on whether torch_scatter is installed.
         mean = scatter_mean(src, index, dim=dim, dim_size=dim_size)
-        diff = (src - mean[index]) ** 2
-        return scatter_mean(diff, index, dim=dim, dim_size=dim_size)
+        diff2 = (src - mean.index_select(dim, index)) ** 2
+        sum2 = _sc(diff2, index, dim=dim, dim_size=dim_size, reduce="sum")
+        cnt = _sc(torch.ones_like(diff2), index, dim=dim, dim_size=dim_size,
+                  reduce="sum")
+        return sum2 / (cnt - 1).clamp(min=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -31,14 +38,14 @@ def info_loss(
     r: float,                   # prior Beta parameter (target retention rate)
     size_weights: Tensor = None,  # [N] or [M]  optional normalisation
 ) -> Tensor:
-    """KL divergence between att and a Beta(r, 1-r) prior.
+    """KL divergence between Bernoulli(att) and a Bernoulli(r) prior.
 
-    Approximated as: KL = att * log(att/r) + (1-att) * log((1-att)/(1-r))
+    KL = att * log(att/r) + (1-att) * log((1-att)/(1-r))
 
     Parameters
     ----------
     att : Tensor  soft attention values in (0, 1)
-    r : float     prior mean (GSAT's decayed retention rate)
+    r : float     prior retention rate (GSAT's decayed Bernoulli mean)
     size_weights : Tensor or None
         Per-element weights (e.g. 1/motif_size for size-normalised loss).
 

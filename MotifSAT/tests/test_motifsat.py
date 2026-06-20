@@ -351,7 +351,7 @@ class TestGSAT(unittest.TestCase):
 
     def test_node_emb_removed(self):
         # node_emb was removed entirely; it is no longer a valid motif_method.
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             _make_gsat(motif_method='node_emb')
 
     def test_motif_emb_not_implemented(self):

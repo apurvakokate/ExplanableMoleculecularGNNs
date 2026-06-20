@@ -110,6 +110,7 @@ _HP_HASHED = [
     'size_reg', 'ent_reg',                       # MOSE regularization
     'info_loss_coef', 'motif_loss_coef',         # MotifSAT regularization
     'between_motif_coef', 'within_node_coef',
+    'pool_mode',                                 # MotifSAT readout pooling
     'init_r', 'final_r', 'logit_clamp',          # MotifSAT scheduling
     'unk_value', 'extractor_dropout_p',
 ]
