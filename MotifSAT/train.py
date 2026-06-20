@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from SharedModules.evaluation.metrics import evaluate_predictions
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger
 from SharedModules.evaluation.wandb_logger import WandbLogger
-from SharedModules.utils import save_checkpoint
 
 
 def _task_loss(criterion, out, y, task_type):

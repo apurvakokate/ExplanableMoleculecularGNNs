@@ -16,6 +16,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import sys, os
@@ -24,7 +25,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from SharedModules.evaluation.metrics import evaluate_predictions
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger
 from SharedModules.evaluation.wandb_logger import WandbLogger
-from SharedModules.utils import save_checkpoint
 
 
 EPS = 1e-15
@@ -73,10 +73,18 @@ def _task_loss(
     task_type: str,
 ) -> torch.Tensor:
     if task_type == 'MultiLabel':
+        # Mask NaN targets PER ELEMENT (not per row): a partially-labelled row
+        # must keep its valid columns while ignoring the NaN ones. Selecting
+        # whole rows with valid.any(dim=1) would still feed NaN targets to BCE
+        # and produce a NaN loss. Compute the unreduced loss, zero out invalid
+        # entries, and average over the valid count only.
         valid = ~torch.isnan(y)
         if not valid.any():
             return torch.tensor(0.0, device=out.device, requires_grad=True)
-        return criterion(out[valid.any(dim=1)], y[valid.any(dim=1)].float())
+        pw = getattr(criterion, 'pos_weight', None)
+        per_elem = F.binary_cross_entropy_with_logits(
+            out, torch.nan_to_num(y.float()), pos_weight=pw, reduction='none')
+        return per_elem[valid].mean()
     valid = ~torch.isnan(y.view(-1))
     return criterion(out.view(-1)[valid], y.view(-1)[valid].float())
 

@@ -107,7 +107,7 @@ _HP_SPELLED = [
 # hparams.json written alongside makes the hash fully decodable.
 _HP_HASHED = [
     'weight_decay', 'dropout', 'clip_grad',
-    'size_reg', 'ent_reg',                       # MOSE regularization
+    'size_reg', 'ent_reg', 'top_tau',            # MOSE regularization
     'info_loss_coef', 'motif_loss_coef',         # MotifSAT regularization
     'between_motif_coef', 'within_node_coef',
     'pool_mode',                                 # MotifSAT readout pooling

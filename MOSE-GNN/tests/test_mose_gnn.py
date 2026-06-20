@@ -460,6 +460,35 @@ class TestTrainOneEpoch(unittest.TestCase):
         )
         self.assertFalse(torch.isnan(torch.tensor(task_l)))
 
+    def test_task_loss_multilabel_partial_nan(self):
+        """Partially-labelled MultiLabel rows (NaN in some columns) must NOT
+        produce a NaN loss: masking is per element, so valid columns still
+        contribute and NaN columns are ignored."""
+        crit = nn.BCEWithLogitsLoss()
+        out = torch.tensor([[0.5, -0.5, 1.0],
+                            [-1.0, 2.0, 0.0]], requires_grad=True)
+        # Row 0: column 1 unobserved; Row 1: column 2 unobserved.
+        y = torch.tensor([[1.0, float('nan'), 0.0],
+                          [0.0, 1.0, float('nan')]])
+        loss = _task_loss(crit, out, y, 'MultiLabel')
+        self.assertFalse(torch.isnan(loss))
+        loss.backward()
+        self.assertFalse(torch.isnan(out.grad).any())
+        # Equals the mean BCE over the 4 observed entries only.
+        valid = ~torch.isnan(y)
+        ref = nn.functional.binary_cross_entropy_with_logits(
+            out.detach(), torch.nan_to_num(y), reduction='none')[valid].mean()
+        self.assertAlmostEqual(float(loss), float(ref), places=6)
+
+    def test_task_loss_multilabel_all_nan(self):
+        """A batch with no observed labels returns a finite zero loss."""
+        crit = nn.BCEWithLogitsLoss()
+        out = torch.zeros(2, 3, requires_grad=True)
+        y = torch.full((2, 3), float('nan'))
+        loss = _task_loss(crit, out, y, 'MultiLabel')
+        self.assertFalse(torch.isnan(loss))
+        self.assertAlmostEqual(float(loss), 0.0)
+
 
 class TestRegConfig(unittest.TestCase):
     """Per (architecture × dataset) regularization lookup."""

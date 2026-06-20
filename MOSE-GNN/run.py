@@ -123,6 +123,17 @@ def run(cfg: MOSEConfig) -> dict:
     print(f'  Model: {model.__class__.__name__}  params={n_params:,}  '
           f'motif_params rows={_n_kept}/{vocab.num_motifs} (kept/total)')
 
+    # Guard: with no injection the motif-importance params never enter the
+    # forward pass, so they receive no task gradient (scores stay at sigmoid(0)
+    # =0.5) and the explanation is meaningless — the model is effectively a
+    # vanilla GNN. This is easy to hit from a bare CLI run because the
+    # --w_feat/--w_message/--w_readout flags default OFF (the launchers always
+    # pass them). Warn loudly so a degenerate run is never mistaken for MOSE.
+    if vocab.num_motifs > 0 and not (cfg.w_feat or cfg.w_message or cfg.w_readout):
+        print('  [WARN] No motif injection enabled (w_feat/w_message/w_readout '
+              'all False): motif_params get no task gradient and MOSE degrades '
+              'to a vanilla GNN. Pass at least one of --w_feat/--w_readout.')
+
     # Positive class weights
     pos_w = compute_pos_weights(loaders['train'].dataset) \
         if task_type in ('BinaryClass', 'MultiLabel') else None
