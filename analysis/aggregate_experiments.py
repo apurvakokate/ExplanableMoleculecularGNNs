@@ -43,9 +43,23 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+import importlib.util
+
+_schema_path = _REPO / 'SharedModules' / 'data' / 'dataset_schema.py'
+_spec = importlib.util.spec_from_file_location('dataset_schema', _schema_path)
+_schema = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(_schema)
+TASK_TYPE = _schema.TASK_TYPE
 
 FAMILIES = ('vanilla', 'baselines', 'mose', 'motifsat', 'gsat', 'base_gsat')
 # Families whose identity does NOT include the injection axis. Their rows are
@@ -64,8 +78,9 @@ ALL_AXES = ['fragmentation', 'threshold', 'synthetic',
 DEFAULT_EXPERIMENT_AXES = ['fragmentation', 'threshold', 'synthetic',
                            'norm', 'features', 'epochs']
 
-# default predictive metric per task; regression falls back to pearson
-REGRESSION_DATASETS = {'esol', 'Lipophilicity', 'lipophilicity', 'ESOL'}
+REGRESSION_DATASETS = {
+    ds for ds, task in TASK_TYPE.items() if task == 'Regression'
+}
 
 # Directory-name prefixes excluded from the results walk by default, so archived
 # / scratch runs under <out_root> are not re-collected (see RESULTS_LAYOUT.md).
@@ -183,6 +198,24 @@ def _prefer(df: pd.DataFrame, col: str, parsed: pd.Series) -> pd.Series:
     return existing.where(has, parsed)
 
 
+def resolve_family(meta: dict, exp_dir: str = '') -> str:
+    """Resolve model family: path segment (gsat/baselines/…) preferred over summary fields."""
+    fam = _family(exp_dir) if exp_dir else ''
+    if fam:
+        return fam
+    mt = (meta.get('model_type') or '').lower()
+    mm = (meta.get('motif_method') or '').lower()
+    if 'mose' in mt or mm == 'mose':
+        return 'mose'
+    if 'motifsat' in mt or 'gsat' in mt:
+        return 'gsat' if mm == 'none' else 'motifsat'
+    if mm in ('readout', 'loss'):
+        return 'motifsat'
+    if 'vanilla' in mt or mm == 'none':
+        return 'vanilla'
+    return mt or mm or 'unknown'
+
+
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
     """Add normalized axis columns derived from explicit columns (config.json,
     when present) + exp_dir parsing (legacy fallback)."""
@@ -262,7 +295,7 @@ DEFAULT_REPORT_METRICS = [PERF, 'pearson', 'spearman',
                           'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman']
 
 METRIC_LABELS = {
-    PERF:                  'predictive performance (auc / pearson by task)',
+    PERF:                  'predictive performance (auc / rmse_orig|mae_orig for regression)',
     'pearson':             'score-vs-impact correlation (pearson)',
     'spearman':            'score-vs-impact correlation (spearman)',
     'gt_roc_auc_mean':     'explanation GT-ROC AUC (primary level)',
@@ -283,11 +316,14 @@ METRIC_LABELS = {
 
 
 def _perf_score(row) -> float:
-    """Task-aware predictive metric: auc for classification, pearson for
-    regression (falls back to pearson if auc is missing)."""
+    """Task-aware predictive metric: auc for classification; RMSE/MAE for regression."""
     ds = str(row.get('dataset', ''))
     if ds in REGRESSION_DATASETS:
-        return pd.to_numeric(row.get('pearson'), errors='coerce')
+        for col in ('rmse_orig', 'mae_orig', 'rmse', 'mae'):
+            v = pd.to_numeric(row.get(col), errors='coerce')
+            if pd.notna(v):
+                return v
+        return float('nan')
     v = pd.to_numeric(row.get('auc'), errors='coerce')
     if pd.isna(v):
         v = pd.to_numeric(row.get('pearson'), errors='coerce')
@@ -436,16 +472,29 @@ def main():
     else:
         rows = []
         root = Path(args.out_root)
+        n_cfg = 0
         for p in iter_summaries(root, args.exclude):
             try:
                 d = json.load(open(p))
-                d['exp_dir'] = str(p.parent.relative_to(root))
-                rows.append(d)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f'  [warn] skip corrupt summary {p}: {e}')
+                continue
+            cfg_path = p.parent / 'config.json'
+            if cfg_path.exists():
+                try:
+                    cfg = json.load(open(cfg_path))
+                    for k, v in cfg.items():
+                        d.setdefault(k, v)
+                    n_cfg += 1
+                except Exception as e:
+                    print(f'  [warn] skip corrupt config {cfg_path}: {e}')
+            d['exp_dir'] = str(p.parent.relative_to(root))
+            rows.append(d)
         if not rows:
             raise SystemExit('no summary.json files found under --out_root')
         df = pd.DataFrame(rows)
+        if n_cfg:
+            print(f'  merged config.json for {n_cfg} run(s)')
 
     if args.vocab_variant:
         keep = set(args.vocab_variant)

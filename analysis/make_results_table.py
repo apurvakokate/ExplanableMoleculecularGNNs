@@ -12,8 +12,13 @@ Usage
 """
 from __future__ import annotations
 import argparse
+import sys
 from pathlib import Path
 import pandas as pd
+
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 BACKBONE_ORDER = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
 
@@ -27,17 +32,42 @@ def _cell(g: pd.Series) -> str:
     return f'{g.mean():.3f} ± {g.std():.3f}'
 
 
-def build(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+def _ensure_family(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill ``family`` only when missing — never overwrite path-derived labels."""
+    from analysis.aggregate_experiments import _family, resolve_family
+
     df = df.copy()
-    # Family from motif_method (reliable) — exp_dir layout is inconsistent
-    # (some paths start with the dataset, not the family).
-    if 'motif_method' in df.columns:
-        mm = df['motif_method'].fillna('none').astype(str)
-        df['family'] = mm.map(lambda m: 'mose' if m == 'mose'
-                              else ('motifsat' if m in ('readout', 'loss')
-                                    else 'vanilla'))
-    elif 'family' not in df.columns:
-        df['family'] = df['exp_dir'].str.split('/').str[0]
+    if 'family' in df.columns:
+        fam = df['family'].fillna('').astype(str).str.strip()
+        if fam.ne('').all():
+            return df
+        need = fam.eq('')
+    else:
+        need = pd.Series(True, index=df.index)
+        df['family'] = ''
+
+    exp = df.get('exp_dir', pd.Series([''] * len(df))).astype(str)
+    for idx in df.index[need]:
+        row = df.loc[idx]
+        meta = row.to_dict()
+        df.at[idx, 'family'] = resolve_family(meta, exp.at[idx])
+
+    still = df['family'].fillna('').astype(str).str.strip().eq('')
+    if still.any() and 'motif_method' in df.columns:
+        mm = df.loc[still, 'motif_method'].fillna('none').astype(str)
+        df.loc[still, 'family'] = mm.map(
+            lambda m: 'mose' if m == 'mose'
+            else ('motifsat' if m in ('readout', 'loss') else 'vanilla'))
+
+    if 'exp_dir' in df.columns:
+        blank = df['family'].fillna('').astype(str).str.strip().eq('')
+        df.loc[blank, 'family'] = df.loc[blank, 'exp_dir'].map(_family)
+
+    return df
+
+
+def build(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    df = _ensure_family(df)
     piv = df.pivot_table(
         index=['dataset', 'family', 'vocab_variant'],
         columns='backbone', values=metric, aggfunc=_cell)
@@ -51,9 +81,10 @@ def main():
     ap.add_argument('csv')
     ap.add_argument('--metric', default='auc',
                     help='Any numeric column in the CSV. Common: auc, val_auc, '
-                         'train_auc, gt_roc_auc_mean, gt_roc_node_auc_mean, '
-                         'gt_roc_edge_auc_mean, gt_roc_node_mean_auc_mean, '
-                         'gt_roc_node_max_auc_mean, pearson, spearman, '
+                         'train_auc, rmse_orig, mae_orig, gt_roc_auc_mean, '
+                         'gt_roc_node_auc_mean, gt_roc_edge_auc_mean, '
+                         'gt_roc_node_mean_auc_mean, gt_roc_node_max_auc_mean, '
+                         'gt_roc_n_graphs, pearson, spearman, '
                          'top_k_abs_disc, score_disc_spearman; baseline columns '
                          'like gnnexplainer_mean_pearson and '
                          'gnnexplainer_mean_gt_roc_node_auc_mean (also _max_) work.')

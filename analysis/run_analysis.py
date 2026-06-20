@@ -46,7 +46,9 @@ if str(REPO) not in sys.path:
 
 ANALYSIS = REPO / 'analysis'
 DEFAULT_METRICS = ['auc', 'val_auc', 'train_auc',
+                   'rmse', 'mae', 'rmse_orig', 'mae_orig',
                    'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
+                   'gt_roc_n_graphs',
                    # Node attention reduced to motif level by mean / max.
                    'gt_roc_node_mean_auc_mean', 'gt_roc_node_max_auc_mean',
                    # Post-hoc baseline GT-ROC (node level): per explainer × agg.
@@ -106,7 +108,8 @@ def step_collect(args) -> int:
     for p in iter_summaries(out_root, getattr(args, 'exclude', None)):
         try:
             d = json.load(open(p))
-        except Exception:
+        except Exception as e:
+            print(f'  [warn] skip corrupt summary {p}: {e}')
             continue
         # Merge the sibling config.json (canonical axes) without letting it clobber
         # the measured metrics in summary.json.
@@ -117,7 +120,8 @@ def step_collect(args) -> int:
                 for k, v in cfg.items():
                     d.setdefault(k, v)
                 n_cfg += 1
-            except Exception:
+            except Exception as e:
+                print(f'  [warn] skip corrupt config {cfg_path}: {e}')
                 pass
         d['exp_dir'] = str(p.parent.relative_to(out_root))
         rows.append(d)
@@ -145,8 +149,10 @@ def step_collect(args) -> int:
                         'ent_reg', 'size_reg', 'num_layers', 'explainer_lr', 'gnn_lr',
                         'conv_normalize', 'gin_inner_bn',
                         'encoder_norm', 'weight_vocab_variant', 'seed',
-                        'train_auc', 'val_auc', 'auc', 'rmse',
+                        'train_auc', 'val_auc', 'auc', 'rmse', 'mae',
+                        'rmse_orig', 'mae_orig',
                         'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
+                        'gt_roc_n_graphs',
                         'gt_roc_node_mean_auc_mean', 'gt_roc_node_max_auc_mean',
                         'gnnexplainer_mean_gt_roc_node_auc_mean',
                         'gnnexplainer_max_gt_roc_node_auc_mean',
@@ -230,7 +236,7 @@ def main():
             p.add_argument('--vocab_root', default=None)
             p.add_argument('--processed_root', default=None)
             p.add_argument('--families', nargs='*',
-                           default=['mose', 'motifsat', 'vanilla'])
+                           default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
             p.add_argument('--dry_run', action='store_true')
 
     p_re = sub.add_parser('regenerate', help='eval-only on existing checkpoints')

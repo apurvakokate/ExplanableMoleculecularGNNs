@@ -26,14 +26,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+from analysis.aggregate_experiments import FAMILIES, resolve_family
 
 _SERIES_COLORS = ['#d62728', '#2ca02c', '#7f7f7f', '#1f77b4', '#9467bd', '#8c564b']
 _COUNT_COLOR = '#e8a24c'
@@ -41,23 +48,21 @@ _COUNT_COLOR = '#e8a24c'
 
 def _meta(run_dir: Path):
     fam = dataset = backbone = variant = None
+    for part in run_dir.parts:
+        if part in FAMILIES:
+            fam = 'gsat' if part == 'base_gsat' else part
+            break
     sj = run_dir / 'summary.json'
     if sj.exists():
         try:
             d = json.load(open(sj))
             dataset, backbone, variant = d.get('dataset'), d.get('backbone'), d.get('vocab_variant')
-            # Family from motif_method/model_type (reliable), NOT the path —
-            # exp_dir layout is inconsistent (some start with the dataset name).
-            mt = (d.get('model_type') or '').lower()
-            mm = (d.get('motif_method') or '').lower()
-            if 'mose' in mt or mm == 'mose':
-                fam = 'mose'
-            elif 'motifsat' in mt or 'gsat' in mt or mm in ('readout', 'loss'):
-                fam = 'motifsat'
-            elif 'vanilla' in mt or mm == 'none':
-                fam = 'vanilla'
-            else:
-                fam = mt or mm or 'unknown'
+            if not fam:
+                try:
+                    exp_dir = str(run_dir)
+                except Exception:
+                    exp_dir = ''
+                fam = resolve_family(d, exp_dir)
         except Exception:
             pass
     return fam or 'unknown', dataset or 'unknown', backbone or 'unknown', variant or 'unknown'
@@ -205,7 +210,6 @@ def plot_panel(ax, ax_top, sub: pd.DataFrame, group_col: str, edges: np.ndarray)
     for spine in ('top', 'right'):
         ax_top.spines[spine].set_visible(False)
     return per_group_counts, groups
-    return per_group_counts, groups
 
 
 def main():
@@ -233,7 +237,7 @@ def main():
     if df.empty:
         print('No score_vs_impact.csv found under', out_root,
               '\n(Train with the updated code so runs emit it.)')
-        return
+        raise SystemExit(1)
 
     edges = _score_bins(df['score'].values, args.nbins)
     count_rows = []
