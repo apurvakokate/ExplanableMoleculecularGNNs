@@ -234,7 +234,8 @@ def main():
             skipped += 1
             continue
         try:
-            meta = json.load(open(sj))
+            with open(sj, encoding='utf-8') as f:
+                meta = json.load(f)
         except Exception as e:
             print(f'  [skip] corrupt summary {sj}: {e}')
             skipped += 1

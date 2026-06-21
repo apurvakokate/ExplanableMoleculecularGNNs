@@ -110,7 +110,8 @@ def step_collect(args) -> int:
     n_cfg = 0
     for p in iter_summaries(out_root, getattr(args, 'exclude', None)):
         try:
-            d = json.load(open(p))
+            with open(p, encoding='utf-8') as f:
+                d = json.load(f)
         except Exception as e:
             print(f'  [warn] skip corrupt summary {p}: {e}')
             continue
@@ -119,7 +120,8 @@ def step_collect(args) -> int:
         cfg_path = p.parent / 'config.json'
         if cfg_path.exists():
             try:
-                cfg = json.load(open(cfg_path))
+                with open(cfg_path, encoding='utf-8') as f:
+                    cfg = json.load(f)
                 for k, v in cfg.items():
                     d.setdefault(k, v)
                 n_cfg += 1

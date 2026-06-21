@@ -55,7 +55,8 @@ def _meta(run_dir: Path):
     sj = run_dir / 'summary.json'
     if sj.exists():
         try:
-            d = json.load(open(sj))
+            with open(sj, encoding='utf-8') as f:
+                d = json.load(f)
             dataset, backbone, variant = d.get('dataset'), d.get('backbone'), d.get('vocab_variant')
             if not fam:
                 try:

@@ -275,7 +275,8 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
     sj = run_dir / 'summary.json'
     if not sj.exists():
         return None, None, 'no summary.json'
-    meta = json.load(open(sj))
+    with open(sj, encoding='utf-8') as f:
+        meta = json.load(f)
     ckpt = run_dir / 'best_model.pt'
     if not ckpt.exists():
         cands = list(run_dir.glob('*.pt'))

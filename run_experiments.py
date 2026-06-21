@@ -161,7 +161,11 @@ def build_arg_parser():
 def resolve_norm_feature(preset, feat_override, ln_override, en_override):
     """Combine a preset (if any) with explicit overrides."""
     base = dict(features='onehot', layer_norm='l2', encoder_norm='off')
-    if preset and preset in PRESETS:
+    if preset:
+        if preset not in PRESETS:
+            raise SystemExit(
+                f"Unknown preset {preset!r}; choose from {sorted(PRESETS)}"
+            )
         base.update(PRESETS[preset])
     if feat_override: base['features'] = feat_override
     if ln_override:   base['layer_norm'] = ln_override

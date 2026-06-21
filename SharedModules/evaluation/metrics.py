@@ -149,24 +149,29 @@ def _model_forward(model, data) -> torch.Tensor:
     2-tuples (MOSE-GNN, VanillaGNN) and 3-tuples (GSAT/MotifSAT) both
     work without raising ValueError.
     """
-    # Pass edge_attr to match the training loop (critical for GAT / PNA)
     edge_attr = getattr(data, 'edge_attr', None)
-    try:
-        out = model(data.x, data.edge_index, data.batch,
-                    data.nodes_to_motifs, edge_attr)
-        return out[0] if isinstance(out, (tuple, list)) else out
-    except TypeError:
-        pass
-    try:
-        out = model(data.x, data.edge_index, data.batch, data.nodes_to_motifs)
-        return out[0] if isinstance(out, (tuple, list)) else out
-    except TypeError:
-        pass
+    errors: list = []
+
+    attempts = (
+        dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
+             nodes_to_motifs=data.nodes_to_motifs, edge_attr=edge_attr),
+        dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
+             nodes_to_motifs=data.nodes_to_motifs),
+    )
+    for i, kwargs in enumerate(attempts, start=1):
+        try:
+            out = model(**{k: v for k, v in kwargs.items() if v is not None})
+            return out[0] if isinstance(out, (tuple, list)) else out
+        except TypeError as e:
+            errors.append(f"attempt {i}: {e}")
+
     try:
         out = model(data)
-        if isinstance(out, (tuple, list)):
-            out = out[0]
-        return out
-    except TypeError:
-        pass
-    return model(data.x, data.edge_index, data.batch)
+        return out[0] if isinstance(out, (tuple, list)) else out
+    except TypeError as e:
+        errors.append(f"data object: {e}")
+
+    raise TypeError(
+        f"Could not call {model.__class__.__name__} forward. Tried:\n  "
+        + "\n  ".join(errors)
+    )

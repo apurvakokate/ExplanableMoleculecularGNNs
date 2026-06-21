@@ -116,6 +116,18 @@ def load_best_rule(vocab_root: str, dataset: str, variant: str,
 # Graph annotation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _validate_rule_nodes(rule_nodes: list, n_nodes: int, smi: str) -> list:
+    """Ensure lookup node indices align with graph atom count."""
+    bad = [i for i in rule_nodes if i < 0 or i >= n_nodes]
+    if bad:
+        raise ValueError(
+            f"Rule node indices {bad} out of range [0, {n_nodes}) for "
+            f"smiles={smi!r}. Lookup/graph atom count mismatch — re-export "
+            "vocab or check index_maps."
+        )
+    return rule_nodes
+
+
 def annotate_split(data_list: List,
                    rule_clauses: List[Set[str]],
                    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
@@ -179,9 +191,9 @@ def annotate_split(data_list: List,
             rule_nodes = [idx for idx, (smarts, _mid) in node_map.items()
                           if smarts in all_rule_motifs]
             if rule_nodes:
+                rule_nodes = _validate_rule_nodes(rule_nodes, n_nodes, smi or '?')
                 active = torch.zeros(n_nodes, dtype=torch.bool)
-                idx_t = torch.tensor(rule_nodes, dtype=torch.long).clamp(0, n_nodes - 1)
-                active[idx_t] = True
+                active[torch.tensor(rule_nodes, dtype=torch.long)] = True
                 node_label[active] = 1.0
                 n_pos_nodes += int(active.sum().item())
                 if n_edges > 0:
