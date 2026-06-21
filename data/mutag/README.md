@@ -60,6 +60,13 @@ python MotifBreakdown/export_mutag_dataset_to_csv.py \
 mutag uses **source** GT (`node_label`, `edge_label`) attached at load time.
 Do **not** pass `--use_gt` (that is for synthetic rule GT on CSV datasets).
 
-With `mutag_x=True` (default), the test loader contains all mutagen (`y=0`)
-graphs with annotated NO₂/NH₂ edges — the GSAT explanation eval set.
-`EvalPipeline` → `compute_gt_roc` scores model attention against those labels.
+**Splits:** disjoint random 80% / 10% / 10% (train / valid / test). Re-export
+after upgrading from legacy GSAT overlapping splits:
+
+```bash
+python MotifBreakdown/export_mutag_dataset_to_csv.py \
+    --data_root "$DATA_ROOT" --out_dir "$DATA_ROOT" --fold 0
+```
+
+**GT-ROC:** computed on **held-out test mutagens** only (`y=0` with annotated
+NO₂/NH₂ motif edges). Property metrics (AUC) use the full test split.

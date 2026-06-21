@@ -1713,28 +1713,30 @@ class TestMutagSplits(unittest.TestCase):
             out.append(d)
         return out
 
-    def test_standard_split_disjoint(self):
+    def test_disjoint_split(self):
         from SharedModules.data.mutag_splits import get_mutag_split_idx
         ds = self._mock_dataset([(0, 1)] * 20)
-        idx = get_mutag_split_idx(ds, seed=0, mutag_x=False)
+        idx = get_mutag_split_idx(ds, seed=0)
         all_idx = idx['train'] + idx['valid'] + idx['test']
         self.assertEqual(len(all_idx), len(ds))
         self.assertEqual(len(set(all_idx)), len(all_idx))
+        self.assertEqual(len(idx['train']), 16)
+        self.assertEqual(len(idx['valid']), 2)
+        self.assertEqual(len(idx['test']), 2)
 
-    def test_mutag_x_test_is_mutagen_with_motif_gt(self):
-        """mutag_x test = y==0 (mutagen) graphs with edge_label > 0."""
-        from SharedModules.data.mutag_splits import get_mutag_split_idx
-        # (y, n_gt): y=0 mutagen, y=1 nonmutagen
+    def test_mutag_gt_eval_graphs(self):
+        from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
         ds = self._mock_dataset([(0, 2), (1, 0), (0, 0), (0, 1)])
-        idx = get_mutag_split_idx(ds, seed=0, mutag_x=True)
-        self.assertEqual(set(idx['test']), {0, 3})
-        self.assertEqual(len(idx['train']) + len(idx['valid']), len(ds))
+        gt = mutag_gt_eval_graphs(ds)
+        self.assertEqual(len(gt), 2)
+        self.assertTrue(all(float(d.y.squeeze()) == 0.0 for d in gt))
 
-    def test_group_for_graph_mutag_x_priority(self):
+    def test_group_for_graph(self):
         from SharedModules.data.mutag_splits import group_for_graph
-        split_idx = {'train': [0, 1], 'valid': [2], 'test': [1]}
-        self.assertEqual(group_for_graph(1, split_idx, mutag_x=True), 'test')
-        self.assertEqual(group_for_graph(0, split_idx, mutag_x=True), 'training')
+        split_idx = {'train': [0, 1], 'valid': [2], 'test': [3]}
+        self.assertEqual(group_for_graph(0, split_idx), 'training')
+        self.assertEqual(group_for_graph(2, split_idx), 'valid')
+        self.assertEqual(group_for_graph(3, split_idx), 'test')
 
 
 if __name__ == '__main__':

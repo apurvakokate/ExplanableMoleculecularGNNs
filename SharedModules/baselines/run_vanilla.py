@@ -250,10 +250,14 @@ def run(cfg: VanillaConfig) -> dict:
 
     # ── EvalPipeline: motif impact + correlation ──────────────────────────────
     test_list = list(test_ds)
+    from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
+    _gt_eval = (mutag_gt_eval_graphs(test_list)
+                if cfg.dataset == 'mutag' else None)
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
+        gt_eval_list=_gt_eval,
     )
     eval_results = pipeline.run(run_motif_impact=cfg.run_motif_impact)
     dfs = pipeline.to_dataframe(eval_results)
@@ -347,18 +351,19 @@ def run(cfg: VanillaConfig) -> dict:
     _gt_present = any(
         getattr(d, 'node_label', None) is not None
         or getattr(d, 'edge_label', None) is not None
-        for d in test_list
+        for d in (_gt_eval if _gt_eval is not None else test_list)
     )
     if _gt_present:
+        _gt_roc_list = _gt_eval if _gt_eval is not None else test_list
         for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
             for _agg in ('mean', 'max'):
                 _sc = results.get(f'{_ex}_{_agg}', {})
                 if not _sc:
                     continue
                 _fn = _motif_score_node_att_fn(_sc)
-                _gn = compute_gt_roc(model, test_list, device,
+                _gn = compute_gt_roc(model, _gt_roc_list, device,
                                      node_att_fn=_fn, level='node')
-                _ge = compute_gt_roc(model, test_list, device,
+                _ge = compute_gt_roc(model, _gt_roc_list, device,
                                      node_att_fn=_fn, level='edge')
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_node_auc_mean'] = _gn['auc_mean']
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_edge_auc_mean'] = _ge['auc_mean']

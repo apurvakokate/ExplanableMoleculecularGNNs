@@ -249,6 +249,9 @@ def run(cfg: MOSEConfig) -> dict:
             print(f'  {split_name}: {m}')
 
     test_list = list(test_ds)
+    from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
+    _gt_eval = (mutag_gt_eval_graphs(test_list)
+                if cfg.dataset == 'mutag' else None)
     motif_scores = model.get_motif_scores() if hasattr(model, 'get_motif_scores') else None
     # For MultiLabel, average across classes for correlation
     if isinstance(motif_scores, dict) and motif_scores and isinstance(
@@ -267,6 +270,7 @@ def run(cfg: MOSEConfig) -> dict:
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
+        gt_eval_list=_gt_eval,
     )
     results = pipeline.run(
         motif_scores=flat_scores,

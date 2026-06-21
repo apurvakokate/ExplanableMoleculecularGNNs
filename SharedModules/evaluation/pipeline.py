@@ -60,6 +60,9 @@ class EvalPipeline:
         Train-split z-score stats for regression targets. When set,
         ``evaluate_predictions`` reports both normalised (``mae``/``rmse``) and
         original-unit (``mae_orig``/``rmse_orig``) metrics in ``prediction``.
+    gt_eval_list : list of Data or None
+        Subset of test graphs for GT-ROC only (e.g. mutag test mutagens).
+        When None, GT-ROC uses the full ``test_list``.
     """
 
     def __init__(
@@ -76,11 +79,13 @@ class EvalPipeline:
         node_att_fn: Optional[Callable] = None,
         gt_level: str = 'node',
         denorm: Optional[tuple] = None,
+        gt_eval_list: Optional[List] = None,
     ):
         self.model = model
         self.vocab = vocab
         self.test_loader = test_loader
         self.test_list = test_list
+        self.gt_eval_list = gt_eval_list
         self.device = device
         self.task_type = task_type
         self.max_motifs_eval = max_motifs_eval
@@ -90,12 +95,16 @@ class EvalPipeline:
         self.gt_level = gt_level
         self.denorm = denorm
 
+    def _gt_graphs(self) -> List:
+        """Graphs used for GT-ROC (defaults to full test set)."""
+        return self.gt_eval_list if self.gt_eval_list is not None else self.test_list
+
     def _has_ground_truth(self) -> bool:
-        """Check whether test_list has node_label or edge_label annotations."""
+        """Check whether GT eval graphs have node_label or edge_label annotations."""
         return any(
             getattr(d, 'edge_label', None) is not None
             or getattr(d, 'node_label', None) is not None
-            for d in self.test_list
+            for d in self._gt_graphs()
         )
 
     def run(
@@ -142,12 +151,13 @@ class EvalPipeline:
         #    alongside. results['gt_roc'] stays as the configured primary level
         #    (self.gt_level) for backward compatibility with existing consumers.
         if self._has_ground_truth():
+            _gt = self._gt_graphs()
             results['gt_roc_node'] = compute_gt_roc(
-                self.model, self.test_list, self.device,
+                self.model, _gt, self.device,
                 node_att_fn=self.node_att_fn, level='node',
             )
             results['gt_roc_edge'] = compute_gt_roc(
-                self.model, self.test_list, self.device,
+                self.model, _gt, self.device,
                 node_att_fn=self.node_att_fn, level='edge',
             )
             results['gt_roc'] = (results['gt_roc_node']
@@ -163,7 +173,7 @@ class EvalPipeline:
             _base_att = self.node_att_fn or model_node_att_fn(self.model, self.device)
             for _agg in ('mean', 'max'):
                 results[f'gt_roc_node_{_agg}'] = compute_gt_roc(
-                    self.model, self.test_list, self.device,
+                    self.model, _gt, self.device,
                     node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
                     level='node',
                 )

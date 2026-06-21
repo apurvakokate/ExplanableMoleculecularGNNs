@@ -256,6 +256,7 @@ class MutagTUDataset(torch.utils.data.Dataset):
             return data
 
         mapped_smi = self._smiles[idx]
+        data.smiles = mapped_smi
         data.nodes_to_motifs = apply_motif_lookup_with_index_map(
             n, mapped_smi, self._lookup, self._index_maps
         )
@@ -365,7 +366,6 @@ def _get_mutag_loaders(
     smiles_csv_path: Optional[str] = None,
     splits_path: Optional[str] = None,
     mutag_seed: int = 42,
-    mutag_x: bool = True,
 ):
     """Build loaders for the mutag TUDataset.
 
@@ -386,13 +386,11 @@ def _get_mutag_loaders(
         (columns: smiles, label, group, graph_id).  Used to recover the
         per-graph mapped SMILES and split assignments.
     splits_path : str or None
-        Path to ``mutag_{fold}_splits.pkl`` (GSAT-style indices).  Preferred over
+        Path to ``mutag_{fold}_splits.pkl`` (disjoint indices).  Preferred over
         the CSV ``group`` column when present.
     mutag_seed : int
         Base RNG seed; effective seed = ``mutag_seed + fold`` when splits are
         computed on the fly (fallback only).
-    mutag_x : bool
-        GSAT explanation split when computing splits on the fly.
     """
     Mutag = _import_mutag_class(data_root)
     dataset = Mutag(root=str(Path(data_root) / 'mutag'))
@@ -433,7 +431,7 @@ def _get_mutag_loaders(
             smiles_by_graph[gid] = str(row['smiles'])
             split_by_graph[gid]  = str(row.get('group', 'training'))
 
-    # Resolve train/valid/test indices (GSAT splits pickle preferred)
+    # Resolve train/valid/test indices (splits pickle preferred)
     train_items: List[int] = []
     val_items:   List[int] = []
     test_items:  List[int] = []
@@ -461,10 +459,9 @@ def _get_mutag_loaders(
     else:
         from .mutag_splits import get_mutag_split_idx
         print(f"  [mutag] no splits file; computing on-the-fly "
-              f"(seed={mutag_seed + fold}, mutag_x={mutag_x}). "
+              f"(seed={mutag_seed + fold}, 80/10/10 disjoint). "
               f"Run export_mutag_dataset_to_csv.py for reproducible splits.")
-        split_idx = get_mutag_split_idx(
-            dataset, seed=mutag_seed + fold, mutag_x=mutag_x)
+        split_idx = get_mutag_split_idx(dataset, seed=mutag_seed + fold)
         train_items = list(split_idx['train'])
         val_items   = list(split_idx['valid'])
         test_items  = list(split_idx['test'])
@@ -478,6 +475,7 @@ def _get_mutag_loaders(
     train_ds = _build_ds(train_items, 'training')
     val_ds   = _build_ds(val_items,   'valid')
     test_ds  = _build_ds(test_items,  'test')
+    _deg = compute_deg_histogram(train_ds)
 
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size,
@@ -495,6 +493,7 @@ def _get_mutag_loaders(
         dataset='mutag',
         fold=fold,
         node_encoder='onehot',   # 14-dim pre-baked features, identity passthrough
+        deg=_deg,
     )
     return loaders, test_ds, meta
 
@@ -561,7 +560,6 @@ def get_loaders(
     mutag_smiles_csv_path: Optional[str] = None,
     mutag_splits_path: Optional[str] = None,
     mutag_seed: int = 42,
-    mutag_x: bool = True,
 ) -> Tuple[Dict[str, DataLoader], object, LoaderMeta]:
     """Build train/val/test DataLoaders for a dataset fold.
 
@@ -589,8 +587,8 @@ def get_loaders(
         (mutag only). Provides split assignments and mapped SMILES per graph.
     mutag_splits_path : str or None
         Path to ``mutag_{fold}_splits.pkl`` (mutag only).
-    mutag_seed, mutag_x
-        Fallback split parameters when no splits pickle exists (mutag only).
+    mutag_seed
+        Fallback RNG seed when no splits pickle exists (mutag only).
 
     Returns
     -------
@@ -615,7 +613,6 @@ def get_loaders(
             smiles_csv_path=_scsv,
             splits_path=_splits,
             mutag_seed=mutag_seed,
-            mutag_x=mutag_x,
         )
 
     # ── CSV-based molecular datasets ──────────────────────────────────────

@@ -343,11 +343,15 @@ def run(cfg: MotifSATConfig) -> dict:
     # Determine GT ROC level: edge for learn_edge_att, node otherwise
     gt_level = "edge" if cfg.learn_edge_att else "node"
     test_list = list(test_ds)
+    from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
+    _gt_eval = (mutag_gt_eval_graphs(test_list)
+                if cfg.dataset == 'mutag' else None)
     pipeline = EvalPipeline(
         model, vocab, loaders["test"], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         gt_level=gt_level,
         denorm=_denorm,
+        gt_eval_list=_gt_eval,
     )
     # For base GSAT (learn_edge_att=True, motif_method='none') aggregate node
     # attention to vocabulary-level scores (mean and max) for correlation eval.

@@ -38,9 +38,10 @@ Produces:
 |------|---------|
 | `mutag_{fold}.csv` | Mapped SMILES + labels + group for vocab generation |
 | `mutag_{fold}_index_maps.pkl` | Graph node → SMILES atom index (motif lookup) |
-| `mutag_{fold}_splits.pkl` | GSAT-style train/valid/test indices |
+| `mutag_{fold}_splits.pkl` | Disjoint train/valid/test indices (80/10/10) |
 
-Default split (`mutag_x=True`, GSAT): 80% train / 20% valid; test = all **mutagen** graphs (`y==0`) with annotated NO2/NH2 motif edges.
+Default split: random disjoint **80% train / 10% valid / 10% test**.
+GT-ROC uses **test mutagens** (`y==0`) with source motif labels only.
 
 ### Label encoding
 

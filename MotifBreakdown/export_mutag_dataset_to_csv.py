@@ -6,10 +6,10 @@ The vocab generator and the mutag training loader both need mutag converted from
 its TUDataset/PyG form into:
     {out_dir}/mutag_{fold}.csv             (columns: smiles, label, group, ...)
     {out_dir}/mutag_{fold}_index_maps.pkl  ({mapped_smiles: {graph_idx: smiles_idx}})
-    {out_dir}/mutag_{fold}_splits.pkl      (GSAT-style train/valid/test indices)
+    {out_dir}/mutag_{fold}_splits.pkl      (disjoint train/valid/test indices)
 
-Split logic mirrors Graph-COM/GSAT (``mutag_x=True`` by default):
-    80% train / 20% valid; test = all graphs with y==0 and edge_label.sum()>0.
+Split logic: random disjoint 80% train / 10% valid / 10% test (seed + fold).
+GT-ROC at train time uses test mutagens only (see ``mutag_gt_eval_graphs``).
 
 Usage:
     python3 export_mutag_dataset_to_csv.py \\
@@ -56,8 +56,6 @@ def main():
     p.add_argument('--fold', type=int, default=0)
     p.add_argument('--seed', type=int, default=42,
                    help="RNG seed for the shuffle (use seed+fold for multi-fold)")
-    p.add_argument('--no_mutag_x', action='store_true',
-                   help="Standard 80/10/10 random split instead of GSAT mutag_x")
     p.add_argument('--no_verify', action='store_true',
                    help="Skip per-graph index-alignment verification (faster).")
     args = p.parse_args()
@@ -72,23 +70,24 @@ def main():
     from SharedModules.data.graph_to_smiles import build_mutag_smiles_df
     from SharedModules.data.mutag_splits import (
         get_mutag_split_idx, group_for_graph, save_mutag_splits,
+        mutag_gt_eval_graphs,
     )
 
     dataset = _load_mutag(args.data_root)
     split_seed = args.seed + args.fold
-    mutag_x = not args.no_mutag_x
-    split_idx = get_mutag_split_idx(
-        dataset, seed=split_seed, mutag_x=mutag_x)
+    split_idx = get_mutag_split_idx(dataset, seed=split_seed)
     groups = [
-        group_for_graph(i, split_idx, mutag_x=mutag_x)
+        group_for_graph(i, split_idx)
         for i in range(len(dataset))
     ]
 
-    mode = 'mutag_x (GSAT)' if mutag_x else 'standard 80/10/10'
     print(f"Loaded mutag: {len(dataset)} graphs from {args.data_root}/mutag")
-    print(f"  split mode: {mode}  seed={split_seed}")
+    print(f"  split: 80/10/10 disjoint  seed={split_seed}")
     print(f"  train={len(split_idx['train'])}  valid={len(split_idx['valid'])}  "
           f"test={len(split_idx['test'])}")
+    _test_graphs = [dataset[i] for i in split_idx['test']]
+    print(f"  test mutagens w/ source GT (GT-ROC eval): "
+          f"{len(mutag_gt_eval_graphs(_test_graphs))}")
 
     df, index_maps = build_mutag_smiles_df(
         dataset, groups=groups, verify=not args.no_verify)
@@ -107,8 +106,7 @@ def main():
     df_ok.to_csv(csv_path, index=False)
     with open(pkl_path, 'wb') as f:
         pickle.dump(index_maps, f)
-    save_mutag_splits(
-        splits_path, split_idx, seed=split_seed, mutag_x=mutag_x)
+    save_mutag_splits(splits_path, split_idx, seed=split_seed)
 
     n_verify_fail = int((~df_ok['verify_ok']).sum()) if 'verify_ok' in df_ok else 0
     print(f"  wrote {csv_path}  ({len(df_ok)} molecules)")
