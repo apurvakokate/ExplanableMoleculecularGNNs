@@ -256,10 +256,10 @@ run_gsat() {
                     --dataset         "$ds" --fold "$eff_fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    none \
-                    --noise           none \
-                    --info_loss_level none \
-                    --info_loss_coef  0.0 \
-                    $WM_FLAG \
+                    --learn_edge_att \
+                    --noise           node \
+                    --info_loss_level node \
+                    --info_loss_coef  1.0 \
                     --epochs          "$EPOCHS" \
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \

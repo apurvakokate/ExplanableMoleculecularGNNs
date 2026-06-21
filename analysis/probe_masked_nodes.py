@@ -37,7 +37,7 @@ Usage
         --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT \
         [--att_threshold 0.5] [--max_graphs 500]
 
-Or point --out_root at a tree and it probes every run with a loadable model:
+Or point --out_root at a tree and it probes MOSE / MotifSAT readout runs:
     python analysis/probe_masked_nodes.py --out_root results --data_root ... --vocab_root ...
 
 Writes a CSV summary (one row per run) to --save (default: masked_node_probe.csv).
@@ -165,15 +165,109 @@ def probe_run(model, data_list, device, att_threshold=None, max_graphs=500,
     return results
 
 
+def _purge_trainer_modules() -> None:
+    """Drop cached MOSE-GNN / MotifSAT top-level modules (both use ``run``/``config``)."""
+    for name in ('run', 'config', 'model', 'train', 'reg_config', 'losses',
+                 'motif_modules'):
+        sys.modules.pop(name, None)
+
+
+def _prepend_trainer_path(trainer_dir: Path) -> None:
+    for p in (str(_REPO), str(trainer_dir)):
+        if p in sys.path:
+            sys.path.remove(p)
+        sys.path.insert(0, p)
+
+
+def _infer_hidden_dim(meta: dict, ckpt: Path) -> int:
+    hidden_dim = meta.get('hidden_dim')
+    if hidden_dim is None:
+        try:
+            _sd = torch.load(ckpt, map_location='cpu', weights_only=False)
+            _sd = _sd.get('model_state_dict', _sd) if isinstance(_sd, dict) else _sd
+            for _k in ('backbone.lin2.weight', 'backbone.lin1.weight',
+                       'gnn.lin2.weight', 'gnn.lin1.weight'):
+                if _k in _sd:
+                    return int(_sd[_k].shape[1])
+        except Exception:
+            pass
+    return int(hidden_dim or 32)
+
+
+def _resolve_probe_family(meta: dict, run_dir: Path) -> str | None:
+    """Return ``mose`` | ``motifsat`` or None if this run is not probeable."""
+    model_type = (meta.get('model_type') or '').lower()
+    motif_method = (meta.get('motif_method') or '').lower()
+    run_s = str(run_dir).lower()
+    if 'mose' in model_type or motif_method == 'mose':
+        return 'mose'
+    if 'motifsat' in model_type or motif_method in ('readout', 'loss'):
+        return 'motifsat'
+    if motif_method == 'none' or 'gsat' in run_s or 'base_gsat' in run_s:
+        # Base GSAT uses edge attention, not node-att masking — skip below.
+        if meta.get('learn_edge_att'):
+            return None
+        return 'motifsat'
+    return None
+
+
+def _common_cfg_kwargs(meta: dict, data_root: str, vocab_root: str,
+                       hidden_dim: int) -> dict:
+    return dict(
+        dataset=meta['dataset'], fold=int(meta.get('fold', 0)),
+        backbone=meta.get('backbone', 'GIN'),
+        node_encoder=meta.get('node_encoder', 'onehot'),
+        hidden_dim=hidden_dim,
+        num_layers=int(meta.get('num_layers', 3)),
+        vocab_variant=meta.get('vocab_variant', 'all_fallback_bpe'),
+        conv_normalize=meta.get('conv_normalize', 'l2'),
+        gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
+        apply_layer_norm=bool(meta.get('apply_layer_norm', False)),
+        data_root=meta.get('data_root', data_root),
+        vocab_root=vocab_root,
+        processed_root=meta.get('processed_root'),
+        w_feat=bool(meta.get('w_feat', False)),
+        w_message=bool(meta.get('w_message', False)),
+        w_readout=bool(meta.get('w_readout', False)),
+        mutag_index_maps_path=meta.get('mutag_index_maps_path'),
+        mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
+        mutag_splits_path=meta.get('mutag_splits_path'),
+        mutag_seed=int(meta.get('mutag_seed', 42)),
+    )
+
+
+def _load_test_list(cfg, vocab_root: str):
+    from SharedModules.data.vocab import load_vocab
+    from SharedModules.data.loader import get_loaders, TASK_TYPE
+
+    vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
+    task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
+    proc_root = cfg.processed_root
+    if not proc_root:
+        proc_root = f'{Path(cfg.data_root).parent / "processed"}/{cfg.vocab_variant}'
+    loaders, test_ds, dmeta = get_loaders(
+        dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
+        vocab=vocab, processed_root=proc_root,
+        batch_size=cfg.batch_size,
+        normalize=(task_type == 'Regression'),
+        mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
+        mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
+        mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
+        mutag_seed=getattr(cfg, 'mutag_seed', 42),
+    )
+    test_list = [g for g in loaders['test'].dataset]
+    return test_list, task_type, dmeta, vocab
+
+
+def _apply_injection_flags(model, meta: dict) -> None:
+    for attr in ('w_feat', 'w_message', 'w_readout'):
+        if hasattr(model, attr):
+            setattr(model, attr, bool(meta.get(attr, getattr(model, attr, False))))
+
+
 def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
                          device):
-    """Load a trained model + its test data for a run directory.
-
-    Reads summary.json for dataset/fold/backbone/variant/model_type, rebuilds
-    the model, loads best_model.pt, and builds the test dataset via the same
-    loader the training used. Wired for MOSE runs (the family with the motif
-    attention gate the probe is about); other families return a skip reason.
-    """
+    """Load a trained MOSE or MotifSAT model + test data for a run directory."""
     sj = run_dir / 'summary.json'
     if not sj.exists():
         return None, None, 'no summary.json'
@@ -185,84 +279,49 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
             return None, None, 'no checkpoint .pt'
         ckpt = cands[0]
 
-    model_type = (meta.get('model_type') or '').lower()
-    motif_method = (meta.get('motif_method') or '').lower()
-    is_mose = 'mose' in model_type or motif_method == 'mose'
-    if not is_mose:
-        return None, None, f'probe wired for MOSE only (got {model_type or motif_method})'
+    family = _resolve_probe_family(meta, run_dir)
+    if family is None:
+        mm = meta.get('motif_method') or meta.get('model_type') or '?'
+        if meta.get('learn_edge_att'):
+            return None, None, 'learn_edge_att GSAT has no node attention to probe'
+        return None, None, f'not a probeable MOSE/MotifSAT run (got {mm})'
 
-    import sys
-    proj = Path(__file__).resolve().parent.parent
-    for p in (str(proj), str(proj / 'MOSE-GNN')):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-    # hidden_dim is needed to rebuild the model but older summaries don't record
-    # it — infer from the checkpoint (lin2 weight is [num_classes, hidden_dim]).
-    import torch as _torch
-    hidden_dim = meta.get('hidden_dim')
-    if hidden_dim is None:
-        try:
-            _sd = _torch.load(ckpt, map_location='cpu', weights_only=False)
-            _sd = _sd.get('model_state_dict', _sd) if isinstance(_sd, dict) else _sd
-            for _k in ('backbone.lin2.weight', 'backbone.lin1.weight'):
-                if _k in _sd:
-                    hidden_dim = int(_sd[_k].shape[1]); break
-        except Exception:
-            pass
-    hidden_dim = int(hidden_dim or 32)
+    hidden_dim = _infer_hidden_dim(meta, ckpt)
+    cfg_kwargs = _common_cfg_kwargs(meta, data_root, vocab_root, hidden_dim)
 
     try:
-        import torch
-        from SharedModules.data.vocab import load_vocab
-        from SharedModules.data.loader import get_loaders, TASK_TYPE
-        from config import MOSEConfig
         import importlib
-        mose_run = importlib.import_module('run')  # MOSE-GNN/run.py
 
-        cfg_kwargs = dict(
-            dataset=meta['dataset'], fold=int(meta.get('fold', 0)),
-            backbone=meta.get('backbone', 'GIN'),
-            node_encoder=meta.get('node_encoder', 'onehot'),
-            hidden_dim=hidden_dim,
-            num_layers=int(meta.get('num_layers', 3)),
-            vocab_variant=meta.get('vocab_variant', 'all_fallback_bpe'),
-            conv_normalize=meta.get('conv_normalize', 'l2'),
-            gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
-            data_root=meta.get('data_root', data_root),
-            vocab_root=vocab_root,
-            processed_root=meta.get('processed_root'),
-            w_feat=bool(meta.get('w_feat', False)),
-            w_message=bool(meta.get('w_message', False)),
-            w_readout=bool(meta.get('w_readout', False)),
-            mutag_index_maps_path=meta.get('mutag_index_maps_path'),
-            mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
-            mutag_splits_path=meta.get('mutag_splits_path'),
-            mutag_seed=int(meta.get('mutag_seed', 42)),
-        )
-        cfg = MOSEConfig(**{k: v for k, v in cfg_kwargs.items()
-                            if k in MOSEConfig.__dataclass_fields__ and v is not None})
+        if family == 'mose':
+            _purge_trainer_modules()
+            _prepend_trainer_path(_REPO / 'MOSE-GNN')
+            from config import MOSEConfig
+            mose_run = importlib.import_module('run')
+            cfg = MOSEConfig(**{k: v for k, v in cfg_kwargs.items()
+                                if k in MOSEConfig.__dataclass_fields__
+                                and v is not None})
+            test_list, task_type, dmeta, vocab = _load_test_list(cfg, vocab_root)
+            model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta)
+        else:
+            _purge_trainer_modules()
+            _prepend_trainer_path(_REPO / 'MotifSAT')
+            from config import MotifSATConfig
+            motifsat_run = importlib.import_module('run')
+            ms_kwargs = {
+                **cfg_kwargs,
+                'motif_method': meta.get('motif_method', 'readout'),
+                'noise': meta.get('noise', 'none'),
+                'info_loss_level': meta.get('info_loss_level', 'none'),
+                'info_loss_coef': float(meta.get('info_loss_coef', 0.0)),
+                'learn_edge_att': bool(meta.get('learn_edge_att', False)),
+            }
+            cfg = MotifSATConfig(**{k: v for k, v in ms_kwargs.items()
+                                    if k in MotifSATConfig.__dataclass_fields__
+                                    and v is not None})
+            test_list, task_type, dmeta, _vocab = _load_test_list(cfg, vocab_root)
+            model = motifsat_run.build_model(cfg, task_type, dmeta)
 
-        vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
-        task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
-        proc_root = cfg.processed_root
-        if not proc_root:
-            proc_root = f'{Path(cfg.data_root).parent / "processed"}/{cfg.vocab_variant}'
-        loaders, test_ds, dmeta = get_loaders(
-            dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
-            vocab=vocab, processed_root=proc_root,
-            batch_size=cfg.batch_size,
-            normalize=(task_type == 'Regression'),
-            mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
-            mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
-            mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
-            mutag_seed=getattr(cfg, 'mutag_seed', 42),
-        )
-        model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta)
-        # Ensure injection flags match training (summary is source of truth).
-        for attr in ('w_feat', 'w_message', 'w_readout'):
-            if hasattr(model, attr):
-                setattr(model, attr, bool(meta.get(attr, getattr(model, attr, False))))
+        _apply_injection_flags(model, meta)
     except Exception as e:  # pragma: no cover - environment-specific
         return None, None, f'rebuild failed: {e}'
 
@@ -271,12 +330,19 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
         state = state.get('model_state_dict', state) if isinstance(state, dict) else state
         model.load_state_dict(state, strict=False)
         model.to(device).eval()
-        test_list = [g for g in loaders['test'].dataset]
         if not test_list:
             return None, None, 'no test data'
         return model, test_list, 'ok'
     except Exception as e:  # pragma: no cover
         return None, None, f'load/data failed: {e}'
+
+
+_PROBE_PATH_MARKERS = ('mose', 'motifsat', 'gsat', 'base_gsat')
+
+
+def _is_probeable_run(summary_path: Path) -> bool:
+    s = str(summary_path).lower()
+    return any(m in s for m in _PROBE_PATH_MARKERS)
 
 
 def main():
@@ -285,7 +351,7 @@ def main():
     ap.add_argument('--run_dir', default=None,
                     help='A single run directory (with summary.json + .pt).')
     ap.add_argument('--out_root', default=None,
-                    help='Probe every MOSE run under this tree.')
+                    help='Probe MOSE / MotifSAT readout runs under this tree.')
     ap.add_argument('--data_root', required=True)
     ap.add_argument('--vocab_root', required=True)
     ap.add_argument('--att_threshold', type=float, default=None,
@@ -301,7 +367,7 @@ def main():
         run_dirs = [Path(args.run_dir)]
     elif args.out_root:
         run_dirs = [p.parent for p in Path(args.out_root).rglob('summary.json')
-                    if 'mose' in str(p).lower()]
+                    if _is_probeable_run(p)]
     else:
         raise SystemExit('provide --run_dir or --out_root')
 
@@ -331,7 +397,7 @@ def main():
               'removes recoverable input-feature info from masked nodes — '
               'i.e. masking genuinely makes node features harder to recover.')
     else:
-        print('No MOSE runs successfully probed.')
+        print('No MOSE/MotifSAT runs successfully probed.')
 
 
 if __name__ == '__main__':

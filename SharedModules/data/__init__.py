@@ -19,6 +19,22 @@ from .graph_to_smiles import (
 # GT path is SharedModules/data/apply_gt.py. Only GT_SUPPORTED_DATASETS is
 # still exported.
 from .ground_truth import GT_SUPPORTED_DATASETS
+from .dataset_routing import (
+    MUTAG_TUDATASET,
+    MUTAG_CSV_DATASET,
+    OGB_DATASET_NAMES,
+    SINGLE_FOLD_DATASETS,
+    loader_kind,
+    resolve_data_root,
+    resolve_node_encoder_for_dataset,
+    effective_fold,
+    is_single_fold_dataset,
+    collapse_redundant_folds,
+    validate_use_gt,
+    assert_vocab_rule_mining_allowed,
+    mutag_artifact_paths,
+    training_summary_extras,
+)
 
 __all__ = [
     'VocabData', 'load_vocab', 'compute_mask_cache',
@@ -31,4 +47,9 @@ __all__ = [
     'apply_motif_lookup_with_index_map', 'build_mutag_smiles_df',
     'MUTAG_ATOM_TYPE_MAP',
     'GT_SUPPORTED_DATASETS',
+    'MUTAG_TUDATASET', 'MUTAG_CSV_DATASET', 'SINGLE_FOLD_DATASETS',
+    'loader_kind', 'resolve_data_root', 'resolve_node_encoder_for_dataset',
+    'effective_fold', 'is_single_fold_dataset', 'collapse_redundant_folds',
+    'validate_use_gt', 'assert_vocab_rule_mining_allowed',
+    'mutag_artifact_paths', 'training_summary_extras',
 ]
