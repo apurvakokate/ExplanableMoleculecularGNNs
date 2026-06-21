@@ -61,14 +61,7 @@ TRAINERS = {
     'gsat':      'MotifSAT/run.py',                           # motif_method=none
 }
 
-# Datasets that support synthetic GT relabelling (mirror of
-# SharedModules/data/ground_truth.py::GT_SUPPORTED_DATASETS). For any other
-# dataset (mutag source GT, regression sets, OGB) the synthetic axis is forced
-# off so we never request a non-existent GT cache.
-GT_SUPPORTED_DATASETS = {
-    'Mutagenicity', 'Benzene', 'BBBP', 'hERG',
-    'Alkane_Carbonyl', 'Fluoride_Carbonyl',
-}
+from SharedModules.data.ground_truth import GT_SUPPORTED_DATASETS
 
 PRESETS = {
     'onehot_nonorm': dict(features='onehot', layer_norm='none',      encoder_norm='off'),
@@ -139,9 +132,10 @@ def build_arg_parser():
     p.add_argument('--gt_cache', default='./RESULTS/gt_cache',
                    help='phase-4 GT cache root (used when --synthetic on)')
     p.add_argument('--out_root', default='./RESULTS')
-    p.add_argument('--weights_root', default=None,
-                   help='Root of trained vanilla checkpoints for baselines/'
-                        'explainers (epochs=0). Defaults to <out_root>/vanilla.')
+    # --weights_root was unused (baselines resolve weights via vanilla_weights_dir).
+    # p.add_argument('--weights_root', default=None,
+    #                help='Root of trained vanilla checkpoints for baselines/'
+    #                     'explainers (epochs=0). Defaults to <out_root>/vanilla.')
     p.add_argument('--share_filter_weights', action='store_true',
                    help='Let a *_filter baseline load the UNFILTERED vanilla '
                         'checkpoint (vanilla weights are motif-agnostic, so one '
@@ -164,7 +158,7 @@ def build_arg_parser():
     p.add_argument('--continue_on_error', action='store_true')
     return p
 
-def resolve_norm_feature(args, preset, feat_override, ln_override, en_override):
+def resolve_norm_feature(preset, feat_override, ln_override, en_override):
     """Combine a preset (if any) with explicit overrides."""
     base = dict(features='onehot', layer_norm='l2', encoder_norm='off')
     if preset and preset in PRESETS:
@@ -350,8 +344,6 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
 
 def main():
     args = build_arg_parser().parse_args()
-    if args.weights_root is None:
-        args.weights_root = str(Path(args.out_root) / 'vanilla')
     exps      = csv(args.experiments)
     datasets  = csv(args.datasets)
     folds     = csv(args.folds)
@@ -378,7 +370,7 @@ def main():
     # de-dup resolved configs
     seen = set(); resolved_cfgs = []
     for pre, f, l, e in cfgs:
-        c = resolve_norm_feature(args, pre, f, l, e)
+        c = resolve_norm_feature(pre, f, l, e)
         key = (c['features'], c['layer_norm'], c['encoder_norm'])
         if key in seen: continue
         seen.add(key); resolved_cfgs.append(c)

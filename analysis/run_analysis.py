@@ -86,13 +86,10 @@ def step_regenerate(args) -> int:
     return subprocess.run(cmd).returncode
 
 
-# Canonical axis columns (written by run_experiments.py into config.json and/or
-# derived from the path by aggregate_experiments.normalize). Surfaced explicitly
-# in all_results.csv so downstream tables no longer have to parse exp_dir.
-AXIS_COLS = ['family', 'fragmentation', 'threshold', 'synthetic',
-             'norm', 'features', 'injection', 'epochs', 'fold']
-# config.json fields that are NOT axis columns but worth carrying through.
-_CONFIG_EXTRA = ['schema', 'encoder_norm', 'weight_vocab_variant', 'seed']
+# Column lists inlined in step_collect (below); these were unused duplicates.
+# AXIS_COLS = ['family', 'fragmentation', 'threshold', 'synthetic',
+#              'norm', 'features', 'injection', 'epochs', 'fold']
+# _CONFIG_EXTRA = ['schema', 'encoder_norm', 'weight_vocab_variant', 'seed']
 
 
 def step_collect(args) -> int:
@@ -233,44 +230,50 @@ def main():
         description='Single entry point for ChemIntuit analysis & plots.')
     sub = ap.add_subparsers(dest='command', required=True)
 
-    def common(p, need_train=False):
+    def path_args(p):
         p.add_argument('--out_root', required=True)
         p.add_argument('--save_dir', default=None)
+
+    def collect_args(p):
+        path_args(p)
         p.add_argument('--exclude', nargs='*', default=None,
                        help='extra directory-name prefixes to skip when walking '
                             '--out_root (archive/scratch dirs are always skipped).')
         p.add_argument('--vocab_variant', nargs='*', default=None,
                        help='collect ONLY these vocab variants, e.g. '
                             '--vocab_variant rbrics_old_filter (default: all).')
-        if need_train:
-            p.add_argument('--data_root', default=None)
-            p.add_argument('--mutag_data_root', default=os.environ.get('MUTAG_DATA_ROOT'))
-            p.add_argument('--ogb_data_root', default=os.environ.get('OGB_DATA_ROOT'))
-            p.add_argument('--vocab_root', default=None)
-            p.add_argument('--processed_root', default=None)
-            p.add_argument('--families', nargs='*',
-                           default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
-            p.add_argument('--dry_run', action='store_true')
+
+    def train_args(p):
+        p.add_argument('--data_root', default=None)
+        p.add_argument('--mutag_data_root', default=os.environ.get('MUTAG_DATA_ROOT'))
+        p.add_argument('--ogb_data_root', default=os.environ.get('OGB_DATA_ROOT'))
+        p.add_argument('--vocab_root', default=None)
+        p.add_argument('--processed_root', default=None)
+        p.add_argument('--families', nargs='*',
+                       default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
+        p.add_argument('--dry_run', action='store_true')
 
     p_re = sub.add_parser('regenerate', help='eval-only on existing checkpoints')
-    common(p_re, need_train=True)
+    path_args(p_re)
+    train_args(p_re)
 
     p_co = sub.add_parser('collect', help='rebuild all_results.csv')
-    common(p_co)
+    collect_args(p_co)
 
     p_tb = sub.add_parser('table', help='pivot tables per metric')
-    common(p_tb)
+    path_args(p_tb)
     p_tb.add_argument('--csv', default=None)
     p_tb.add_argument('--metrics', nargs='*', default=None)
 
     p_pl = sub.add_parser('plots', help='score-vs-impact grid + counts')
-    common(p_pl)
+    path_args(p_pl)
     p_pl.add_argument('--group', default='family')
     p_pl.add_argument('--facet', default='variant')
     p_pl.add_argument('--nbins', type=int, default=6)
 
     p_all = sub.add_parser('all', help='regenerate -> collect -> table -> plots')
-    common(p_all, need_train=True)
+    collect_args(p_all)
+    train_args(p_all)
     p_all.add_argument('--csv', default=None)
     p_all.add_argument('--metrics', nargs='*', default=None)
     p_all.add_argument('--group', default='family')

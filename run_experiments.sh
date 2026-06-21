@@ -113,7 +113,7 @@ _check_paths() {
 V_OLD="rbrics_old"               # method=rbrics_only, legacy behaviour
 V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
-V_ALL_SHATTER="all_fallback_bpe_shatter"  # method=all + mild-shatter floor (auto-suffixed)
+# V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
 
 # Three filtered variants (threshold applied):
 V_OLD_TH="rbrics_old_filter"
@@ -181,7 +181,6 @@ run_frag() {
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
         ds_root="$(_dataset_data_root "$ds")"
-        ds_fold=0
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets  "$ds" \
             --data_root "$ds_root" \
@@ -500,14 +499,12 @@ phase1() {
     echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
     run_frag all 1 1 "$V_ALL"
 
-    echo "1d. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
-    # NOTE: --shatter auto-appends '_shatter' to the variant name, so we pass the
-    # BASE name "$V_ALL" here; the output lands in "$V_ALL_SHATTER".
-    run_frag all 1 1 "$V_ALL" 1
+    # echo "1d. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
+    # run_frag all 1 1 "$V_ALL" 1   # → vocab dir all_fallback_bpe_shatter (no phase5 yet)
 
     echo ""
     echo "Phase 1 complete. Vocabularies in: $VOCAB_ROOT"
-    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL  $V_ALL_SHATTER"
+    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL"
     echo "Next: bash run_experiments.sh phase2  (review coverage plots)"
 }
 
@@ -773,53 +770,23 @@ phase5_motifsat() {
 }
 
 # =============================================================================
-# Collect results
+# Collect results (delegates to analysis/run_analysis.py collect)
 # =============================================================================
 collect_results() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " Collecting results"
+    echo " Collecting results (run_analysis.py collect)"
     echo "══════════════════════════════════════════════════════════"
-    python3 - << PYEOF
-import json, pandas as pd
-from pathlib import Path
-
-rows = []
-for p in Path("$OUT_ROOT").rglob("summary.json"):
-    try:
-        d = json.load(open(p))
-        d["exp_dir"] = str(p.parent.relative_to("$OUT_ROOT"))
-        rows.append(d)
-    except Exception:
-        pass
-
-if rows:
-    df = pd.DataFrame(rows)
-    # Core identifying + prediction columns, in a fixed order when present.
-    core = [c for c in ["exp_dir","dataset","backbone","vocab_variant",
-                        "motif_method","noise","info_loss_coef",
-                        "ent_reg","size_reg","num_layers","explainer_lr","gnn_lr","conv_normalize","gin_inner_bn",
-                        "train_auc","val_auc","auc",
-                        "gt_roc_auc_mean","gt_roc_node_auc_mean","gt_roc_edge_auc_mean",
-                        "gt_roc_node_mean_auc_mean","gt_roc_node_max_auc_mean",
-                        "pearson","spearman",
-                        "top_k_abs_disc","mean_abs_disc","score_disc_spearman",
-                        "score_min","score_max","score_mean","score_std",
-                        "score_median","score_mode","score_count"] if c in df]
-    # Plus any explainer-specific metric columns (gnnexplainer_*, pgexplainer_*,
-    # mage_*) so the baselines keep their per-explainer numbers.
-    extra = sorted(c for c in df.columns
-                   if c not in core and any(c.startswith(p) for p in
-                   ("gnnexplainer_","pgexplainer_","mage_")))
-    want = core + extra
-    out = df[want].sort_values(["dataset","exp_dir"])
-    print(out.to_string(index=False))
-    out.to_csv("$OUT_ROOT/all_results.csv", index=False)
-    print(f"\nSaved: $OUT_ROOT/all_results.csv  ({len(want)} columns)")
-else:
-    print("No summary.json files found yet.")
-PYEOF
+    python3 "$PROJECT/analysis/run_analysis.py" collect \
+        --out_root "$OUT_ROOT"
 }
+
+# Superseded inline collector (no config.json merge / axis normalization):
+# collect_results() {
+#     python3 - << PYEOF
+# ... rglob summary.json only ...
+# PYEOF
+# }
 
 # =============================================================================
 # Dispatcher

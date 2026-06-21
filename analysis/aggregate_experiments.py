@@ -17,12 +17,11 @@ Because the vanilla GNN and its post-hoc baselines (GNNExplainer / PGExplainer
 every injection variant that shares the remaining axes, so each per-experiment
 table/plot is complete.
 
-This module is robust to the THREE historical directory schemes that coexist in
-``all_results.csv``:
+This module is robust to multiple directory schemes in ``all_results.csv``:
 
-  * priority sweep        ``A0_B0_C0/<family>/<dataset>/fold<k>/<variant_tag>``
-  * phased pipeline       ``<family>/<variant>/<dataset>/fold<k>/<variant_tag>``
-  * grid driver           ``<family>/.../enc-..._inj..._ep..._real/<dataset>/fold<k>/<variant_tag>``
+  * phased pipeline (shell) ``<family>/<variant>/<dataset>/fold<k>/<variant_tag>``
+  * grid driver           ``<family>/<ds>/fold<k>/<variant>/enc-..._inj..._ep..._real/``
+  * legacy priority sweep ``A0_B0_C0/...`` (parser disabled; re-enable _priority_axes if needed)
 
 Most axes are read from real CSV columns (dataset, backbone, vocab_variant,
 conv_normalize); the few that only live in the path (features, injection,
@@ -114,20 +113,16 @@ def _fold(exp_dir: str):
     return int(m.group(1)) if m else None
 
 
-def _priority_axes(exp_dir: str):
-    """Decode the A{a}_B{b}_C{c} prefix of the priority sweep, if present.
-
-    A = fragmentation (0=rbrics, 1=all_fallback_bpe), B = labels (0=real,1=gt),
-    C = normalization (0=none, 1=l2).  Returns (synthetic, norm) overrides or
-    (None, None) when the prefix is absent.
-    """
-    m = re.match(r'A(\d)_B(\d)_C(\d)', str(exp_dir))
-    if not m:
-        return None, None
-    _, b, c = m.groups()
-    synthetic = 'gt' if b == '1' else 'real'
-    norm = 'l2' if c == '1' else 'none'
-    return synthetic, norm
+# Legacy run_priority.sh layout (A0_B0_C0/…); producer removed — keep parser
+# if old result trees remain on disk.
+# def _priority_axes(exp_dir: str):
+#     m = re.match(r'A(\d)_B(\d)_C(\d)', str(exp_dir))
+#     if not m:
+#         return None, None
+#     _, b, c = m.groups()
+#     synthetic = 'gt' if b == '1' else 'real'
+#     norm = 'l2' if c == '1' else 'none'
+#     return synthetic, norm
 
 
 def _features(exp_dir: str) -> str:
@@ -243,13 +238,13 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df, 'fragmentation',
         vv.map(lambda v: v[:-len('_filter')] if v.endswith('_filter') else v))
 
-    # priority-prefix overrides (only where present)
-    pri = exp.map(_priority_axes)
-    pri_syn = pri.map(lambda t: t[0])
-    pri_norm = pri.map(lambda t: t[1])
+    # priority-prefix overrides (legacy run_priority.sh trees only)
+    # pri = exp.map(_priority_axes)
+    # pri_syn = pri.map(lambda t: t[0])
+    # pri_norm = pri.map(lambda t: t[1])
 
     syn = exp.map(_synthetic)
-    syn = syn.where(pri_syn.isna(), pri_syn)
+    # syn = syn.where(pri_syn.isna(), pri_syn)
     df['synthetic'] = _prefer(df, 'synthetic', syn)
 
     df['features'] = _prefer(df, 'features', exp.map(_features))
@@ -259,7 +254,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df['epochs'] = _prefer(df, 'epochs', exp.map(_epochs))
 
     nrm = df.apply(_norm, axis=1)
-    nrm = nrm.where(pri_norm.isna(), pri_norm)
+    # nrm = nrm.where(pri_norm.isna(), pri_norm)
     df['norm'] = _prefer(df, 'norm', nrm)
 
     return df

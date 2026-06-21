@@ -114,18 +114,19 @@ class VanillaConfig:
     def to_dict(self) -> Dict:
         return asdict(self)
 
-    def save(self, path: str) -> None:
-        import yaml
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w') as f:
-            yaml.dump(self.to_dict(), f)
-
-    @classmethod
-    def from_yaml(cls, path: str) -> 'VanillaConfig':
-        import yaml
-        with open(path) as f:
-            d = yaml.safe_load(f)
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+    # Unused — no --config CLI (unlike MOSE/MotifSAT).
+    # def save(self, path: str) -> None:
+    #     import yaml
+    #     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    #     with open(path, 'w') as f:
+    #         yaml.dump(self.to_dict(), f)
+    #
+    # @classmethod
+    # def from_yaml(cls, path: str) -> 'VanillaConfig':
+    #     import yaml
+    #     with open(path) as f:
+    #         d = yaml.safe_load(f)
+    #     return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 def run(cfg: VanillaConfig) -> dict:
@@ -209,9 +210,6 @@ def run(cfg: VanillaConfig) -> dict:
     _ckpt_variant = (cfg.weight_vocab_variant
                      if cfg.weight_vocab_variant
                      else cfg.vocab_variant)
-    if cfg.load_weights_from:
-        print(f'  [FIX#1 active] resolved checkpoint variant via cfg: '
-              f'eval_vocab={cfg.vocab_variant} weight_vocab={_ckpt_variant}')
     # Checkpoint tag MUST match VanillaConfig.variant_tag() exactly (the dir the
     # training run wrote to), except the vocab variant may differ when a post-hoc
     # baseline evaluates under a filtered vocab but loads weights trained on the

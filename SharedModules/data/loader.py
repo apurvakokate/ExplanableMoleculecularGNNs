@@ -23,13 +23,7 @@ from .dataset_schema import DATASET_COLUMN  # unified schema (single source of t
 
 from .dataset_schema import TASK_TYPE       # unified schema (single source of truth)
 
-# OGB dataset metadata — node features come as [N, 9] integer tensor
-# (OGB Schema 2), not one-hot.  x_dim is set to OGB_NODE_FEAT_DIM = 9.
-OGB_DATASET_NAMES = set([
-    'ogbg-molhiv', 'ogbg-molbace', 'ogbg-molbbbp', 'ogbg-molclintox',
-    'ogbg-moltox21', 'ogbg-molsider', 'ogbg-molesol', 'ogbg-molfreesolv',
-    'ogbg-mollipo',
-])
+from .dataset_routing import OGB_DATASET_NAMES  # single source (was duplicated here)
 
 NUM_CLASSES: Dict[str, int] = {
     'tox21':            12,

@@ -9,14 +9,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
-from .dataset_schema import DATASET_COLUMN, TASK_TYPE
+from .dataset_schema import TASK_TYPE
 from .ground_truth import GT_SUPPORTED_DATASETS
 
 # TUDataset Mutagenicity with source explanation GT (NOT the CSV benchmark).
 MUTAG_TUDATASET = 'mutag'
 
 # CSV Mutagenicity benchmark (FOLDS); synthetic GT via phase-4 only.
-MUTAG_CSV_DATASET = 'Mutagenicity'
+# MUTAG_CSV_DATASET = 'Mutagenicity'  # alias only; use the string directly
 
 OGB_DATASET_NAMES = frozenset({
     'ogbg-molhiv', 'ogbg-molbace', 'ogbg-molbbbp', 'ogbg-molclintox',

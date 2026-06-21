@@ -36,10 +36,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pickle
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import torch
 
@@ -50,7 +49,7 @@ for _p in [str(_PROJECT), str(_HERE.parent)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from SharedModules.data.loader import get_loaders, TASK_TYPE
+from SharedModules.data.loader import get_loaders
 from SharedModules.data.vocab import load_vocab
 from SharedModules.utils import set_seed
 
@@ -290,8 +289,9 @@ Examples
     print(f'    match%     = {match_pct}%')
     print(f'    n_match    = {n_match}')
     print(f'    n_clauses  = {rule.get("n_clauses", len(rule.get("clauses", [])))}' )
-    for i, cl in enumerate(rule.get("clauses", [])):
-        print(f'    clause {i}   = {cl.get("motifs", [])}' )
+    # Duplicate of _clauses print above (raw rules.json layout) — kept for debugging:
+    # for i, cl in enumerate(rule.get("clauses", [])):
+    #     print(f'    clause {i}   = {cl.get("motifs", [])}' )
 
     if not rule_clauses or not all_motifs:
         print('\n  [error] Rule has no motifs — check rules.json')
@@ -309,7 +309,6 @@ Examples
 
     # ── Load data loaders to get Data objects ─────────────────────────────────
     print('  Loading data loaders...')
-    task_type = TASK_TYPE.get(args.dataset, 'BinaryClass')
     from SharedModules.data.dataset_routing import (
         default_processed_base,
         variant_processed_root,

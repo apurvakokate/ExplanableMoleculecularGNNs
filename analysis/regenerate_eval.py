@@ -139,7 +139,7 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
 
     data_root = _resolve_run_data_root(meta, args)
 
-    # Always write back into the checkpoint directory (canonical + priority layouts).
+    # Always write back into the checkpoint directory (canonical or shell-nested layout).
     common = [
         '--dataset', str(ds), '--fold', str(fold), '--backbone', str(bb),
         '--node_encoder', str(enc),

@@ -45,8 +45,8 @@ export FOLDS="0 1 2 3 4"
 # Each backbone produces its own subdirectory in results/.
 export BACKBONES="${BACKBONES:-GIN GCN SAGE}"  # GIN | GCN | SAGE | GAT | PNA
 
-# Legacy single-backbone variable kept for compatibility (used by _check_paths echo).
-export BACKBONE="${BACKBONE:-GIN}"
+# Legacy single-backbone variable — unused (all loops use BACKBONES).
+# export BACKBONE="${BACKBONE:-GIN}"
 export NODE_ENCODER="onehot"                  # onehot | linear | atom_encoder (OGB only)
 export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
 export EPOCHS="100"
