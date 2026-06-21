@@ -595,7 +595,7 @@ def get_loaders(
     data_root: str,
     fold: int = 0,
     vocab: Optional[VocabData] = None,
-    processed_root: str = '/tmp/motif_processed',
+    processed_root: Optional[str] = None,
     batch_size: int = 128,
     num_workers: int = 0,
     normalize: bool = False,
@@ -617,8 +617,9 @@ def get_loaders(
     fold : int
     vocab : VocabData or None
         If None, ``nodes_to_motifs`` will be all -1 (no motif annotations).
-    processed_root : str
+    processed_root : str or None
         Root for PyG processed ``.pt`` cache files (CSV datasets only).
+        When omitted, uses ``$PROCESSED_ROOT`` or ``{data_root}/../processed``.
     batch_size : int
     normalize : bool
         Normalise labels (regression only).
@@ -640,6 +641,11 @@ def get_loaders(
     test_dataset                       raw test dataset for evaluation
     meta : LoaderMeta                  x_dim, edge_attr_dim, task_type, ...
     """
+    from .dataset_routing import default_processed_base
+
+    if processed_root in (None, ''):
+        processed_root = default_processed_base(data_root, None)
+
     # ── OGB datasets ──────────────────────────────────────────────────────
     if dataset in OGB_DATASET_NAMES:
         return _get_ogb_loaders(

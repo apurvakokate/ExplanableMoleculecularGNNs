@@ -157,21 +157,21 @@ _mutag_train_flags() {
 
 # Config slug matching run_experiments.py _cfg_slug (vanilla/baselines omit inj/ep).
 _vanilla_cfg_slug() {
-    local syn="${1:-real}"
+    local syn="${1:-real}" bb="${2:?backbone required}"
     local nrm="norm-${CONV_NORMALIZE}"
     [ "${ENCODER_NORM:-off}" = "on" ] && nrm="${nrm}+encLN"
-    echo "enc-${NODE_ENCODER}_${nrm}_${syn}"
+    echo "bb-${bb}_enc-${NODE_ENCODER}_${nrm}_${syn}"
 }
 
 # Canonical run dirs (same layout as run_experiments.py config_tag + --final_out_dir).
 _vanilla_run_dir() {
-    local ds=$1 fold=$2 variant=$3 syn=${4:-real}
-    echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn")"
+    local ds=$1 fold=$2 variant=$3 bb=$4 syn=${5:-real}
+    echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn" "$bb")"
 }
 
 _baseline_run_dir() {
-    local ds=$1 fold=$2 eval_variant=$3 syn=${4:-real}
-    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn")"
+    local ds=$1 fold=$2 eval_variant=$3 bb=$4 syn=${5:-real}
+    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb")"
 }
 
 # ── Helper: fragment one variant ──────────────────────────────────────────────
@@ -229,7 +229,7 @@ run_vanilla() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
-                local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant")"
+                local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone")"
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -370,8 +370,8 @@ run_baselines() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
-                local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$weight_variant")"
-                local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$eval_variant")"
+                local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$weight_variant" "$backbone")"
+                local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$eval_variant" "$backbone")"
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \

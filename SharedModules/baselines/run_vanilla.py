@@ -514,10 +514,8 @@ def main():
     parser.add_argument('--vocab_root',      default='./vocab_output')
     parser.add_argument('--vocab_variant',   default='rbrics_nofall_nobpe_nofilter')
     parser.add_argument('--out_dir',         default='./vanilla_results')
-    parser.add_argument('--processed_root',  default=None,
-                        help='Root dir for cached processed PyG files. '
-                             'Variant is appended automatically. '
-                             'Set via $PROCESSED_ROOT in experiment_config.sh.')
+    parser.add_argument('--processed_root',  default=os.environ.get('PROCESSED_ROOT'),
+                        help='PyG .pt cache base ($PROCESSED_ROOT; per-vocab subdir appended)')
     parser.add_argument('--weight_vocab_variant', default=None,
                         help='Vocab variant used when training the weights to load. '
                              'Only needed with --load_weights_from when the eval vocab '

@@ -241,7 +241,7 @@ Examples
     parser.add_argument('--data_root',   required=True)
     parser.add_argument('--out_dir',     required=True,
                         help='Root of gt_cache output directory')
-    parser.add_argument('--processed_root', default=None,
+    parser.add_argument('--processed_root', default=os.environ.get('PROCESSED_ROOT'),
                         help='Base PyG cache root ($PROCESSED_ROOT). '
                              'Variant cache goes under {root}/apply_gt/{variant}.')
     parser.add_argument('--no_relabel',  action='store_true',
@@ -313,10 +313,7 @@ Examples
         default_processed_base,
         variant_processed_root,
     )
-    base_proc = default_processed_base(
-        args.data_root,
-        args.processed_root or os.environ.get('PROCESSED_ROOT'),
-    )
+    base_proc = default_processed_base(args.data_root, args.processed_root)
     apply_gt_base = f'{base_proc.rstrip("/")}/apply_gt'
     proc_root = variant_processed_root(apply_gt_base, args.variant)
     loaders, test_ds, meta = get_loaders(

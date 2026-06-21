@@ -248,7 +248,7 @@ def _load_test_list(cfg, vocab_root: str):
     vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
     task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
     proc_root = cfg.processed_root or variant_processed_root(
-        default_processed_base(cfg.data_root), cfg.vocab_variant)
+        default_processed_base(cfg.data_root, None), cfg.vocab_variant)
     loaders, test_ds, dmeta = get_loaders(
         dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
         vocab=vocab, processed_root=proc_root,

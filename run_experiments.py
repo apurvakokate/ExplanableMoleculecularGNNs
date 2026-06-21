@@ -175,17 +175,17 @@ def resolve_norm_feature(preset, feat_override, ln_override, en_override):
 INJECTION_AGNOSTIC = ('vanilla', 'baselines')
 
 
-def _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep):
+def _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep, backbone):
     """Leaf config folder name (the part below <exp>/<ds>/fold/<variant>)."""
     nrm = f"norm-{ln}" + ("+encLN" if en == 'on' else "")
-    parts = [f"enc-{feat}", nrm]
+    parts = [f"bb-{backbone}", f"enc-{feat}", nrm]
     if include_inj_ep:
         parts += [f"inj{inj}", f"ep{epochs}"]
     parts.append('gt' if syn == 'on' else 'real')
     return '_'.join(parts)
 
 
-def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn):
+def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, backbone):
     """Canonical results path (relative to --out_root) for one config.
 
     Layout (a SINGLE dataset/fold level — the trainers are invoked with
@@ -197,14 +197,14 @@ def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn):
     agnostic) weights are shared across injection and epoch sweeps.
     """
     include_inj_ep = exp not in INJECTION_AGNOSTIC
-    slug = _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep)
+    slug = _cfg_slug(feat, ln, en, inj, epochs, syn, include_inj_ep, backbone)
     return f"{exp}/{ds}/fold{fold}/{variant}/{slug}"
 
 
 def vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn):
     """FINAL dir of the trained vanilla run a baseline should load weights from."""
     slug = _cfg_slug(feat, ln, en, inj=None, epochs=None, syn=syn,
-                     include_inj_ep=False)
+                     include_inj_ep=False, backbone=args.backbone)
     return (Path(args.out_root) /
             f"vanilla/{ds}/fold{fold}/{weight_variant}/{slug}")
 
@@ -252,8 +252,7 @@ def _trainer_paths(args, ds: str):
         mutag_data_root=args.mutag_data_root,
         ogb_data_root=args.ogb_data_root,
     )
-    return dr, default_processed_base(
-        dr, args.processed_root or os.environ.get('PROCESSED_ROOT'))
+    return dr, default_processed_base(dr, args.processed_root)
 
 
 def _mutag_cli(ds: str, data_root: str, fold: int) -> list:
@@ -275,7 +274,7 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
     ds_root, proc_root = _trainer_paths(args, ds)
     node_enc = resolve_node_encoder_for_dataset(ds, feat)
     out_dir = Path(args.out_root) / config_tag(
-        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn)
+        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, args.backbone)
     script = Path(args.project) / TRAINERS[exp]
     cmd = [sys.executable, str(script),
            '--dataset', ds, '--fold', str(eff_fold),
@@ -344,6 +343,9 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
 
 def main():
     args = build_arg_parser().parse_args()
+    if not args.processed_root:
+        args.processed_root = default_processed_base(
+            str(Path(args.project).resolve()), None)
     exps      = csv(args.experiments)
     datasets  = csv(args.datasets)
     folds     = csv(args.folds)
@@ -377,7 +379,6 @@ def main():
 
     runs = list(itertools.product(exps, datasets, folds, variants,
                                   resolved_cfgs, injections, epochs_l, synth_l))
-    failures = 0
     planned = []           # de-duped (vanilla/baselines collapse inj/ep sweeps)
     seen_dirs = set()
     for exp, ds, fold, variant, cfg, inj, epochs, syn in runs:
@@ -406,10 +407,12 @@ def main():
     print(f"# {len(planned)} run(s) planned"
           + (f" ({len(runs)} before de-dup)" if len(planned) != len(runs) else "")
           + "\n")
+    skipped_existing = dry_run_only = attempted = failed = 0
     for (exp, ds, fold, variant, cfg, inj, epochs, syn,
          cmd, out_dir, config) in planned:
         if args.skip_existing and (out_dir / 'summary.json').exists():
             print(f"## [skip existing] {out_dir}\n")
+            skipped_existing += 1
             continue
         out_dir.mkdir(parents=True, exist_ok=True)
         printable = ' '.join(shlex.quote(c) for c in cmd)
@@ -419,23 +422,27 @@ def main():
         (out_dir / 'run_command.sh').write_text("#!/bin/bash\n" + printable + "\n")
         (out_dir / 'config.json').write_text(json.dumps(config, indent=2) + "\n")
         if args.dry_run:
+            dry_run_only += 1
             continue
+        attempted += 1
         env = dict(os.environ)
+        env.setdefault('PROCESSED_ROOT', args.processed_root)
         try:
-            r = subprocess.run(cmd, env=env)
+            r = subprocess.run(cmd, env=env,
+                               cwd=str(Path(args.project).resolve()))
             if r.returncode != 0:
-                failures += 1
+                failed += 1
                 print(f"!! exit {r.returncode} for {out_dir}", file=sys.stderr)
                 if not args.continue_on_error:
                     sys.exit(r.returncode)
         except Exception as e:
-            failures += 1
+            failed += 1
             print(f"!! {e} for {out_dir}", file=sys.stderr)
             if not args.continue_on_error:
                 raise
-    n = len(planned)
-    print(f"\n# done. {n-failures}/{n} succeeded"
-          + (f", {failures} failed" if failures else ""))
+    succeeded = attempted - failed
+    print(f"\n# done. planned={len(planned)} succeeded={succeeded} failed={failed} "
+          f"skipped_existing={skipped_existing} dry_run={dry_run_only}")
 
 if __name__ == '__main__':
     main()

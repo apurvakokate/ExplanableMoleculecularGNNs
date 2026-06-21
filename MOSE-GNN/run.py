@@ -421,8 +421,8 @@ def main():
                         help='W&B project name')
     parser.add_argument('--wandb_entity',  default=None,
                         help='W&B entity (team/user)')
-    parser.add_argument('--processed_root', default=None,
-                        help='PyG .pt cache root ($PROCESSED_ROOT in config)')
+    parser.add_argument('--processed_root', default=os.environ.get('PROCESSED_ROOT'),
+                        help='PyG .pt cache base ($PROCESSED_ROOT; per-vocab subdir appended)')
     parser.add_argument('--use_gt',      action='store_true',
                         help='Load ground-truth relabelled graphs from gt_cache')
     parser.add_argument('--gt_cache',    default=None,

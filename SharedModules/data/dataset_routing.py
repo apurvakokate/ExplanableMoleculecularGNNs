@@ -6,6 +6,7 @@ distinct dataset keys and must never be aliased. Use :func:`loader_kind` and
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -163,6 +164,9 @@ def default_processed_base(data_root: str, processed_root: Optional[str] = None)
     """Base PyG cache directory; CLI passes this, trainers append ``/{vocab_variant}``."""
     if processed_root not in (None, ''):
         return str(processed_root)
+    env = os.environ.get('PROCESSED_ROOT')
+    if env not in (None, ''):
+        return str(env)
     return str(Path(data_root).parent / 'processed')
 
 

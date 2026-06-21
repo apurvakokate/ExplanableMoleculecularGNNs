@@ -566,8 +566,8 @@ def main():
     parser.add_argument("--vocab_variant",   default="all_fallback_bpe")
     parser.add_argument("--out_dir",         default="./motifsat_results")
     parser.add_argument("--seed",            type=int, default=42)
-    parser.add_argument("--processed_root", default=None,
-                        help="PyG .pt cache root ($PROCESSED_ROOT in config)")
+    parser.add_argument("--processed_root", default=os.environ.get("PROCESSED_ROOT"),
+                        help="PyG .pt cache base ($PROCESSED_ROOT; per-vocab subdir appended)")
     parser.add_argument("--use_wandb",       action="store_true",
                         help="Initialise a W&B run for this experiment")
     parser.add_argument("--wandb_project",   default="ChemIntuit")
