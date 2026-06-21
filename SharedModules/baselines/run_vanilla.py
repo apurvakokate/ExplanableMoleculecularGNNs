@@ -74,8 +74,8 @@ class VanillaConfig:
     # <dataset>/fold<k>/<variant_tag>. The unified launcher (run_experiments.py)
     # sets this so the on-disk path has a single dataset/fold level (no double
     # nesting) and so config.json/summary.json/best_model.pt all live together.
-    # Legacy callers (run_experiments.sh, run_priority.sh, direct invocation)
-    # leave it False and keep the historical nested layout.
+    # Legacy callers (run_priority.sh, direct invocation) leave it False and
+    # keep the historical nested layout. run_experiments.sh uses --final_out_dir.
     final_out_dir: bool = False
     use_wandb: bool = False
     wandb_project: str = 'ChemIntuit'
@@ -247,6 +247,14 @@ def run(cfg: VanillaConfig) -> dict:
         pos_weights=pos_w, patience=cfg.patience,
         save_path=str(_ckpt_dir / 'best_model.pt'), verbose=cfg.verbose,
     )
+    # Baseline runs (epochs=0) load vanilla weights but write artifacts here;
+    # mirror the checkpoint so regenerate_eval can find best_model.pt in out_dir.
+    if (cfg.epochs == 0 and getattr(cfg, 'final_out_dir', False)
+            and cfg.load_weights_from):
+        _run_ckpt = out_dir / 'best_model.pt'
+        _src_ckpt = _ckpt_dir / 'best_model.pt'
+        if _run_ckpt.resolve() != _src_ckpt.resolve():
+            torch.save(model.state_dict(), _run_ckpt)
 
     # ── Prediction performance on all splits ──────────────────────────────────
     # For regression, also report MAE/RMSE in the original target units

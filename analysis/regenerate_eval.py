@@ -101,10 +101,13 @@ def _append_gt_flags(cmd: list[str], meta: dict) -> None:
 
 
 def _resolve_run_data_root(meta: dict, args) -> str:
+    """Prefer data_root recorded at training time; fall back to CLI/env routing."""
+    if meta.get('data_root'):
+        return str(meta['data_root'])
     ds = str(meta.get('dataset', ''))
     return resolve_data_root(
         ds,
-        str(meta.get('data_root') or args.data_root),
+        str(args.data_root),
         mutag_data_root=getattr(args, 'mutag_data_root', None),
         ogb_data_root=getattr(args, 'ogb_data_root', None),
     )
@@ -191,10 +194,30 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
         wvv = meta.get('weight_vocab_variant')
         if wvv:
             cmd += ['--weight_vocab_variant', str(wvv)]
-        cmd += ['--epochs', '0', '--load_weights_from', str(run_dir)]
+        if fam == 'baselines':
+            run_ckpt = run_dir / 'best_model.pt'
+            lw = str(run_dir) if run_ckpt.exists() else str(
+                meta.get('weights_dir') or run_dir)
+            cmd += ['--epochs', '0', '--load_weights_from', lw]
+        else:
+            cmd += ['--epochs', '0', '--load_weights_from', str(run_dir)]
         return cmd
 
     return None
+
+
+def _discover_runs(out_root: Path) -> list[Path]:
+    """Run dirs with a checkpoint, plus baseline dirs located via summary only."""
+    runs = {p.parent for p in out_root.rglob('best_model.pt')}
+    for sj in out_root.rglob('summary.json'):
+        try:
+            meta = json.load(open(sj))
+            exp_dir = str(sj.parent.relative_to(out_root))
+        except Exception:
+            continue
+        if resolve_family(meta, exp_dir) == 'baselines':
+            runs.add(sj.parent)
+    return sorted(runs)
 
 
 def main():
@@ -220,7 +243,7 @@ def main():
 
     out_root = Path(args.out_root)
     allowed = set(args.families)
-    runs = sorted({p.parent for p in out_root.rglob('best_model.pt')})
+    runs = _discover_runs(out_root)
     print(f'Found {len(runs)} checkpoint(s) under {out_root}\n')
 
     ran = skipped = failed = 0

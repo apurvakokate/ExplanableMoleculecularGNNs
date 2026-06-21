@@ -421,9 +421,10 @@ def _get_mutag_loaders(
         computed on the fly (fallback only).
     """
     Mutag = _import_mutag_class(data_root)
-    from .dataset_routing import resolve_mutag_roots
+    from .dataset_routing import resolve_mutag_roots, mutag_artifact_paths
     tudataset_root, _artifact_dir = resolve_mutag_roots(data_root)
     dataset = Mutag(root=tudataset_root)
+    _art = mutag_artifact_paths(data_root, fold)
 
     # Fail fast: a vocab was supplied (caller wants motif annotations) but the
     # index maps / mapped-SMILES CSV are absent. Without them every node would
@@ -432,10 +433,9 @@ def _get_mutag_loaders(
     if vocab is not None:
         _missing = []
         if not (index_maps_path and Path(index_maps_path).exists()):
-            _missing.append(index_maps_path or
-                            f'{data_root}/mutag_{fold}_index_maps.pkl')
+            _missing.append(index_maps_path or _art['mutag_index_maps_path'])
         if not (smiles_csv_path and Path(smiles_csv_path).exists()):
-            _missing.append(smiles_csv_path or f'{data_root}/mutag_{fold}.csv')
+            _missing.append(smiles_csv_path or _art['mutag_smiles_csv_path'])
         if _missing:
             raise FileNotFoundError(
                 "mutag vocab was provided but its motif-annotation artifacts are "
@@ -466,7 +466,7 @@ def _get_mutag_loaders(
     val_items:   List[int] = []
     test_items:  List[int] = []
 
-    _splits_file = splits_path or f'{data_root}/mutag_{fold}_splits.pkl'
+    _splits_file = splits_path or _art['mutag_splits_path']
     if Path(_splits_file).exists():
         from .mutag_splits import load_mutag_splits
         split_idx = load_mutag_splits(_splits_file)
@@ -654,9 +654,11 @@ def get_loaders(
 
     # ── mutag TUDataset (14-dim pre-baked features) ───────────────────────
     if dataset == 'mutag':
-        _imp = mutag_index_maps_path or f'{data_root}/mutag_{fold}_index_maps.pkl'
-        _scsv = mutag_smiles_csv_path or f'{data_root}/mutag_{fold}.csv'
-        _splits = mutag_splits_path or f'{data_root}/mutag_{fold}_splits.pkl'
+        from .dataset_routing import mutag_artifact_paths
+        _map = mutag_artifact_paths(data_root, fold)
+        _imp = mutag_index_maps_path or _map['mutag_index_maps_path']
+        _scsv = mutag_smiles_csv_path or _map['mutag_smiles_csv_path']
+        _splits = mutag_splits_path or _map['mutag_splits_path']
         return _get_mutag_loaders(
             data_root, vocab, batch_size, num_workers,
             fold=fold,

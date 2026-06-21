@@ -59,6 +59,7 @@ WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProjec
 # defaulted to True and could not be disabled, so every base-GSAT and MotifSAT
 # run used message injection.  This toggle preserves that behaviour by default.
 # Set MOTIFSAT_W_MESSAGE=0 to train without message injection.
+ENCODER_NORM="${ENCODER_NORM:-off}"
 MOTIFSAT_W_MESSAGE="${MOTIFSAT_W_MESSAGE:-1}"
 if [ "$MOTIFSAT_W_MESSAGE" = "1" ]; then
     WM_FLAG="--w_message"
@@ -154,6 +155,25 @@ _mutag_train_flags() {
          "--mutag_seed 42"
 }
 
+# Config slug matching run_experiments.py _cfg_slug (vanilla/baselines omit inj/ep).
+_vanilla_cfg_slug() {
+    local syn="${1:-real}"
+    local nrm="norm-${CONV_NORMALIZE}"
+    [ "${ENCODER_NORM:-off}" = "on" ] && nrm="${nrm}+encLN"
+    echo "enc-${NODE_ENCODER}_${nrm}_${syn}"
+}
+
+# Canonical run dirs (same layout as run_experiments.py config_tag + --final_out_dir).
+_vanilla_run_dir() {
+    local ds=$1 fold=$2 variant=$3 syn=${4:-real}
+    echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn")"
+}
+
+_baseline_run_dir() {
+    local ds=$1 fold=$2 eval_variant=$3 syn=${4:-real}
+    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn")"
+}
+
 # ── Helper: fragment one variant ──────────────────────────────────────────────
 # Usage: run_frag <method> <fallback:0|1> <bpe:0|1> <out_variant> [shatter:0|1]
 run_frag() {
@@ -210,6 +230,7 @@ run_vanilla() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant")"
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -219,7 +240,9 @@ run_vanilla() {
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
-                    --out_dir      "$OUT_ROOT/vanilla/${variant}" \
+                    --out_dir      "$out_dir" \
+                    --final_out_dir \
+                    $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
@@ -338,7 +361,7 @@ run_baselines() {
         "${V_ALL_TH}")    weight_variant="$V_ALL" ;;
     esac
     for backbone in $BACKBONES; do
-        echo "  [Baselines eval] backbone=$backbone vocab=$eval_variant  weights=vanilla/$weight_variant"
+        echo "  [Baselines eval] backbone=$backbone vocab=$eval_variant  weight_vocab=$weight_variant"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
                 _skip_redundant_fold "$ds" "$fold" && continue
@@ -346,6 +369,8 @@ run_baselines() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$weight_variant")"
+                local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$eval_variant")"
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -355,9 +380,11 @@ run_baselines() {
                     --vocab_variant "$eval_variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
-                    --load_weights_from "$OUT_ROOT/vanilla/${weight_variant}" \
+                    --load_weights_from "$wdir" \
                     --weight_vocab_variant "$weight_variant" \
-                    --out_dir      "$OUT_ROOT/baselines/${eval_variant}" \
+                    --out_dir      "$out_dir" \
+                    --final_out_dir \
+                    $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
@@ -435,12 +462,28 @@ phase0() {
     echo "Next: bash run_experiments.sh phase1"
 }
 
+_check_special_exports() {
+    for ds in $DATASETS_SPECIAL; do
+        case "$ds" in
+            mutag)
+                [ -f "$MUTAG_DATA_ROOT/mutag_0.csv" ] || \
+                    echo "  [warn] missing $MUTAG_DATA_ROOT/mutag_0.csv — run phase0 first"
+                ;;
+            ogbg-*)
+                [ -f "$OGB_DATA_ROOT/${ds}_0.csv" ] || \
+                    echo "  [warn] missing $OGB_DATA_ROOT/${ds}_0.csv — run phase0 first"
+                ;;
+        esac
+    done
+}
+
 # =============================================================================
 # PHASE 1 — Fragmentation, no threshold
 #   Three variants: rbrics_old, rbrics, all_fallback_bpe
 # =============================================================================
 phase1() {
     _check_paths
+    _check_special_exports
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 1 — Fragmentation (no threshold, 3 variants)"

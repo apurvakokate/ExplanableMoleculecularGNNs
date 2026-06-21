@@ -48,6 +48,7 @@ export BACKBONES="${BACKBONES:-GIN GCN SAGE}"  # GIN | GCN | SAGE | GAT | PNA
 # Legacy single-backbone variable kept for compatibility (used by _check_paths echo).
 export BACKBONE="${BACKBONE:-GIN}"
 export NODE_ENCODER="onehot"                  # onehot | linear | atom_encoder (OGB only)
+export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
 export EPOCHS="100"
 # Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
 export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
