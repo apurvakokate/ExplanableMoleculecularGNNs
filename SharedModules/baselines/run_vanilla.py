@@ -253,6 +253,7 @@ def run(cfg: VanillaConfig) -> dict:
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
+        denorm=_denorm,
     )
     eval_results = pipeline.run(run_motif_impact=cfg.run_motif_impact)
     dfs = pipeline.to_dataframe(eval_results)

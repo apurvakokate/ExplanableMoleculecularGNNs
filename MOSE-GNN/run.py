@@ -266,6 +266,7 @@ def run(cfg: MOSEConfig) -> dict:
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
+        denorm=_denorm,
     )
     results = pipeline.run(
         motif_scores=flat_scores,

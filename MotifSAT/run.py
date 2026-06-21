@@ -347,6 +347,7 @@ def run(cfg: MotifSATConfig) -> dict:
         model, vocab, loaders["test"], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         gt_level=gt_level,
+        denorm=_denorm,
     )
     # For base GSAT (learn_edge_att=True, motif_method='none') aggregate node
     # attention to vocabulary-level scores (mean and max) for correlation eval.

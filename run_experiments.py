@@ -256,10 +256,17 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
         if w_read: cmd += ['--w_readout']
         if syn == 'on':
             cmd += ['--use_gt', '--gt_cache', args.gt_cache]
-    elif exp in ('motifsat', 'gsat'):
-        method = 'none' if exp == 'gsat' else args.motif_method
+    elif exp == 'gsat':
+        # Match run_priority.sh GSAT: edge-attention + node IB, no MOSE injection.
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr),
-                '--motif_method', method,
+                '--motif_method', 'none',
+                '--learn_edge_att', '--noise', 'node',
+                '--info_loss_level', 'node', '--info_loss_coef', '1.0']
+        if syn == 'on':
+            cmd += ['--use_gt', '--gt_cache', args.gt_cache]
+    elif exp == 'motifsat':
+        cmd += ['--epochs', str(epochs), '--lr', str(args.lr),
+                '--motif_method', args.motif_method,
                 '--noise', 'none', '--info_loss_level', 'none', '--info_loss_coef', '0.0']
         if w_feat: cmd += ['--w_feat']
         if w_msg:  cmd += ['--w_message']

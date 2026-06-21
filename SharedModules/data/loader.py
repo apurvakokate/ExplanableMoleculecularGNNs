@@ -433,14 +433,6 @@ def _get_mutag_loaders(
             smiles_by_graph[gid] = str(row['smiles'])
             split_by_graph[gid]  = str(row.get('group', 'training'))
 
-    if smiles_csv_path and Path(smiles_csv_path).exists():
-        import pandas as pd
-        df_smi = pd.read_csv(smiles_csv_path)
-        for _, row in df_smi.iterrows():
-            gid = int(row['graph_id'])
-            smiles_by_graph[gid] = str(row['smiles'])
-            split_by_graph[gid]  = str(row.get('group', 'training'))
-
     # Resolve train/valid/test indices (GSAT splits pickle preferred)
     train_items: List[int] = []
     val_items:   List[int] = []

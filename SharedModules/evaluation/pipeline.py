@@ -56,6 +56,10 @@ class EvalPipeline:
         ``node_att_fn(data) -> Tensor [N]``.  Used for GT ROC when the model's
         forward pass does not return node attention (e.g. VanillaGNN + post-hoc).
         If None, attention is taken from the model's second return value.
+    denorm : (mean, std) tuple or None
+        Train-split z-score stats for regression targets. When set,
+        ``evaluate_predictions`` reports both normalised (``mae``/``rmse``) and
+        original-unit (``mae_orig``/``rmse_orig``) metrics in ``prediction``.
     """
 
     def __init__(
@@ -71,6 +75,7 @@ class EvalPipeline:
         correct_pred_threshold: float = 0.5,
         node_att_fn: Optional[Callable] = None,
         gt_level: str = 'node',
+        denorm: Optional[tuple] = None,
     ):
         self.model = model
         self.vocab = vocab
@@ -83,6 +88,7 @@ class EvalPipeline:
         self.correct_pred_threshold = correct_pred_threshold
         self.node_att_fn = node_att_fn
         self.gt_level = gt_level
+        self.denorm = denorm
 
     def _has_ground_truth(self) -> bool:
         """Check whether test_list has node_label or edge_label annotations."""
@@ -123,9 +129,10 @@ class EvalPipeline:
         """
         results: Dict = {}
 
-        # 1. Prediction performance
+        # 1. Prediction performance (normalised + original units when denorm set)
         results['prediction'] = evaluate_predictions(
-            self.model, self.test_loader, self.device, self.task_type
+            self.model, self.test_loader, self.device, self.task_type,
+            denorm=self.denorm,
         )
 
         # 2. GT explainer ROC — computed at BOTH node and edge level and
@@ -333,7 +340,10 @@ class EvalPipeline:
         """Print a compact human-readable summary to stdout."""
         print("\nPrediction:")
         for k, v in results.get("prediction", {}).items():
-            print(f"  {k}: {v:.4f}")
+            if isinstance(v, (int, float)):
+                print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
 
         if "gt_roc_node" in results or "gt_roc_edge" in results:
             print("\nExplainer ROC vs ground truth:")
