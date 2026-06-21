@@ -13,6 +13,7 @@ The knobs you asked to vary easily (all sweepable as comma-lists):
                                                  vanilla only, via --apply_layer_norm)
   --injection       111 | 101 | ...             (w_feat / w_message / w_readout bits)
   --epochs          e.g. 100                    (sweepable: 50,100,200)
+  --backbone        GIN | GCN | SAGE | GAT | PNA  (comma-list; default: all five)
   --synthetic       off | on                    (train on phase-4 GT relabelled data)
 
 Feature/norm coupling shortcut (your phrase "1hot+no norm / linear+norm"):
@@ -68,6 +69,9 @@ PRESETS = {
     'linear_norm':   dict(features='linear', layer_norm='layernorm', encoder_norm='on'),
 }
 
+VALID_BACKBONES = frozenset({'GIN', 'GCN', 'SAGE', 'GAT', 'PNA'})
+DEFAULT_BACKBONES = 'GIN,GCN,SAGE,GAT,PNA'
+
 def parse_injection(bits: str):
     """'111' -> (w_feat, w_message, w_readout) booleans."""
     bits = bits.strip()
@@ -76,6 +80,34 @@ def parse_injection(bits: str):
     return bits[0] == '1', bits[1] == '1', bits[2] == '1'
 
 def csv(s): return [x for x in s.split(',') if x != '']
+
+
+def default_backbone_arg() -> str:
+    """Comma-list default; honours $BACKBONES from experiment_config.sh."""
+    env = os.environ.get('BACKBONES', '').strip()
+    if env:
+        return ','.join(env.split())
+    return DEFAULT_BACKBONES
+
+
+def parse_backbones(raw: str) -> list[str]:
+    backbones = [b.strip().upper() for b in csv(raw)]
+    if not backbones:
+        raise SystemExit('--backbone must list at least one architecture')
+    bad = [b for b in backbones if b not in VALID_BACKBONES]
+    if bad:
+        raise SystemExit(
+            f"Unknown backbone(s) {bad}; choose from {sorted(VALID_BACKBONES)}"
+        )
+    # preserve order, drop duplicates
+    seen: set[str] = set()
+    out: list[str] = []
+    for b in backbones:
+        if b in seen:
+            continue
+        seen.add(b)
+        out.append(b)
+    return out
 
 
 def _env_on(name: str, default: str = '1') -> bool:
@@ -113,7 +145,9 @@ def build_arg_parser():
                    help='comma list of presets: onehot_nonorm,linear_norm (overridden by explicit knobs)')
 
     # fixed-ish model/training
-    p.add_argument('--backbone', default='GIN')
+    p.add_argument('--backbone', default=default_backbone_arg(),
+                   help='comma list: GIN,GCN,SAGE,GAT,PNA (default: all five, '
+                        'or $BACKBONES from experiment_config.sh)')
     p.add_argument('--hidden_dim', type=int, default=64)
     p.add_argument('--num_layers', type=int, default=3)
     p.add_argument('--lr', type=float, default=1e-3)
@@ -205,16 +239,16 @@ def config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, backbone)
     return f"{exp}/{ds}/fold{fold}/{variant}/{slug}"
 
 
-def vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn):
+def vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn, backbone):
     """FINAL dir of the trained vanilla run a baseline should load weights from."""
     slug = _cfg_slug(feat, ln, en, inj=None, epochs=None, syn=syn,
-                     include_inj_ep=False, backbone=args.backbone)
+                     include_inj_ep=False, backbone=backbone)
     return (Path(args.out_root) /
             f"vanilla/{ds}/fold{fold}/{weight_variant}/{slug}")
 
 
 def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
-                     weight_variant=None):
+                     backbone, weight_variant=None):
     """Explicit, machine-readable axis record written as config.json into the
     run dir. analysis/run_analysis.py collect merges these so all_results.csv
     carries real axis columns instead of path tokens."""
@@ -228,7 +262,7 @@ def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
         'family':        exp,
         'dataset':       ds,
         'fold':          int(fold),
-        'backbone':      args.backbone,
+        'backbone':      backbone,
         'vocab_variant': variant,
         'fragmentation': fragmentation,
         'threshold':     threshold,
@@ -244,7 +278,7 @@ def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
         rec['weight_vocab_variant'] = weight_variant or variant
         rec['weights_dir'] = str(vanilla_weights_dir(
             args, ds, fold, weight_variant or variant,
-            cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn))
+            cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn, backbone))
     if exp == 'mose':
         rec['run_multi_explanation'] = mose_run_multi_explanation_enabled(args)
     return rec
@@ -271,18 +305,18 @@ def _mutag_cli(ds: str, data_root: str, fold: int) -> list:
     ]
 
 
-def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
+def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn, backbone):
     feat = cfg['features']; ln = cfg['layer_norm']; en = cfg['encoder_norm']
     w_feat, w_msg, w_read = parse_injection(inj)
     eff_fold = effective_fold(ds, int(fold))
     ds_root, proc_root = _trainer_paths(args, ds)
     node_enc = resolve_node_encoder_for_dataset(ds, feat)
     out_dir = Path(args.out_root) / config_tag(
-        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, args.backbone)
+        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, backbone)
     script = Path(args.project) / TRAINERS[exp]
     cmd = [sys.executable, str(script),
            '--dataset', ds, '--fold', str(eff_fold),
-           '--backbone', args.backbone, '--node_encoder', node_enc,
+           '--backbone', backbone, '--node_encoder', node_enc,
            '--hidden_dim', str(args.hidden_dim), '--num_layers', str(args.num_layers),
            '--conv_normalize', ln,
            '--data_root', ds_root, '--vocab_root', args.vocab_root,
@@ -305,7 +339,8 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
         weight_variant = variant
         if args.share_filter_weights and variant.endswith('_filter'):
             weight_variant = variant[:-len('_filter')]
-        vdir = vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn)
+        vdir = vanilla_weights_dir(args, ds, fold, weight_variant, feat, ln, en, syn,
+                                   backbone)
         cmd += ['--epochs', '0',
                 '--load_weights_from', str(vdir),
                 '--weight_vocab_variant', weight_variant]
@@ -357,6 +392,7 @@ def main():
     injections= csv(args.injection)
     epochs_l  = csv(args.epochs)
     synth_l   = csv(args.synthetic)
+    backbones = parse_backbones(args.backbone)
     presets   = csv(args.preset) if args.preset else [None]
     feats     = csv(args.features) if args.features else [None]
     lns       = csv(args.layer_norm) if args.layer_norm else [None]
@@ -382,10 +418,11 @@ def main():
         seen.add(key); resolved_cfgs.append(c)
 
     runs = list(itertools.product(exps, datasets, folds, variants,
-                                  resolved_cfgs, injections, epochs_l, synth_l))
+                                  resolved_cfgs, injections, epochs_l, synth_l,
+                                  backbones))
     planned = []           # de-duped (vanilla/baselines collapse inj/ep sweeps)
     seen_dirs = set()
-    for exp, ds, fold, variant, cfg, inj, epochs, syn in runs:
+    for exp, ds, fold, variant, cfg, inj, epochs, syn, backbone in runs:
         # OGB/mutag only have fold-0 artifacts; skip redundant fold sweeps.
         if is_single_fold_dataset(ds) and int(fold) != 0:
             continue
@@ -394,7 +431,8 @@ def main():
         # we don't request a GT cache that phase-4 intentionally skips.
         if syn == 'on' and ds not in GT_SUPPORTED_DATASETS:
             syn = 'off'
-        cmd, out_dir = make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn)
+        cmd, out_dir = make_command(exp, args, ds, fold, variant, cfg, inj,
+                                    epochs, syn, backbone)
         if str(out_dir) in seen_dirs:
             # vanilla/baseline slug drops inj/ep, so an inj/epoch sweep maps many
             # run tuples to one dir — run it once, not N times.
@@ -404,15 +442,15 @@ def main():
               if (exp == 'baselines' and args.share_filter_weights
                   and variant.endswith('_filter')) else variant)
         config = canonical_config(exp, args, ds, fold, variant, cfg, inj,
-                                  epochs, syn, weight_variant=wv)
-        planned.append((exp, ds, fold, variant, cfg, inj, epochs, syn,
+                                  epochs, syn, backbone, weight_variant=wv)
+        planned.append((exp, ds, fold, variant, cfg, inj, epochs, syn, backbone,
                         cmd, out_dir, config))
 
     print(f"# {len(planned)} run(s) planned"
           + (f" ({len(runs)} before de-dup)" if len(planned) != len(runs) else "")
           + "\n")
     skipped_existing = dry_run_only = attempted = failed = 0
-    for (exp, ds, fold, variant, cfg, inj, epochs, syn,
+    for (exp, ds, fold, variant, cfg, inj, epochs, syn, backbone,
          cmd, out_dir, config) in planned:
         if args.skip_existing and (out_dir / 'summary.json').exists():
             print(f"## [skip existing] {out_dir}\n")

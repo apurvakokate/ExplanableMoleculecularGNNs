@@ -43,7 +43,7 @@ export FOLDS="0 1 2 3 4"
 # ── Model architecture ────────────────────────────────────────────────────────
 # All backbone architectures to train.  Add or remove as needed.
 # Each backbone produces its own subdirectory in results/.
-export BACKBONES="${BACKBONES:-GIN GCN SAGE}"  # GIN | GCN | SAGE | GAT | PNA
+export BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 
 # Legacy single-backbone variable — unused (all loops use BACKBONES).
 # export BACKBONE="${BACKBONE:-GIN}"
@@ -83,5 +83,6 @@ echo "  DATASETS   = $DATASETS"
 echo "  CSV        = $DATASETS_CSV"
 echo "  SPECIAL    = $DATASETS_SPECIAL"
 echo "  CONV_NORM  = $CONV_NORMALIZE"
+echo "  BACKBONES  = $BACKBONES"
 echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
 echo "  OGB_ROOT   = $OGB_DATA_ROOT"
