@@ -32,18 +32,28 @@ from pathlib import Path
 import pandas as pd
 
 
+def _ensure_ogb_cached(dataset: str, ogb_root: str) -> Path:
+    """Return path to mol.csv.gz, downloading the OGB dataset if needed."""
+    name_hyphen = dataset.replace('_', '-')
+    mol_csv = Path(ogb_root) / name_hyphen / 'mapping' / 'mol.csv.gz'
+    if mol_csv.exists():
+        return mol_csv
+    try:
+        from ogb.graphproppred import PygGraphPropPredDataset
+    except ImportError:
+        raise ImportError("OGB not installed. Run: pip install ogb")
+    print(f"  OGB cache missing for {name_hyphen}; downloading to {ogb_root!r} ...")
+    PygGraphPropPredDataset(root=ogb_root, name=name_hyphen)
+    if not mol_csv.exists():
+        raise FileNotFoundError(
+            f"OGB download finished but mapping file still missing: {mol_csv}")
+    return mol_csv
+
+
 def export(dataset: str, ogb_root: str, out_dir: str, fold: int,
            label_col: str | None) -> Path:
     name_hyphen = dataset.replace('_', '-')
-    base = Path(ogb_root) / name_hyphen
-    mol_csv = base / 'mapping' / 'mol.csv.gz'
-    if not mol_csv.exists():
-        raise FileNotFoundError(
-            f"OGB mapping file not found: {mol_csv}\n"
-            f"Download the dataset first (loading it once via ogb's "
-            f"PygGraphPropPredDataset(root={ogb_root!r}, name={name_hyphen!r}) "
-            f"creates it).")
-
+    mol_csv = _ensure_ogb_cached(dataset, ogb_root)
     df = pd.read_csv(mol_csv)
     if 'smiles' not in df.columns:
         raise KeyError(f"'smiles' column not in {mol_csv}; columns={list(df.columns)}")
