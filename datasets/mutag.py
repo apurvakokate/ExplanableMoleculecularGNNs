@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import pickle as pkl
 
@@ -54,9 +55,14 @@ class Mutag(InMemoryDataset):
     """
 
     def __init__(self, root: str, force_reload: bool = False):
-        super().__init__(root=root, force_reload=force_reload)
-        self.data, self.slices = torch.load(
-            self.processed_paths[0], weights_only=False)
+        # force_reload was added in newer PyG; l2xgnn / older installs lack it.
+        _init_params = inspect.signature(InMemoryDataset.__init__).parameters
+        if 'force_reload' in _init_params:
+            super().__init__(root=root, force_reload=force_reload)
+        else:
+            super().__init__(root=root)
+        load_kw = {'weights_only': False} if 'weights_only' in inspect.signature(torch.load).parameters else {}
+        self.data, self.slices = torch.load(self.processed_paths[0], **load_kw)
 
     @property
     def raw_file_names(self):
