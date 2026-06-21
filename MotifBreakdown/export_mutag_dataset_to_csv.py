@@ -43,16 +43,21 @@ def _load_mutag(data_root: str):
             "Could not import datasets.mutag.Mutag. Run this script from the repo "
             "root (so the 'datasets' package is importable), or add it to "
             f"PYTHONPATH. Original error: {e}")
-    return Mutag(root=str(Path(data_root) / 'mutag'))
+    sm = here.parents[1] / 'SharedModules'
+    if str(sm) not in sys.path:
+        sys.path.insert(0, str(sm))
+    from SharedModules.data.dataset_routing import resolve_mutag_roots
+    tudataset_root, _ = resolve_mutag_roots(data_root)
+    return Mutag(root=tudataset_root)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--data_root', required=True,
-                   help="Directory containing the mutag/ TUDataset folder")
+                   help='MUTAG_DATA_ROOT: parent of mutag/ or the mutag/ folder itself')
     p.add_argument('--out_dir', required=True,
-                   help="FOLDS dir where mutag_{fold}.* artifacts are written")
+                   help='Directory for mutag_{fold}.* artifacts (use MUTAG_DATA_ROOT)')
     p.add_argument('--fold', type=int, default=0)
     p.add_argument('--seed', type=int, default=42,
                    help="RNG seed for the shuffle (use seed+fold for multi-fold)")

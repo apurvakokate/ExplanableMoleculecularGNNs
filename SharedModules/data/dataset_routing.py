@@ -204,6 +204,7 @@ def training_summary_extras(cfg) -> Dict:
         'w_readout': getattr(cfg, 'w_readout', None),
         'use_gt': bool(getattr(cfg, 'use_gt', False)),
         'gt_cache': getattr(cfg, 'gt_cache', None),
+        'run_multi_explanation': bool(getattr(cfg, 'run_multi_explanation', False)),
     }
     if hasattr(cfg, 'unk_mode'):
         out['unk_mode'] = getattr(cfg, 'unk_mode', None)

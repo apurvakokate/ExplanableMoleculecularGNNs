@@ -118,7 +118,7 @@ def build_arg_parser():
                    help='data root for mutag TUDataset exports (mutag_<fold>.csv, …)')
     p.add_argument('--ogb_data_root', default=None,
                    help='OGB cache root (defaults to --data_root)')
-    p.add_argument('--processed_root', default=None,
+    p.add_argument('--processed_root', default=os.environ.get('PROCESSED_ROOT'),
                    help='PyG processed .pt cache root (per-vocab subdir appended)')
     p.add_argument('--vocab_root', default='./vocab_output')
     p.add_argument('--gt_cache', default='./RESULTS/gt_cache',
@@ -236,7 +236,8 @@ def _trainer_paths(args, ds: str):
         mutag_data_root=args.mutag_data_root,
         ogb_data_root=args.ogb_data_root,
     )
-    return dr, default_processed_base(dr, args.processed_root)
+    return dr, default_processed_base(
+        dr, args.processed_root or os.environ.get('PROCESSED_ROOT'))
 
 
 def _mutag_cli(ds: str, data_root: str, fold: int) -> list:

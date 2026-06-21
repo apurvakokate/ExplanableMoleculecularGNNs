@@ -242,6 +242,9 @@ Examples
     parser.add_argument('--data_root',   required=True)
     parser.add_argument('--out_dir',     required=True,
                         help='Root of gt_cache output directory')
+    parser.add_argument('--processed_root', default=None,
+                        help='Base PyG cache root ($PROCESSED_ROOT). '
+                             'Variant cache goes under {root}/apply_gt/{variant}.')
     parser.add_argument('--no_relabel',  action='store_true',
                         help='Attach edge_label but keep original data.y')
     parser.add_argument('--batch_size',  type=int, default=128)
@@ -307,17 +310,22 @@ Examples
     # ── Load data loaders to get Data objects ─────────────────────────────────
     print('  Loading data loaders...')
     task_type = TASK_TYPE.get(args.dataset, 'BinaryClass')
-    # processed_root MUST be variant-specific: the cached .pt bakes in
-    # nodes_to_motifs from THIS variant's vocab lookup. Sharing a path across
-    # variants (as the old non-variant path did) makes the second variant reuse
-    # the first variant's motif annotations → wrong edge_label / relabels.
+    from SharedModules.data.dataset_routing import (
+        default_processed_base,
+        variant_processed_root,
+    )
+    base_proc = default_processed_base(
+        args.data_root,
+        args.processed_root or os.environ.get('PROCESSED_ROOT'),
+    )
+    apply_gt_base = f'{base_proc.rstrip("/")}/apply_gt'
+    proc_root = variant_processed_root(apply_gt_base, args.variant)
     loaders, test_ds, meta = get_loaders(
         dataset=args.dataset,
         data_root=args.data_root,
         fold=args.fold,
         vocab=vocab,
-        processed_root=(f'/tmp/apply_gt_processed/'
-                        f'{args.dataset}_fold{args.fold}/{args.variant}'),
+        processed_root=proc_root,
         batch_size=args.batch_size,
     )
     print(f'    train={len(loaders["train"].dataset)}  '

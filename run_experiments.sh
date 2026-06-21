@@ -9,6 +9,7 @@
 #   3. bash run_experiments.sh phase1
 #
 # Phases:
+#   phase0           export mutag/OGB CSV bridges (DATASETS_SPECIAL)
 #   phase1           fragmentation, no threshold (all 3 variants)
 #   phase2           coverage vs threshold sweep  (review, then edit CHOSEN_THRESHOLD)
 #   phase3           thresholded vocabularies     (reads CHOSEN_THRESHOLD dict)
@@ -47,7 +48,11 @@ FOLDS="${FOLDS:-0 1 2 3 4}"
 PROCESSED_ROOT="${PROCESSED_ROOT:-${PROJECT}/processed}"  # PyG .pt cache
 MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-${PROJECT}/data}"
 OGB_DATA_ROOT="${OGB_DATA_ROOT:-${PROJECT}/data/ogb}"
-DATASETS="${DATASETS:-Mutagenicity BBBP Benzene mutag ogbg-molhiv}"
+DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP Benzene}"
+DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv}"
+DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
+CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
+MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-1}"
 RULE_INDEX="${RULE_INDEX:-}"
 WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProject"
 # MotifSAT message injection (w_message).  Prior to the argparse fix, w_message
@@ -60,6 +65,11 @@ if [ "$MOTIFSAT_W_MESSAGE" = "1" ]; then
 else
     WM_FLAG=""
 fi
+_mose_extra_flags() {
+    local extra=""
+    [ "$MOSE_RUN_MULTI_EXPLANATION" = "1" ] && extra="--run_multi_explanation"
+    echo "$extra"
+}
 # Rule ranking for rules.json (rule_index 0 = best). 'balanced' sorts by
 # balance × separation × (1-spurious) to target a ~50/50 synthetic GT split and
 # penalise spurious/subsuming motifs; 'pct1' is the legacy positive-coverage
@@ -85,6 +95,9 @@ _check_paths() {
     echo "  VOCAB_ROOT = $VOCAB_ROOT"
     echo "  OUT_ROOT   = $OUT_ROOT"
     echo "  DATASETS   = $DATASETS"
+    echo "  CSV        = $DATASETS_CSV"
+    echo "  SPECIAL    = $DATASETS_SPECIAL"
+    echo "  CONV_NORM  = $CONV_NORMALIZE"
     echo "  FOLDS      = $FOLDS"
     echo "  BACKBONES  = $BACKBONES"
     echo "  PROCESSED  = $PROCESSED_ROOT"
@@ -204,6 +217,7 @@ run_vanilla() {
                     --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
+                    --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/vanilla/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -232,9 +246,11 @@ run_mose() {
                     --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
+                    --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
+                    $(_mose_extra_flags) \
                     $WANDB_FLAGS
             done
         done
@@ -264,6 +280,7 @@ run_gsat() {
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
+                    --conv_normalize  "$CONV_NORMALIZE" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/base_gsat/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -296,6 +313,7 @@ run_motifsat() {
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
+                    --conv_normalize  "$CONV_NORMALIZE" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/motifsat/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -335,6 +353,7 @@ run_baselines() {
                     --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$eval_variant" \
+                    --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --load_weights_from "$OUT_ROOT/vanilla/${weight_variant}" \
                     --weight_vocab_variant "$weight_variant" \
@@ -347,13 +366,10 @@ run_baselines() {
 }
 
 apply_gt() {
-    # Write relabelled graph objects to gt_cache for all datasets × folds.
-    # Loops over $FOLDS so GT training and evaluation work for every fold,
-    # not just fold 0.
+    # Write relabelled graph objects to gt_cache for CSV datasets × folds.
     local variant=$1 rule_idx=$2
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
-    for ds in $DATASETS; do
-        case "$ds" in mutag|ogbg-*) continue ;; esac
+    for ds in $DATASETS_CSV; do
         for fold in $FOLDS; do
             python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
@@ -363,9 +379,60 @@ apply_gt() {
                 --out_dir    "$OUT_ROOT/gt_cache" \
                 --rule_index "$rule_idx" \
                 --data_root  "$DATA_ROOT" \
+                --processed_root "$PROCESSED_ROOT" \
              || { echo "  [error] apply_gt.py failed for $ds fold $fold — see output above"; exit 1; }
         done
     done
+}
+
+# =============================================================================
+# PHASE 0 — Export mutag / OGB CSV bridges for vocab generation
+#   Writes {mutag|ogbg-*}_0.csv (+ mutag index maps / splits) under the
+#   dataset-specific roots so phase1 _dataset_data_root finds them.
+# =============================================================================
+phase0() {
+    _check_paths
+    echo ""
+    echo "══════════════════════════════════════════════════════════"
+    echo " PHASE 0 — Export mutag / OGB CSV bridges"
+    echo "══════════════════════════════════════════════════════════"
+
+    for ds in $DATASETS_SPECIAL; do
+        case "$ds" in
+            mutag)
+                local csv="$MUTAG_DATA_ROOT/mutag_0.csv"
+                echo "  [mutag] → $MUTAG_DATA_ROOT"
+                if [ -f "$csv" ]; then
+                    echo "    skip (exists): $csv"
+                else
+                    python3 "$PROJECT/MotifBreakdown/export_mutag_dataset_to_csv.py" \
+                        --data_root "$MUTAG_DATA_ROOT" \
+                        --out_dir   "$MUTAG_DATA_ROOT" \
+                        --fold 0 --seed 42
+                fi
+                ;;
+            ogbg-*)
+                local csv="$OGB_DATA_ROOT/${ds}_0.csv"
+                echo "  [$ds] → $OGB_DATA_ROOT"
+                if [ -f "$csv" ]; then
+                    echo "    skip (exists): $csv"
+                else
+                    python3 "$PROJECT/MotifBreakdown/export_ogb_to_csv.py" \
+                        --dataset  "$ds" \
+                        --ogb_root   "$OGB_DATA_ROOT" \
+                        --out_dir    "$OGB_DATA_ROOT" \
+                        --fold 0
+                fi
+                ;;
+            *)
+                echo "  [warn] unknown special dataset (no export script): $ds"
+                ;;
+        esac
+    done
+
+    echo ""
+    echo "Phase 0 complete."
+    echo "Next: bash run_experiments.sh phase1"
 }
 
 # =============================================================================
@@ -538,8 +605,7 @@ phase5_mose() {
         # GT-relabelled run: separate function to avoid word-splitting in inj_args
         for backbone in $BACKBONES; do
             echo "  [MOSE+GT] backbone=$backbone vocab=$V_ALL_GT"
-            for ds in $DATASETS; do
-                case "$ds" in mutag|ogbg-*) continue ;; esac
+            for ds in $DATASETS_CSV; do
                 for fold in $FOLDS; do
                     local enc="$(_dataset_node_encoder "$ds")"
                     python3 "$PROJECT/MOSE-GNN/run.py" \
@@ -551,8 +617,10 @@ phase5_mose() {
                         --data_root    "$DATA_ROOT" \
                         --vocab_root   "$VOCAB_ROOT" \
                         --vocab_variant "$V_ALL" \
+                        --conv_normalize "$CONV_NORMALIZE" \
                         --processed_root "$PROCESSED_ROOT" \
                         --out_dir      "$OUT_ROOT/mose/${V_ALL_GT}" \
+                        $(_mose_extra_flags) \
                         $WANDB_FLAGS
                 done
             done
@@ -629,8 +697,7 @@ phase5_motifsat() {
     if [ -d "$OUT_ROOT/gt_cache" ]; then
         for backbone in $BACKBONES; do
             echo "  [MotifSAT+GT] backbone=$backbone vocab=$V_ALL_GT"
-            for ds in $DATASETS; do
-                case "$ds" in mutag|ogbg-*) continue ;; esac
+            for ds in $DATASETS_CSV; do
                 for fold in $FOLDS; do
                     local enc="$(_dataset_node_encoder "$ds")"
                     python3 "$PROJECT/MotifSAT/run.py" \
@@ -646,6 +713,7 @@ phase5_motifsat() {
                         --data_root       "$DATA_ROOT" \
                         --vocab_root      "$VOCAB_ROOT" \
                         --vocab_variant   "$V_ALL" \
+                        --conv_normalize  "$CONV_NORMALIZE" \
                         --processed_root  "$PROCESSED_ROOT" \
                         --out_dir         "$OUT_ROOT/motifsat/${V_ALL_GT}" \
                         $WANDB_FLAGS
@@ -713,6 +781,7 @@ PYEOF
 # =============================================================================
 PHASE="${1:-}"
 case "$PHASE" in
+    phase0)           phase0 ;;
     phase1)           phase1 ;;
     phase2)           phase2 ;;
     phase3)           phase3 ;;
@@ -731,6 +800,8 @@ case "$PHASE" in
         python3 "$PROJECT/analysis/run_analysis.py" all \
             --out_root "$OUT_ROOT" \
             --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+            --mutag_data_root "$MUTAG_DATA_ROOT" \
+            --ogb_data_root "$OGB_DATA_ROOT" \
             ${PROCESSED_ROOT:+--processed_root "$PROCESSED_ROOT"} \
             $ANALYZE_ARGS
         ;;
@@ -738,6 +809,7 @@ case "$PHASE" in
         echo "Usage: bash run_experiments.sh <phase>"
         echo ""
         echo "Phases:"
+        echo "  phase0            export mutag/OGB CSV bridges (DATASETS_SPECIAL)"
         echo "  phase1            fragment all 3 variants (rbrics_old, rbrics, all_fallback_bpe)"
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
         echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"

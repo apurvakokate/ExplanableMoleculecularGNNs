@@ -28,11 +28,14 @@ export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data}"
 export OGB_DATA_ROOT="${OGB_DATA_ROOT:-$_CFG_DIR/data/ogb}"
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
-# Choose from: Mutagenicity (CSV benchmark)  mutag (TUDataset + source GT)
-#              BBBP hERG Benzene Alkane_Carbonyl Fluoride_Carbonyl
-#              esol Lipophilicity freesolv tox21
-#              ogbg-molhiv ogbg-molbace ogbg-molbbbp (atom_encoder forced at train)
-export DATASETS="${DATASETS:-Mutagenicity BBBP Benzene mutag ogbg-molhiv}"
+# CSV benchmarks (FOLDS/{dataset}_{fold}.csv under DATA_ROOT):
+export DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP Benzene}"
+# Special datasets needing phase0 export (mutag TUDataset, OGB PyG):
+#   mutag          — source GT; no --use_gt; fold 0 only
+#   ogbg-molhiv    — atom_encoder forced at train; fold 0 only
+export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv}"
+# Union used by all phases. Override entirely: export DATASETS="BBBP Benzene"
+export DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 
 # ── Cross-validation folds ────────────────────────────────────────────────────
 export FOLDS="0 1 2 3 4"
@@ -46,6 +49,10 @@ export BACKBONES="${BACKBONES:-GIN GCN SAGE}"  # GIN | GCN | SAGE | GAT | PNA
 export BACKBONE="${BACKBONE:-GIN}"
 export NODE_ENCODER="onehot"                  # onehot | linear | atom_encoder (OGB only)
 export EPOCHS="100"
+# Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
+export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
+# MOSE multi-explanation analysis (H0/H1/H2); extra masked forward passes
+export MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-1}"
 
 # ── Phase 3: thresholds ───────────────────────────────────────────────────────
 # Thresholds are set per-dataset in a dict — no shell variable needed.
@@ -72,5 +79,8 @@ echo "  DATA_ROOT  = $DATA_ROOT"
 echo "  VOCAB_ROOT = $VOCAB_ROOT"
 echo "  OUT_ROOT   = $OUT_ROOT"
 echo "  DATASETS   = $DATASETS"
+echo "  CSV        = $DATASETS_CSV"
+echo "  SPECIAL    = $DATASETS_SPECIAL"
+echo "  CONV_NORM  = $CONV_NORMALIZE"
 echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
 echo "  OGB_ROOT   = $OGB_DATA_ROOT"

@@ -36,6 +36,7 @@ Notes
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -71,6 +72,10 @@ def step_regenerate(args) -> int:
     cmd = [sys.executable, str(ANALYSIS / 'regenerate_eval.py'),
            '--out_root', args.out_root,
            '--data_root', args.data_root, '--vocab_root', args.vocab_root]
+    if getattr(args, 'mutag_data_root', None):
+        cmd += ['--mutag_data_root', args.mutag_data_root]
+    if getattr(args, 'ogb_data_root', None):
+        cmd += ['--ogb_data_root', args.ogb_data_root]
     if args.processed_root:
         cmd += ['--processed_root', args.processed_root]
     if getattr(args, 'families', None):
@@ -239,6 +244,8 @@ def main():
                             '--vocab_variant rbrics_old_filter (default: all).')
         if need_train:
             p.add_argument('--data_root', default=None)
+            p.add_argument('--mutag_data_root', default=os.environ.get('MUTAG_DATA_ROOT'))
+            p.add_argument('--ogb_data_root', default=os.environ.get('OGB_DATA_ROOT'))
             p.add_argument('--vocab_root', default=None)
             p.add_argument('--processed_root', default=None)
             p.add_argument('--families', nargs='*',
