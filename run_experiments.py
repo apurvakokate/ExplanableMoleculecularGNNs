@@ -84,6 +84,21 @@ def parse_injection(bits: str):
 
 def csv(s): return [x for x in s.split(',') if x != '']
 
+
+def _env_on(name: str, default: str = '1') -> bool:
+    """True unless env *name* is 0/false/no/off."""
+    return os.environ.get(name, default).strip().lower() not in (
+        '0', 'false', 'no', 'off',
+    )
+
+
+def mose_run_multi_explanation_enabled(args) -> bool:
+    """Match run_experiments.sh / experiment_config.sh MOSE_RUN_MULTI_EXPLANATION."""
+    if args.mose_run_multi_explanation is not None:
+        return args.mose_run_multi_explanation == '1'
+    return _env_on('MOSE_RUN_MULTI_EXPLANATION')
+
+
 def build_arg_parser():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -134,6 +149,11 @@ def build_arg_parser():
 
     # MotifSAT-specific
     p.add_argument('--motif_method', default='readout', help='readout|none (none ⇒ base GSAT)')
+
+    # MOSE-specific (default on — same as MOSE_RUN_MULTI_EXPLANATION=1 in experiment_config.sh)
+    p.add_argument('--mose_run_multi_explanation', choices=('0', '1'), default=None,
+                   help='MOSE H0/H1/H2 analysis via --run_multi_explanation '
+                        '(default: MOSE_RUN_MULTI_EXPLANATION env or 1)')
 
     # extra passthrough + control
     p.add_argument('--extra', default='', help='extra flags appended verbatim to every trainer call')
@@ -227,6 +247,8 @@ def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
         rec['weights_dir'] = str(vanilla_weights_dir(
             args, ds, fold, weight_variant or variant,
             cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn))
+    if exp == 'mose':
+        rec['run_multi_explanation'] = mose_run_multi_explanation_enabled(args)
     return rec
 
 def _trainer_paths(args, ds: str):
@@ -300,6 +322,8 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
         if w_feat: cmd += ['--w_feat']
         if w_msg:  cmd += ['--w_message']
         if w_read: cmd += ['--w_readout']
+        if mose_run_multi_explanation_enabled(args):
+            cmd += ['--run_multi_explanation']
         if syn == 'on':
             cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp == 'gsat':

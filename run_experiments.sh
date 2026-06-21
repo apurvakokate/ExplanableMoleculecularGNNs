@@ -252,6 +252,8 @@ run_vanilla() {
 
 run_mose() {
     local variant=$1 inj_args=$2
+    # Nested out_dir (mose/<variant>/<ds>/fold<N>/<tag>/): trainers append ds/fold/tag.
+    # Differs from vanilla/baselines canonical layout; regenerate_eval + collect handle both.
     for backbone in $BACKBONES; do
         echo "  [MOSE] backbone=$backbone vocab=$variant inj=$inj_args"
         for ds in $DATASETS; do
