@@ -34,6 +34,10 @@ from .dataset_routing import (
     assert_vocab_rule_mining_allowed,
     mutag_artifact_paths,
     training_summary_extras,
+    resolve_mutag_roots,
+    default_processed_base,
+    variant_processed_root,
+    base_from_stored_processed_root,
 )
 
 __all__ = [
@@ -51,5 +55,6 @@ __all__ = [
     'loader_kind', 'resolve_data_root', 'resolve_node_encoder_for_dataset',
     'effective_fold', 'is_single_fold_dataset', 'collapse_redundant_folds',
     'validate_use_gt', 'assert_vocab_rule_mining_allowed',
-    'mutag_artifact_paths', 'training_summary_extras',
+    'mutag_artifact_paths', 'training_summary_extras', 'resolve_mutag_roots',
+    'default_processed_base', 'variant_processed_root', 'base_from_stored_processed_root',
 ]

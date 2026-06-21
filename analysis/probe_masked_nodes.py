@@ -237,14 +237,18 @@ def _common_cfg_kwargs(meta: dict, data_root: str, vocab_root: str,
 
 
 def _load_test_list(cfg, vocab_root: str):
+    from SharedModules.data.dataset_routing import (
+        default_processed_base,
+        variant_processed_root,
+    )
+
     from SharedModules.data.vocab import load_vocab
     from SharedModules.data.loader import get_loaders, TASK_TYPE
 
     vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
     task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
-    proc_root = cfg.processed_root
-    if not proc_root:
-        proc_root = f'{Path(cfg.data_root).parent / "processed"}/{cfg.vocab_variant}'
+    proc_root = cfg.processed_root or variant_processed_root(
+        default_processed_base(cfg.data_root), cfg.vocab_variant)
     loaders, test_ds, dmeta = get_loaders(
         dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
         vocab=vocab, processed_root=proc_root,

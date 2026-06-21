@@ -36,6 +36,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from analysis.aggregate_experiments import resolve_family
+from SharedModules.data.dataset_routing import base_from_stored_processed_root
 
 
 def _flag(b):
@@ -75,14 +76,20 @@ def _append_hparams(cmd: list[str], meta: dict) -> None:
         cmd += ['--mutag_seed', str(meta['mutag_seed'])]
 
 
+def _append_gt_flags(cmd: list[str], meta: dict) -> None:
+    """Replay synthetic-GT training/eval when recorded in summary.json."""
+    if _flag(meta.get('use_gt')) and meta.get('gt_cache'):
+        cmd += ['--use_gt', '--gt_cache', str(meta['gt_cache'])]
+
+
 def _processed_root(meta: dict, args) -> str | None:
-    """Prefer the exact processed_root recorded at training time."""
+    """Base processed_root for trainer CLI (trainers append vocab variant)."""
     if meta.get('processed_root'):
-        return str(meta['processed_root'])
+        return base_from_stored_processed_root(
+            str(meta['processed_root']), meta.get('vocab_variant'))
     if not args.processed_root:
         return None
-    var = meta.get('vocab_variant', '')
-    return f'{args.processed_root}/{var}' if var else str(args.processed_root)
+    return str(args.processed_root)
 
 
 def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
@@ -112,6 +119,7 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
     if proc:
         common += ['--processed_root', proc]
     _append_hparams(common, meta)
+    _append_gt_flags(common, meta)
 
     train_fam = fam
     if fam in ('gsat', 'motifsat'):
@@ -121,6 +129,8 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
 
     if train_fam == 'mose':
         cmd = [sys.executable, str(REPO / 'MOSE-GNN' / 'run.py')] + common
+        if meta.get('unk_mode') not in (None, ''):
+            cmd += ['--unk_mode', str(meta['unk_mode'])]
         for f, name in ((meta.get('w_feat'), '--w_feat'),
                         (meta.get('w_message'), '--w_message'),
                         (meta.get('w_readout'), '--w_readout')):

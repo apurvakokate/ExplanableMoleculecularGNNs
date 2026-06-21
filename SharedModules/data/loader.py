@@ -403,7 +403,8 @@ def _get_mutag_loaders(
     Parameters
     ----------
     data_root : str
-        Directory containing the ``mutag/`` TUDataset folder.
+        Parent of the ``mutag/`` TUDataset folder (``…/data``) or the PyG
+        dataset folder itself (``…/data/mutag``). See ``resolve_mutag_roots``.
     vocab : VocabData or None
     index_maps_path : str or None
         Path to ``mutag_0_index_maps.pkl`` produced by
@@ -420,7 +421,9 @@ def _get_mutag_loaders(
         computed on the fly (fallback only).
     """
     Mutag = _import_mutag_class(data_root)
-    dataset = Mutag(root=str(Path(data_root) / 'mutag'))
+    from .dataset_routing import resolve_mutag_roots
+    tudataset_root, _artifact_dir = resolve_mutag_roots(data_root)
+    dataset = Mutag(root=tudataset_root)
 
     # Fail fast: a vocab was supplied (caller wants motif annotations) but the
     # index maps / mapped-SMILES CSV are absent. Without them every node would

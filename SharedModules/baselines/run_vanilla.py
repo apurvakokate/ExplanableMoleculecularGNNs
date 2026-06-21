@@ -133,7 +133,12 @@ class VanillaConfig:
 
 
 def run(cfg: VanillaConfig) -> dict:
-    from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
+    from SharedModules.data.dataset_routing import (
+        default_processed_base,
+        validate_use_gt,
+        training_summary_extras,
+        variant_processed_root,
+    )
 
     validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
     set_seed(cfg.seed)
@@ -551,10 +556,8 @@ def main():
                         help='mutag only: RNG seed when splits pickle is absent.')
     args = parser.parse_args()
 
-    # Make processed_root variant-specific so rbrics_old / rbrics / all_fallback_bpe
-    # never share cached .pt files (they have different nodes_to_motifs).
-    base_proc = args.processed_root or str(Path(args.data_root).parent / 'processed')
-    proc_root = f'{base_proc}/{args.vocab_variant}'
+    base_proc = default_processed_base(args.data_root, args.processed_root)
+    proc_root = variant_processed_root(base_proc, args.vocab_variant)
     cfg = VanillaConfig(
         dataset=args.dataset, fold=args.fold, backbone=args.backbone,
         node_encoder=args.node_encoder, apply_layer_norm=args.apply_layer_norm,

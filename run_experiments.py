@@ -47,6 +47,7 @@ from SharedModules.data.dataset_routing import (
     effective_fold,
     is_single_fold_dataset,
     mutag_artifact_paths,
+    default_processed_base,
     resolve_data_root,
     resolve_node_encoder_for_dataset,
 )
@@ -228,15 +229,14 @@ def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
             cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn))
     return rec
 
-def _trainer_paths(args, ds: str, variant: str):
-    """Resolve data_root and vocab-variant-specific processed_root."""
+def _trainer_paths(args, ds: str):
+    """Resolve data_root and base processed_root (trainers append vocab variant)."""
     dr = resolve_data_root(
         ds, args.data_root,
         mutag_data_root=args.mutag_data_root,
         ogb_data_root=args.ogb_data_root,
     )
-    base_proc = args.processed_root or str(Path(dr).parent / 'processed')
-    return dr, f'{base_proc}/{variant}'
+    return dr, default_processed_base(dr, args.processed_root)
 
 
 def _mutag_cli(ds: str, data_root: str, fold: int) -> list:
@@ -255,7 +255,7 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
     feat = cfg['features']; ln = cfg['layer_norm']; en = cfg['encoder_norm']
     w_feat, w_msg, w_read = parse_injection(inj)
     eff_fold = effective_fold(ds, int(fold))
-    ds_root, proc_root = _trainer_paths(args, ds, variant)
+    ds_root, proc_root = _trainer_paths(args, ds)
     node_enc = resolve_node_encoder_for_dataset(ds, feat)
     out_dir = Path(args.out_root) / config_tag(
         exp, ds, fold, variant, feat, ln, en, inj, epochs, syn)

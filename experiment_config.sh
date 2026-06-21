@@ -22,8 +22,8 @@ export DATA_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLD
 export VOCAB_ROOT="$_CFG_DIR/vocab_output"    # phase1 writes here
 export OUT_ROOT="$_CFG_DIR/results"           # model training writes here
 export PROCESSED_ROOT="$_CFG_DIR/processed"   # PyG processed .pt cache
-# mutag TUDataset exports (mutag_<fold>.csv, index maps, splits) — NOT FOLDS CSVs
-export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data/mutag}"
+# mutag TUDataset exports (mutag_<fold>.csv under MUTAG_DATA_ROOT; TUDataset in mutag/)
+export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data}"
 # OGB molecule datasets (PyG auto-download cache)
 export OGB_DATA_ROOT="${OGB_DATA_ROOT:-$_CFG_DIR/data/ogb}"
 

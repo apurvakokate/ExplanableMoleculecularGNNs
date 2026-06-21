@@ -464,8 +464,11 @@ def main():
     if args.config:
         cfg = MOSEConfig.from_yaml(args.config)
     else:
-        from pathlib import Path as _P
         from reg_config import resolve_reg, resolve_num_layers
+        from SharedModules.data.dataset_routing import (
+            default_processed_base,
+            variant_processed_root,
+        )
         # Resolve regularization per (backbone, dataset) unless given explicitly.
         _ent, _size, _from_tbl = resolve_reg(
             args.backbone, args.dataset, args.ent_reg, args.size_reg)
@@ -477,10 +480,8 @@ def main():
         _nlayers, _nl_from_tbl = resolve_num_layers(args.dataset, args.num_layers)
         if _nl_from_tbl:
             print(f'  [reg_config] {args.dataset}: num_layers={_nlayers}')
-        _base_proc = args.processed_root or str(_P(args.data_root).parent / 'processed')
-        # Make processed_root vocab-variant-specific so different vocab
-        # variants never share cached .pt files (nodes_to_motifs differs).
-        _proc_root = f'{_base_proc}/{args.vocab_variant}'
+        _base_proc = default_processed_base(args.data_root, args.processed_root)
+        _proc_root = variant_processed_root(_base_proc, args.vocab_variant)
         cfg = MOSEConfig(
             dataset=args.dataset, fold=args.fold,
             backbone=args.backbone, hidden_dim=args.hidden_dim,

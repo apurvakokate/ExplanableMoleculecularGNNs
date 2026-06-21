@@ -42,6 +42,28 @@ def loader_kind(dataset: str) -> str:
     return 'csv'
 
 
+def resolve_mutag_roots(data_root: str) -> tuple[str, Path]:
+    """Return ``(tudataset_root, artifact_dir)`` for the mutag TUDataset.
+
+    Accepts either:
+
+    * **Parent layout** — ``data_root=…/data`` with ``mutag/raw/`` underneath.
+      PyG ``root=…/data/mutag``; CSV/index maps live in ``…/data/``.
+    * **Dataset layout** — ``data_root=…/data/mutag`` (the PyG folder itself,
+      containing ``raw/``). Artifacts live alongside under the same directory.
+
+    This lets ``MUTAG_DATA_ROOT`` be either ``$PROJECT/data`` or ``$PROJECT/data/mutag``.
+    """
+    root = Path(data_root)
+    if (root / 'raw').is_dir():
+        return str(root), root
+    if (root / 'mutag').is_dir():
+        return str(root / 'mutag'), root
+    if root.name == 'mutag':
+        return str(root), root
+    return str(root / 'mutag'), root
+
+
 def resolve_data_root(
     dataset: str,
     data_root: str,
@@ -128,13 +150,38 @@ def mutag_artifact_paths(
     splits_path: Optional[str] = None,
 ) -> Dict[str, str]:
     """Resolved mutag export paths for summary.json / regenerate."""
-    root = Path(data_root)
+    _, artifact_dir = resolve_mutag_roots(data_root)
     f = int(fold)
     return {
-        'mutag_index_maps_path': str(index_maps_path or root / f'mutag_{f}_index_maps.pkl'),
-        'mutag_smiles_csv_path': str(smiles_csv_path or root / f'mutag_{f}.csv'),
-        'mutag_splits_path': str(splits_path or root / f'mutag_{f}_splits.pkl'),
+        'mutag_index_maps_path': str(index_maps_path or artifact_dir / f'mutag_{f}_index_maps.pkl'),
+        'mutag_smiles_csv_path': str(smiles_csv_path or artifact_dir / f'mutag_{f}.csv'),
+        'mutag_splits_path': str(splits_path or artifact_dir / f'mutag_{f}_splits.pkl'),
     }
+
+
+def default_processed_base(data_root: str, processed_root: Optional[str] = None) -> str:
+    """Base PyG cache directory; CLI passes this, trainers append ``/{vocab_variant}``."""
+    if processed_root not in (None, ''):
+        return str(processed_root)
+    return str(Path(data_root).parent / 'processed')
+
+
+def variant_processed_root(base: str, vocab_variant: str) -> str:
+    """Per-vocab PyG cache root passed to ``get_loaders``."""
+    return f'{str(base).rstrip("/")}/{str(vocab_variant).strip("/")}'
+
+
+def base_from_stored_processed_root(
+    stored: str,
+    vocab_variant: Optional[str] = None,
+) -> str:
+    """Strip a trailing ``/{vocab_variant}`` when replaying summary.json on the CLI."""
+    root = str(stored).rstrip('/')
+    if vocab_variant:
+        suffix = f'/{vocab_variant}'
+        if root.endswith(suffix):
+            return root[: -len(suffix)]
+    return root
 
 
 def training_summary_extras(cfg) -> Dict:
@@ -155,7 +202,11 @@ def training_summary_extras(cfg) -> Dict:
         'w_feat': getattr(cfg, 'w_feat', None),
         'w_message': getattr(cfg, 'w_message', None),
         'w_readout': getattr(cfg, 'w_readout', None),
+        'use_gt': bool(getattr(cfg, 'use_gt', False)),
+        'gt_cache': getattr(cfg, 'gt_cache', None),
     }
+    if hasattr(cfg, 'unk_mode'):
+        out['unk_mode'] = getattr(cfg, 'unk_mode', None)
     if ds == MUTAG_TUDATASET:
         out.update(mutag_artifact_paths(
             getattr(cfg, 'data_root', ''),
