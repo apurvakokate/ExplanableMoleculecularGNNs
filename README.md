@@ -54,7 +54,6 @@ flowchart TB
 ├── experiment_config.sh       # Central paths, datasets, folds, backbones
 ├── run_experiments.sh         # Phased pipeline dispatcher
 ├── run_experiments.py         # Unified Python experiment grid driver
-├── run_priority.sh            # Self-contained 8-variant demo sweep
 │
 ├── MotifBreakdown/            # Fragmentation, vocabulary, rules, GT labeling
 ├── SharedModules/             # Shared data, models, evaluation, baselines

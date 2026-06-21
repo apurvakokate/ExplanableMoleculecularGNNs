@@ -303,7 +303,7 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
         if syn == 'on':
             cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp == 'gsat':
-        # Match run_priority.sh GSAT: edge-attention + node IB, no MOSE injection.
+        # GSAT baseline: edge-attention + node IB, no MOSE injection.
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr),
                 '--motif_method', 'none',
                 '--learn_edge_att', '--noise', 'node',

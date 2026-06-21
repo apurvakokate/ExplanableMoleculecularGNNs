@@ -682,53 +682,11 @@ older `all_results.csv` files have prediction AUCs only.
 
 ---
 
-## run_priority.sh — one-command prioritized sweep (advisor demo)
-
-Three binary axes → 8 variants (NO thresholding):
-A fragmentation (rbrics vs all_fallback_bpe), B labels (original vs synthetic GT),
-C normalization (none vs L2). Loop order is **variant → fold → {vanilla →
-baselines → mose → gsat → motifsat}**, so one fold yields a full comparable set
-before the next, and all folds of a variant finish before the next variant.
-
-```bash
-source experiment_config.sh
-bash run_priority.sh                              # all 8 variants
-FOLDS="0" BACKBONES="GIN" bash run_priority.sh    # quick single-fold demo
-VARIANTS_RUN="A1_B1_C1" bash run_priority.sh      # one variant
-```
-
-**Phases 1 + 4 are automatic — the script is self-contained.** It runs the
-full pipeline per variant: phase 1 (build vocabulary + rules.json via
-`generate_vocab_rules.py`, no threshold) → phase 4 (GT cache, synthetic
-variants only) → phase 5 (train all five families). Vocab is built once per
-fragmentation (fold 0, reused across folds) and skipped if `rules.json`
-already exists. So a clean `bash run_priority.sh` needs only the raw dataset
-folds under `DATA_ROOT`; everything else is generated.
-
-**Phase 4**  Synthetic-label variants build their GT cache inline
-via `apply_gt.py` before training (idempotent — skips a (dataset,fold) whose
-`train_with_gt.pt` already exists). The cache lives at `$OUT_ROOT/gt_cache` and
-is keyed by `{dataset}/fold{fold}/{vocab_variant}/relabel1/`, so the two
-fragmentations never collide. Requires `rules.json` (phase1) for the variant; if
-missing, that synthetic variant is skipped with a message rather than failing.
-Set `RULE_INDEX` (default 0), or `RULE_INDEX_A0` / `RULE_INDEX_A1` for a
-different GT rule per fragmentation.
-
-Baselines reuse the vanilla checkpoint from the same fold (`--epochs 0
---load_weights_from $OUT_ROOT/$key/vanilla`; run_vanilla.py appends
-`{dataset}/fold{fold}/{tag}` itself). All five families share the C axis via
-`--conv_normalize`. Collect + analyze afterwards:
-
-```bash
-python3 analysis/run_analysis.py all --out_root $OUT_ROOT --skip_regenerate
-```
-
----
-
 ## Explainability diagnostics now in the sweep
 
 * **Multiple-explanation (H0/H1/H2)** — `MOSE-GNN/run.py` gained `--run_multi_explanation`
-  (config field `run_multi_explanation`). run_priority.sh's MOSE launcher passes it, so
+  (config field `run_multi_explanation`). `run_experiments.sh` passes it when
+  `MOSE_RUN_MULTI_EXPLANATION=1` (default in `experiment_config.sh`), so
   each MOSE run writes `multi_explanation.*` (HH/HL/LH/LL categorisation + ratio_H1/H2).
 * **Masked-node probe** — `analysis/probe_masked_nodes.py main()` is now a real CLI: it
   rebuilds the MOSE model from summary.json + best_model.pt (inferring hidden_dim from the
