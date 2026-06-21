@@ -129,7 +129,9 @@ def build_arg_parser():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--experiments', default='mose',
                    help='comma list of: vanilla,baselines,mose,motifsat,gsat')
-    p.add_argument('--datasets', default='BBBP,Mutagenicity,mutag,ogbg-molhiv')
+    p.add_argument('--datasets', default=(
+        'Mutagenicity,BBBP,hERG,Benzene,Alkane_Carbonyl,Fluoride_Carbonyl,'
+        'Lipophilicity,esol,mutag,ogbg-molhiv,ogbg-molbace'))
     p.add_argument('--folds', default='0')
     p.add_argument('--vocab_variants', default='all_fallback_bpe',
                    help='comma list of vocab variant dirs under --vocab_root')

@@ -29,11 +29,12 @@ export OGB_DATA_ROOT="${OGB_DATA_ROOT:-$_CFG_DIR/data/ogb}"
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
 # CSV benchmarks (FOLDS/{dataset}_{fold}.csv under DATA_ROOT):
-export DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP Benzene}"
+export DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP hERG Benzene Alkane_Carbonyl Fluoride_Carbonyl Lipophilicity esol}"
 # Special datasets needing phase0 export (mutag TUDataset, OGB PyG):
 #   mutag          — source GT; no --use_gt; fold 0 only
 #   ogbg-molhiv    — atom_encoder forced at train; fold 0 only
-export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv}"
+#   ogbg-molbace   — same as molhiv
+export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 # Union used by all phases. Override entirely: export DATASETS="BBBP Benzene"
 export DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 
