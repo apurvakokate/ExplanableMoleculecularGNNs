@@ -33,9 +33,9 @@ from pathlib import Path
 import pandas as pd
 
 _HERE = Path(__file__).resolve()
-_SM = _HERE.parents[1] / 'SharedModules'
-if str(_SM) not in sys.path:
-    sys.path.insert(0, str(_SM))
+_REPO = _HERE.parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 from SharedModules.data.dataset_routing import ogb_cache_dirname, resolve_ogb_mol_csv
 
