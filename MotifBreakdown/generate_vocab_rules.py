@@ -99,7 +99,7 @@ if _shared not in sys.path:
     sys.path.insert(0, _shared)
 # Single source of truth — no local fallback. If SharedModules is not importable
 # the run must fail loudly rather than silently use a stale duplicate schema.
-from data.dataset_schema import DATASET_COLUMN   # type: ignore
+from data.dataset_schema import DATASET_COLUMN, TASK_TYPE   # type: ignore
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHOSEN THRESHOLD — per variant × dataset
@@ -1088,10 +1088,14 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         variant = f"{method}{'_fallback' if use_fallback else ''}{'_bpe' if use_bpe else ''}{'_filter' if apply_threshold else ''}{variant_suffix}"
 
     t0 = time.time()
+    from SharedModules.data.dataset_routing import assert_vocab_rule_mining_allowed
+    assert_vocab_rule_mining_allowed(dataset)
     smdf = _load_csv(data_root, dataset, fold)
 
     smiles_all = smdf['smiles'].tolist()
-    labels_all = smdf['label'].values.astype(int)
+    labels_all = smdf['label'].values
+    if TASK_TYPE.get(dataset) != 'Regression':
+        labels_all = labels_all.astype(int)
     groups_all = smdf['group'].tolist()
     n_all      = len(smdf)
 

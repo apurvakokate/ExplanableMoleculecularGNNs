@@ -229,20 +229,40 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
             vocab_variant=meta.get('vocab_variant', 'all_fallback_bpe'),
             conv_normalize=meta.get('conv_normalize', 'l2'),
             gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
-            data_root=data_root, vocab_root=vocab_root,
+            data_root=meta.get('data_root', data_root),
+            vocab_root=vocab_root,
+            processed_root=meta.get('processed_root'),
+            w_feat=bool(meta.get('w_feat', False)),
+            w_message=bool(meta.get('w_message', False)),
+            w_readout=bool(meta.get('w_readout', False)),
+            mutag_index_maps_path=meta.get('mutag_index_maps_path'),
+            mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
+            mutag_splits_path=meta.get('mutag_splits_path'),
+            mutag_seed=int(meta.get('mutag_seed', 42)),
         )
         cfg = MOSEConfig(**{k: v for k, v in cfg_kwargs.items()
-                            if k in MOSEConfig.__dataclass_fields__})
+                            if k in MOSEConfig.__dataclass_fields__ and v is not None})
 
         vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
         task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
+        proc_root = cfg.processed_root
+        if not proc_root:
+            proc_root = f'{Path(cfg.data_root).parent / "processed"}/{cfg.vocab_variant}'
         loaders, test_ds, dmeta = get_loaders(
             dataset=cfg.dataset, data_root=cfg.data_root, fold=cfg.fold,
-            vocab=vocab, processed_root=cfg.processed_root,
+            vocab=vocab, processed_root=proc_root,
             batch_size=cfg.batch_size,
             normalize=(task_type == 'Regression'),
+            mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
+            mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
+            mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
+            mutag_seed=getattr(cfg, 'mutag_seed', 42),
         )
         model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta)
+        # Ensure injection flags match training (summary is source of truth).
+        for attr in ('w_feat', 'w_message', 'w_readout'):
+            if hasattr(model, attr):
+                setattr(model, attr, bool(meta.get(attr, getattr(model, attr, False))))
     except Exception as e:  # pragma: no cover - environment-specific
         return None, None, f'rebuild failed: {e}'
 

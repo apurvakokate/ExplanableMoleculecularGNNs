@@ -95,6 +95,8 @@ class MotifSATConfig:
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
     mutag_index_maps_path: Optional[str] = None
     mutag_smiles_csv_path: Optional[str] = None
+    mutag_splits_path: Optional[str] = None
+    mutag_seed: int = 42
 
     # W&B
     use_wandb: bool = False

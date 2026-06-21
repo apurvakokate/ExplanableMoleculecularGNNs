@@ -38,6 +38,19 @@ from __future__ import annotations
 import argparse, itertools, json, os, subprocess, sys, shlex
 from pathlib import Path
 
+# Repo root on sys.path so SharedModules imports work when invoked as a script.
+_REPO = Path(__file__).resolve().parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from SharedModules.data.dataset_routing import (
+    effective_fold,
+    is_single_fold_dataset,
+    mutag_artifact_paths,
+    resolve_data_root,
+    resolve_node_encoder_for_dataset,
+)
+
 # ── trainer entry points (relative to PROJECT root) ─────────────────────────
 TRAINERS = {
     'vanilla':   'SharedModules/baselines/run_vanilla.py',
@@ -75,7 +88,7 @@ def build_arg_parser():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--experiments', default='mose',
                    help='comma list of: vanilla,baselines,mose,motifsat,gsat')
-    p.add_argument('--datasets', default='BBBP')
+    p.add_argument('--datasets', default='BBBP,Mutagenicity,mutag,ogbg-molhiv')
     p.add_argument('--folds', default='0')
     p.add_argument('--vocab_variants', default='all_fallback_bpe',
                    help='comma list of vocab variant dirs under --vocab_root')
@@ -100,6 +113,12 @@ def build_arg_parser():
     # paths
     p.add_argument('--project', default='.', help='project root (contains trainers)')
     p.add_argument('--data_root', default='./datasets/FOLDS')
+    p.add_argument('--mutag_data_root', default=None,
+                   help='data root for mutag TUDataset exports (mutag_<fold>.csv, …)')
+    p.add_argument('--ogb_data_root', default=None,
+                   help='OGB cache root (defaults to --data_root)')
+    p.add_argument('--processed_root', default=None,
+                   help='PyG processed .pt cache root (per-vocab subdir appended)')
     p.add_argument('--vocab_root', default='./vocab_output')
     p.add_argument('--gt_cache', default='./RESULTS/gt_cache',
                    help='phase-4 GT cache root (used when --synthetic on)')
@@ -209,22 +228,48 @@ def canonical_config(exp, args, ds, fold, variant, cfg, inj, epochs, syn,
             cfg['features'], cfg['layer_norm'], cfg['encoder_norm'], syn))
     return rec
 
+def _trainer_paths(args, ds: str, variant: str):
+    """Resolve data_root and vocab-variant-specific processed_root."""
+    dr = resolve_data_root(
+        ds, args.data_root,
+        mutag_data_root=args.mutag_data_root,
+        ogb_data_root=args.ogb_data_root,
+    )
+    base_proc = args.processed_root or str(Path(dr).parent / 'processed')
+    return dr, f'{base_proc}/{variant}'
+
+
+def _mutag_cli(ds: str, data_root: str, fold: int) -> list:
+    if ds != 'mutag':
+        return []
+    paths = mutag_artifact_paths(data_root, fold)
+    return [
+        '--mutag_index_maps_path', paths['mutag_index_maps_path'],
+        '--mutag_smiles_csv_path', paths['mutag_smiles_csv_path'],
+        '--mutag_splits_path', paths['mutag_splits_path'],
+        '--mutag_seed', '42',
+    ]
+
+
 def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn):
     feat = cfg['features']; ln = cfg['layer_norm']; en = cfg['encoder_norm']
     w_feat, w_msg, w_read = parse_injection(inj)
-    out_dir = Path(args.out_root) / config_tag(exp, ds, fold, variant, feat, ln, en, inj, epochs, syn)
+    eff_fold = effective_fold(ds, int(fold))
+    ds_root, proc_root = _trainer_paths(args, ds, variant)
+    node_enc = resolve_node_encoder_for_dataset(ds, feat)
+    out_dir = Path(args.out_root) / config_tag(
+        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn)
     script = Path(args.project) / TRAINERS[exp]
-    # Every run uses the canonical single-level layout: the launcher owns the
-    # full path and passes --final_out_dir so the trainer does not re-append
-    # <ds>/fold/<variant_tag> (which caused the historical double nesting).
     cmd = [sys.executable, str(script),
-           '--dataset', ds, '--fold', str(fold),
-           '--backbone', args.backbone, '--node_encoder', feat,
+           '--dataset', ds, '--fold', str(eff_fold),
+           '--backbone', args.backbone, '--node_encoder', node_enc,
            '--hidden_dim', str(args.hidden_dim), '--num_layers', str(args.num_layers),
            '--conv_normalize', ln,
-           '--data_root', args.data_root, '--vocab_root', args.vocab_root,
+           '--data_root', ds_root, '--vocab_root', args.vocab_root,
            '--vocab_variant', variant, '--out_dir', str(out_dir),
+           '--processed_root', proc_root,
            '--final_out_dir', '--seed', str(args.seed)]
+    cmd += _mutag_cli(ds, ds_root, eff_fold)
 
     if exp == 'vanilla':
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr)]
@@ -319,6 +364,9 @@ def main():
     planned = []           # de-duped (vanilla/baselines collapse inj/ep sweeps)
     seen_dirs = set()
     for exp, ds, fold, variant, cfg, inj, epochs, syn in runs:
+        # OGB/mutag only have fold-0 artifacts; skip redundant fold sweeps.
+        if is_single_fold_dataset(ds) and int(fold) != 0:
+            continue
         # Non-GT datasets (mutag source GT, regression, OGB) never relabel:
         # force the synthetic axis off so out_dir/config/cmd stay consistent and
         # we don't request a GT cache that phase-4 intentionally skips.

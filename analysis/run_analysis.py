@@ -101,6 +101,7 @@ def step_collect(args) -> int:
     import json
     import pandas as pd
     from analysis.aggregate_experiments import normalize, ALL_AXES, iter_summaries
+    from SharedModules.data.dataset_routing import collapse_redundant_folds
     out_root = Path(args.out_root)
     print('\n=== collect summaries -> all_results.csv ===')
     rows = []
@@ -142,12 +143,17 @@ def step_collect(args) -> int:
     # Fill/derive the canonical axis columns (prefers explicit config.json values,
     # falls back to path parsing for legacy runs).
     df = normalize(df)
+    df = collapse_redundant_folds(df)
 
     core = [c for c in ['exp_dir', 'family', 'dataset', 'backbone', 'vocab_variant',
                         *ALL_AXES, 'fold',
                         'motif_method', 'noise', 'info_loss_coef',
                         'ent_reg', 'size_reg', 'num_layers', 'explainer_lr', 'gnn_lr',
                         'conv_normalize', 'gin_inner_bn',
+                        'loader_kind', 'processed_root', 'data_root',
+                        'w_feat', 'w_message', 'w_readout',
+                        'mutag_index_maps_path', 'mutag_smiles_csv_path',
+                        'mutag_splits_path', 'mutag_seed',
                         'encoder_norm', 'weight_vocab_variant', 'seed',
                         'train_auc', 'val_auc', 'auc', 'rmse', 'mae',
                         'rmse_orig', 'mae_orig',

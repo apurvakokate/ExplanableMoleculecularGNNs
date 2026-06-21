@@ -43,13 +43,11 @@ PROJECT="${PROJECT:-/path/to/project}"
 DATA_ROOT="${DATA_ROOT:-./FOLDS}"
 VOCAB_ROOT="${VOCAB_ROOT:-./vocab_output}"
 OUT_ROOT="${OUT_ROOT:-./results}"
-DATASETS="${DATASETS:-Mutagenicity BBBP Benzene}"
 FOLDS="${FOLDS:-0 1 2 3 4}"
 PROCESSED_ROOT="${PROCESSED_ROOT:-${PROJECT}/processed}"  # PyG .pt cache
-BACKBONES="${BACKBONES:-GIN GCN SAGE}"  # space-separated list
-BACKBONE="${BACKBONE:-GIN}"              # kept for compatibility
-NODE_ENCODER="${NODE_ENCODER:-onehot}"
-EPOCHS="${EPOCHS:-100}"
+MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-${PROJECT}/data/mutag}"
+OGB_DATA_ROOT="${OGB_DATA_ROOT:-${PROJECT}/data/ogb}"
+DATASETS="${DATASETS:-Mutagenicity BBBP Benzene mutag ogbg-molhiv}"
 RULE_INDEX="${RULE_INDEX:-}"
 WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProject"
 # MotifSAT message injection (w_message).  Prior to the argparse fix, w_message
@@ -90,6 +88,8 @@ _check_paths() {
     echo "  FOLDS      = $FOLDS"
     echo "  BACKBONES  = $BACKBONES"
     echo "  PROCESSED  = $PROCESSED_ROOT"
+    echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
+    echo "  OGB_ROOT   = $OGB_DATA_ROOT"
     echo "  EPOCHS     = $EPOCHS"
     echo "  Thresholds = per-dataset dict in generate_vocab_rules.py"
 }
@@ -109,15 +109,49 @@ V_ALL_TH="all_fallback_bpe_filter"
 # GT-relabelled variant (from phase4):
 V_ALL_GT="${V_ALL}_relabelled"
 
+# ── Dataset routing (Mutagenicity CSV ≠ mutag TUDataset; OGB uses fold 0) ─────
+_dataset_data_root() {
+    case "$1" in
+        mutag) echo "$MUTAG_DATA_ROOT" ;;
+        ogbg-*) echo "$OGB_DATA_ROOT" ;;
+        *) echo "$DATA_ROOT" ;;
+    esac
+}
+
+_dataset_node_encoder() {
+    case "$1" in
+        ogbg-*) echo "atom_encoder" ;;
+        *) echo "$NODE_ENCODER" ;;
+    esac
+}
+
+# Skip fold>0 for OGB/mutag (artifacts are fold-0 only).
+_skip_redundant_fold() {
+    case "$1" in mutag|ogbg-*) [ "$2" != "0" ] && return 0 ;; esac
+    return 1
+}
+
+_mutag_train_flags() {
+    local ds=$1 fold=$2
+    [ "$ds" != "mutag" ] && return 0
+    local root="$(_dataset_data_root mutag)"
+    echo "--mutag_index_maps_path $root/mutag_${fold}_index_maps.pkl" \
+         "--mutag_smiles_csv_path $root/mutag_${fold}.csv" \
+         "--mutag_splits_path $root/mutag_${fold}_splits.pkl" \
+         "--mutag_seed 42"
+}
+
 # ── Helper: fragment one variant ──────────────────────────────────────────────
 # Usage: run_frag <method> <fallback:0|1> <bpe:0|1> <out_variant> [shatter:0|1]
 run_frag() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
+        ds_root="$(_dataset_data_root "$ds")"
+        ds_fold=0
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets  "$ds" \
-            --data_root "$DATA_ROOT" \
+            --data_root "$ds_root" \
             --out_dir   "$VOCAB_ROOT" \
             --method    "$method" \
             --variant   "$variant" \
@@ -136,9 +170,10 @@ run_frag_thresh() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4
     echo "  [$variant] method=$method (threshold from CHOSEN_THRESHOLD dict)"
     for ds in $DATASETS; do
+        ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets      "$ds" \
-            --data_root     "$DATA_ROOT" \
+            --data_root     "$ds_root" \
             --out_dir       "$VOCAB_ROOT" \
             --method        "$method" \
             --variant       "$variant" \
@@ -157,15 +192,21 @@ run_vanilla() {
         echo "  [Vanilla] backbone=$backbone encoder=$NODE_ENCODER vocab=$variant"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
-                    --dataset      "$ds" --fold "$fold" \
-                    --backbone     "$backbone" --node_encoder "$NODE_ENCODER" \
+                    --dataset      "$ds" --fold "$eff_fold" \
+                    --backbone     "$backbone" --node_encoder "$enc" \
                     --epochs       "$EPOCHS" \
-                    --data_root    "$DATA_ROOT" \
+                    --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/vanilla/${variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
         done
@@ -178,16 +219,22 @@ run_mose() {
         echo "  [MOSE] backbone=$backbone vocab=$variant inj=$inj_args"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 python3 "$PROJECT/MOSE-GNN/run.py" \
-                    --dataset      "$ds" --fold "$fold" \
-                    --backbone     "$backbone" --node_encoder "$NODE_ENCODER" \
+                    --dataset      "$ds" --fold "$eff_fold" \
+                    --backbone     "$backbone" --node_encoder "$enc" \
                     $inj_args \
                     --epochs       "$EPOCHS" \
-                    --data_root    "$DATA_ROOT" \
+                    --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
         done
@@ -200,20 +247,26 @@ run_gsat() {
         echo "  [BaseGSAT] backbone=$backbone vocab=$variant"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 python3 "$PROJECT/MotifSAT/run.py" \
-                    --dataset         "$ds" --fold "$fold" \
-                    --backbone        "$backbone" --node_encoder "$NODE_ENCODER" \
+                    --dataset         "$ds" --fold "$eff_fold" \
+                    --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    none \
                     --noise           none \
                     --info_loss_level none \
                     --info_loss_coef  0.0 \
                     $WM_FLAG \
                     --epochs          "$EPOCHS" \
-                    --data_root       "$DATA_ROOT" \
+                    --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/base_gsat/${variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
         done
@@ -226,20 +279,26 @@ run_motifsat() {
         echo "  [MotifSAT readout] backbone=$backbone vocab=$variant"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 python3 "$PROJECT/MotifSAT/run.py" \
-                    --dataset         "$ds" --fold "$fold" \
-                    --backbone        "$backbone" --node_encoder "$NODE_ENCODER" \
+                    --dataset         "$ds" --fold "$eff_fold" \
+                    --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    readout \
                     --noise           none \
                     --info_loss_level none \
                     --info_loss_coef  0.0 \
                     --w_feat --w_readout $WM_FLAG \
                     --epochs          "$EPOCHS" \
-                    --data_root       "$DATA_ROOT" \
+                    --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/motifsat/${variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
         done
@@ -264,17 +323,23 @@ run_baselines() {
         echo "  [Baselines eval] backbone=$backbone vocab=$eval_variant  weights=vanilla/$weight_variant"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
-                    --dataset      "$ds" --fold "$fold" \
-                    --backbone     "$backbone" --node_encoder "$NODE_ENCODER" \
+                    --dataset      "$ds" --fold "$eff_fold" \
+                    --backbone     "$backbone" --node_encoder "$enc" \
                     --epochs       0 \
-                    --data_root    "$DATA_ROOT" \
+                    --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$eval_variant" \
                     --processed_root "$PROCESSED_ROOT" \
                     --load_weights_from "$OUT_ROOT/vanilla/${weight_variant}" \
                     --weight_vocab_variant "$weight_variant" \
                     --out_dir      "$OUT_ROOT/baselines/${eval_variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
             done
         done
@@ -288,6 +353,7 @@ apply_gt() {
     local variant=$1 rule_idx=$2
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
     for ds in $DATASETS; do
+        case "$ds" in mutag|ogbg-*) continue ;; esac
         for fold in $FOLDS; do
             python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
@@ -473,10 +539,12 @@ phase5_mose() {
         for backbone in $BACKBONES; do
             echo "  [MOSE+GT] backbone=$backbone vocab=$V_ALL_GT"
             for ds in $DATASETS; do
+                case "$ds" in mutag|ogbg-*) continue ;; esac
                 for fold in $FOLDS; do
+                    local enc="$(_dataset_node_encoder "$ds")"
                     python3 "$PROJECT/MOSE-GNN/run.py" \
                         --dataset      "$ds" --fold "$fold" \
-                        --backbone     "$backbone" --node_encoder "$NODE_ENCODER" \
+                        --backbone     "$backbone" --node_encoder "$enc" \
                         --w_feat --w_readout \
                         --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                         --epochs       "$EPOCHS" \
@@ -562,10 +630,12 @@ phase5_motifsat() {
         for backbone in $BACKBONES; do
             echo "  [MotifSAT+GT] backbone=$backbone vocab=$V_ALL_GT"
             for ds in $DATASETS; do
+                case "$ds" in mutag|ogbg-*) continue ;; esac
                 for fold in $FOLDS; do
+                    local enc="$(_dataset_node_encoder "$ds")"
                     python3 "$PROJECT/MotifSAT/run.py" \
                         --dataset         "$ds" --fold "$fold" \
-                        --backbone        "$backbone" --node_encoder "$NODE_ENCODER" \
+                        --backbone        "$backbone" --node_encoder "$enc" \
                         --motif_method    readout \
                         --noise           none \
                         --info_loss_level none \

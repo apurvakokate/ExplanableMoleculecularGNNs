@@ -507,6 +507,8 @@ def main():
             raise SystemExit(f'no rows with vocab_variant in {sorted(keep)}')
 
     df = normalize(df)
+    from SharedModules.data.dataset_routing import collapse_redundant_folds
+    df = collapse_redundant_folds(df)
 
     # resolve which metrics to report
     if args.metrics:

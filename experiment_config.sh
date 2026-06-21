@@ -22,12 +22,17 @@ export DATA_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLD
 export VOCAB_ROOT="$_CFG_DIR/vocab_output"    # phase1 writes here
 export OUT_ROOT="$_CFG_DIR/results"           # model training writes here
 export PROCESSED_ROOT="$_CFG_DIR/processed"   # PyG processed .pt cache
+# mutag TUDataset exports (mutag_<fold>.csv, index maps, splits) — NOT FOLDS CSVs
+export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data/mutag}"
+# OGB molecule datasets (PyG auto-download cache)
+export OGB_DATA_ROOT="${OGB_DATA_ROOT:-$_CFG_DIR/data/ogb}"
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
-# Choose from: Mutagenicity BBBP hERG Benzene Alkane_Carbonyl Fluoride_Carbonyl
+# Choose from: Mutagenicity (CSV benchmark)  mutag (TUDataset + source GT)
+#              BBBP hERG Benzene Alkane_Carbonyl Fluoride_Carbonyl
 #              esol Lipophilicity freesolv tox21
-#              ogbg-molhiv ogbg-molbace ogbg-molbbbp (need node_encoder=atom_encoder)
-export DATASETS="Mutagenicity BBBP Benzene"
+#              ogbg-molhiv ogbg-molbace ogbg-molbbbp (atom_encoder forced at train)
+export DATASETS="${DATASETS:-Mutagenicity BBBP Benzene mutag ogbg-molhiv}"
 
 # ── Cross-validation folds ────────────────────────────────────────────────────
 export FOLDS="0 1 2 3 4"
@@ -67,3 +72,5 @@ echo "  DATA_ROOT  = $DATA_ROOT"
 echo "  VOCAB_ROOT = $VOCAB_ROOT"
 echo "  OUT_ROOT   = $OUT_ROOT"
 echo "  DATASETS   = $DATASETS"
+echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
+echo "  OGB_ROOT   = $OGB_DATA_ROOT"

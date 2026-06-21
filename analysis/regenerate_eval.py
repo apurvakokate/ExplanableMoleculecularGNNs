@@ -71,6 +71,20 @@ def _append_hparams(cmd: list[str], meta: dict) -> None:
             cmd += [flag, str(meta[key])]
 
 
+    if meta.get('mutag_seed') is not None:
+        cmd += ['--mutag_seed', str(meta['mutag_seed'])]
+
+
+def _processed_root(meta: dict, args) -> str | None:
+    """Prefer the exact processed_root recorded at training time."""
+    if meta.get('processed_root'):
+        return str(meta['processed_root'])
+    if not args.processed_root:
+        return None
+    var = meta.get('vocab_variant', '')
+    return f'{args.processed_root}/{var}' if var else str(args.processed_root)
+
+
 def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
     try:
         exp_dir = str(run_dir.relative_to(Path(args.out_root)))
@@ -89,12 +103,14 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
     common = [
         '--dataset', str(ds), '--fold', str(fold), '--backbone', str(bb),
         '--node_encoder', str(enc),
-        '--data_root', args.data_root, '--vocab_root', args.vocab_root,
+        '--data_root', str(meta.get('data_root') or args.data_root),
+        '--vocab_root', args.vocab_root,
         '--vocab_variant', str(var), '--out_dir', str(run_dir),
         '--final_out_dir',
     ]
-    if args.processed_root:
-        common += ['--processed_root', f'{args.processed_root}']
+    proc = _processed_root(meta, args)
+    if proc:
+        common += ['--processed_root', proc]
     _append_hparams(common, meta)
 
     train_fam = fam

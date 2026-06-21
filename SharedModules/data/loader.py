@@ -276,10 +276,31 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         indices,
         vocab: Optional[VocabData] = None,
         split: str = 'training',
+        *,
+        label_mean: float = 0.0,
+        label_std: float = 1.0,
+        normalize_labels: bool = False,
+        require_smiles: bool = False,
     ):
         self._ds = ogb_dataset
         self._indices = list(indices)
         self._lookup = vocab.lookup_for_split(split) if vocab else {}
+        self._label_mean = float(label_mean)
+        self._label_std = float(label_std) if float(label_std) != 0.0 else 1.0
+        self._normalize_labels = normalize_labels
+        self._require_smiles = require_smiles
+
+        if require_smiles and vocab is not None:
+            missing = [
+                self._indices[i] for i in range(len(self._indices))
+                if not getattr(self._ds[self._indices[i]], 'smiles', None)
+            ]
+            if missing:
+                raise ValueError(
+                    f"OGB dataset is missing SMILES on {len(missing)} graph(s) "
+                    f"in split={split!r} (e.g. idx={missing[:3]}). Motif vocab "
+                    "requires mol.csv.gz mapping. Re-download the OGB dataset or "
+                    "run export_ogb_to_csv.py from a complete cache.")
 
     def __len__(self) -> int:
         return len(self._indices)
@@ -290,11 +311,17 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         data = self._ds[i].clone()
         n = data.num_nodes
         smiles = getattr(data, 'smiles', None)
+        if self._require_smiles and self._lookup and not smiles:
+            raise ValueError(
+                f"OGB graph index {i} has no SMILES; cannot attach motif annotations.")
         if self._lookup and smiles:
+            data.smiles = smiles
             data.nodes_to_motifs = apply_motif_lookup_canonical(
                 n, smiles, self._lookup)
         else:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
+        if self._normalize_labels and data.y is not None:
+            data.y = (data.y - self._label_mean) / self._label_std
         return data
 
 
@@ -504,6 +531,7 @@ def _get_ogb_loaders(
     batch_size: int = 128,
     num_workers: int = 0,
     vocab: Optional[VocabData] = None,
+    normalize: bool = False,
 ):
     """Build loaders for an OGB molecular dataset.
 
@@ -511,18 +539,35 @@ def _get_ogb_loaders(
     The model is responsible for applying AtomEncoder or a Linear projection.
     Returns (loaders, test_dataset, meta) matching the same signature as get_loaders.
     """
+    import numpy as np
     from .dataset import load_ogb_dataset, OGB_NODE_FEAT_DIM, OGB_EDGE_FEAT_DIM
 
     ogb_dataset, split_idx = load_ogb_dataset(data_root, dataset)
     task_type = TASK_TYPE.get(dataset, 'BinaryClass')
     num_classes = NUM_CLASSES.get(dataset, 1)
 
+    label_mean, label_std = 0.0, 1.0
+    if normalize and task_type == 'Regression':
+        train_y = [
+            float(ogb_dataset[i].y.view(-1)[0].item())
+            for i in split_idx['train']
+        ]
+        label_mean = float(np.mean(train_y))
+        label_std = float(np.std(train_y)) or 1.0
+
+    _require_smiles = vocab is not None
+    _norm = normalize and task_type == 'Regression'
+    _ds_kw = dict(
+        label_mean=label_mean, label_std=label_std,
+        normalize_labels=_norm, require_smiles=_require_smiles,
+    )
+
     train_ds = OGBMotifDataset(
-        ogb_dataset, split_idx['train'], vocab, split='training')
+        ogb_dataset, split_idx['train'], vocab, split='training', **_ds_kw)
     val_ds = OGBMotifDataset(
-        ogb_dataset, split_idx['valid'], vocab, split='valid')
+        ogb_dataset, split_idx['valid'], vocab, split='valid', **_ds_kw)
     test_ds = OGBMotifDataset(
-        ogb_dataset, split_idx['test'], vocab, split='test')
+        ogb_dataset, split_idx['test'], vocab, split='test', **_ds_kw)
 
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size, shuffle=True,
@@ -542,6 +587,8 @@ def _get_ogb_loaders(
         fold=0,
         node_encoder='atom_encoder',
         deg=_deg,
+        norm_mean=label_mean,
+        norm_std=label_std,
     )
     return loaders, test_ds, meta
 
@@ -599,7 +646,8 @@ def get_loaders(
     # ── OGB datasets ──────────────────────────────────────────────────────
     if dataset in OGB_DATASET_NAMES:
         return _get_ogb_loaders(
-            dataset, data_root, batch_size, num_workers, vocab=vocab)
+            dataset, data_root, batch_size, num_workers, vocab=vocab,
+            normalize=normalize)
 
     # ── mutag TUDataset (14-dim pre-baked features) ───────────────────────
     if dataset == 'mutag':

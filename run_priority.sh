@@ -42,10 +42,12 @@ DATA_ROOT="${DATA_ROOT:?set DATA_ROOT}"
 VOCAB_ROOT="${VOCAB_ROOT:?set VOCAB_ROOT}"
 OUT_ROOT="${OUT_ROOT:?set OUT_ROOT}"
 PROCESSED_ROOT="${PROCESSED_ROOT:-$OUT_ROOT/processed}"
+MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$PROJECT/data/mutag}"
+OGB_DATA_ROOT="${OGB_DATA_ROOT:-$PROJECT/data/ogb}"
 
 FOLDS="${FOLDS:-0 1 2 3 4}"
 BACKBONES="${BACKBONES:-GIN GCN GAT SAGE PNA}"
-DATASETS="${DATASETS:-Benzene BBBP Mutagenicity}"
+DATASETS="${DATASETS:-Benzene BBBP Mutagenicity mutag ogbg-molhiv}"
 NODE_ENCODER="${NODE_ENCODER:-onehot}"
 EPOCHS="${EPOCHS:-150}"
 # Rule ranking for rules.json (rule_index 0 = best). 'balanced' sorts by
@@ -94,7 +96,7 @@ ensure_vocab() {
             continue
         fi
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
-            --datasets "$ds" --data_root "$DATA_ROOT" \
+            --datasets "$ds" --data_root "$(_dataset_data_root "$ds")" \
             --out_dir "$VOCAB_ROOT" --method "$method" --variant "$vv" \
             $( [ "$fb"  = "1" ] && echo "--fallback" ) \
             $( [ "$bpe" = "1" ] && echo "--bpe" ) \
@@ -138,84 +140,144 @@ human_key() {
     echo "frag=$(frag_of "$1")  labels=$(labels_of "$1")  conv_normalize=$(norm_of "$1")"
 }
 
+_dataset_data_root() {
+    case "$1" in
+        mutag) echo "$MUTAG_DATA_ROOT" ;;
+        ogbg-*) echo "$OGB_DATA_ROOT" ;;
+        *) echo "$DATA_ROOT" ;;
+    esac
+}
+
+_dataset_node_encoder() {
+    case "$1" in
+        ogbg-*) echo "atom_encoder" ;;
+        *) echo "$NODE_ENCODER" ;;
+    esac
+}
+
+_skip_redundant_fold() {
+    case "$1" in mutag|ogbg-*) [ "$2" != "0" ] && return 0 ;; esac
+    return 1
+}
+
+_mutag_train_flags() {
+    local ds=$1 fold=$2
+    [ "$ds" != "mutag" ] && return 0
+    local root="$(_dataset_data_root mutag)"
+    echo "--mutag_index_maps_path $root/mutag_${fold}_index_maps.pkl" \
+         "--mutag_smiles_csv_path $root/mutag_${fold}.csv" \
+         "--mutag_splits_path $root/mutag_${fold}_splits.pkl" \
+         "--mutag_seed 42"
+}
+
 # ── Per-family launchers (one fold, one variant) ─────────────────────────────
 # $1 backbone  $2 dataset  $3 fold  $4 vocab_variant  $5 conv_normalize
 #                                   $6 use_gt(0/1)     $7 gt_cache_dir
 
 run_one_vanilla() {
     local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    _skip_redundant_fold "$ds" "$fold" && return 0
+    local ds_root="$(_dataset_data_root "$ds")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    local eff_fold="$fold"
+    case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
     local gt_args=""
     [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
-        --dataset "$ds" --fold "$fold" --backbone "$bb" \
-        --node_encoder "$NODE_ENCODER" --epochs "$EPOCHS" \
+        --dataset "$ds" --fold "$eff_fold" --backbone "$bb" \
+        --node_encoder "$enc" --epochs "$EPOCHS" \
         --conv_normalize "$cn" \
         --no_gnnexplainer --no_pgexplainer --no_mage \
-        --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+        --data_root "$ds_root" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/vanilla" $gt_args $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/vanilla" \
+        $(_mutag_train_flags "$ds" "$eff_fold") \
+        $gt_args $WANDB_FLAGS
 }
 
 run_one_baselines() {
-    # Post-hoc explainers loaded from the vanilla checkpoint just trained.
-    # run_vanilla.py appends {dataset}/fold{fold}/{tag} to --load_weights_from,
-    # so point it at the vanilla family root, NOT the per-dataset/fold dir.
-    # When use_gt=1 the test graphs are GT-backed, so the explainers also get
-    # GT-ROC, and the GT-trained vanilla checkpoint (gt tag) is the one loaded.
     local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    _skip_redundant_fold "$ds" "$fold" && return 0
+    local ds_root="$(_dataset_data_root "$ds")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    local eff_fold="$fold"
+    case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
     local gt_args=""
     [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
-        --dataset "$ds" --fold "$fold" --backbone "$bb" \
-        --node_encoder "$NODE_ENCODER" --epochs 0 \
+        --dataset "$ds" --fold "$eff_fold" --backbone "$bb" \
+        --node_encoder "$enc" --epochs 0 \
         --conv_normalize "$cn" \
         --load_weights_from "$OUT_ROOT/$key/vanilla" \
-        --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+        --data_root "$ds_root" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/baselines" $gt_args $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/baselines" \
+        $(_mutag_train_flags "$ds" "$eff_fold") \
+        $gt_args $WANDB_FLAGS
 }
 
 run_one_mose() {
     local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    _skip_redundant_fold "$ds" "$fold" && return 0
+    local ds_root="$(_dataset_data_root "$ds")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    local eff_fold="$fold"
+    case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
     local gt_args=""
     [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/MOSE-GNN/run.py" \
-        --dataset "$ds" --fold "$fold" --backbone "$bb" \
-        --node_encoder "$NODE_ENCODER" --w_feat --w_readout \
+        --dataset "$ds" --fold "$eff_fold" --backbone "$bb" \
+        --node_encoder "$enc" --w_feat --w_readout \
         --epochs "$EPOCHS" --conv_normalize "$cn" \
         --run_multi_explanation \
-        --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+        --data_root "$ds_root" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/mose" $gt_args $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/mose" \
+        $(_mutag_train_flags "$ds" "$eff_fold") \
+        $gt_args $WANDB_FLAGS
 }
 
 run_one_gsat() {
     local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    _skip_redundant_fold "$ds" "$fold" && return 0
+    local ds_root="$(_dataset_data_root "$ds")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    local eff_fold="$fold"
+    case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
     local gt_args=""
     [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/MotifSAT/run.py" \
-        --dataset "$ds" --fold "$fold" --backbone "$bb" \
-        --node_encoder "$NODE_ENCODER" --motif_method none \
+        --dataset "$ds" --fold "$eff_fold" --backbone "$bb" \
+        --node_encoder "$enc" --motif_method none \
         --learn_edge_att --noise node --info_loss_level node \
         --info_loss_coef 1.0 --epochs "$EPOCHS" --conv_normalize "$cn" \
-        --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+        --data_root "$ds_root" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/gsat" $gt_args $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/gsat" \
+        $(_mutag_train_flags "$ds" "$eff_fold") \
+        $gt_args $WANDB_FLAGS
 }
 
 run_one_motifsat() {
     local bb=$1 ds=$2 fold=$3 vv=$4 cn=$5 use_gt=$6 gtc=$7 key=$8
+    _skip_redundant_fold "$ds" "$fold" && return 0
+    local ds_root="$(_dataset_data_root "$ds")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    local eff_fold="$fold"
+    case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
     local gt_args=""
     [ "$use_gt" = "1" ] && gt_args="--use_gt --gt_cache $gtc"
     python3 "$PROJECT/MotifSAT/run.py" \
-        --dataset "$ds" --fold "$fold" --backbone "$bb" \
-        --node_encoder "$NODE_ENCODER" --motif_method readout \
+        --dataset "$ds" --fold "$eff_fold" --backbone "$bb" \
+        --node_encoder "$enc" --motif_method readout \
         --noise none --info_loss_level none --info_loss_coef 0.0 \
         --w_feat --w_readout --w_message \
         --epochs "$EPOCHS" --conv_normalize "$cn" \
-        --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
+        --data_root "$ds_root" --vocab_root "$VOCAB_ROOT" \
         --vocab_variant "$vv" --processed_root "$PROCESSED_ROOT" \
-        --out_dir "$OUT_ROOT/$key/motifsat" $gt_args $WANDB_FLAGS
+        --out_dir "$OUT_ROOT/$key/motifsat" \
+        $(_mutag_train_flags "$ds" "$eff_fold") \
+        $gt_args $WANDB_FLAGS
 }
 
 # ── Main loop: VARIANT → FOLD → families ─────────────────────────────────────

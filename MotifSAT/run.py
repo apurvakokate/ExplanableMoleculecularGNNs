@@ -160,6 +160,9 @@ def _aggregate_att_to_motif(
 
 
 def run(cfg: MotifSATConfig) -> dict:
+    from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
+
+    validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
     set_seed(cfg.seed)
     device = get_device()
 
@@ -184,6 +187,8 @@ def run(cfg: MotifSATConfig) -> dict:
         normalize=(task_type == "Regression"),
         mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
         mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
+        mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
+        mutag_seed=getattr(cfg, 'mutag_seed', 42),
     )
     print(f"  Task: {task_type}  "
           f"train={len(loaders['train'].dataset)}  "
@@ -471,6 +476,7 @@ def run(cfg: MotifSATConfig) -> dict:
         "between_motif_coef": cfg.between_motif_coef,
         "learn_edge_att":   cfg.learn_edge_att,
         "gt_level":         gt_level,
+        **training_summary_extras(cfg),
         # prediction
         "train_auc": split_metrics.get("train", {}).get("auc", split_metrics.get("train", {}).get("auc_mean", float("nan"))),
         "val_auc":   split_metrics.get("valid", {}).get("auc", split_metrics.get("valid", {}).get("auc_mean", float("nan"))),
@@ -579,6 +585,10 @@ def main():
     parser.add_argument("--mutag_smiles_csv_path", default=None,
                         help="mutag only: override path to mutag_<fold>.csv "
                              "(default: convention under --data_root).")
+    parser.add_argument("--mutag_splits_path", default=None,
+                        help="mutag only: override path to mutag_<fold>_splits.pkl.")
+    parser.add_argument("--mutag_seed", type=int, default=42,
+                        help="mutag only: RNG seed when splits pickle is absent.")
     parser.add_argument("--final_out_dir",   action="store_true",
                         help="Treat --out_dir as the FINAL run dir (no "
                              "<dataset>/fold<k>/<variant_tag> append). Set by the "
@@ -630,6 +640,8 @@ def main():
             gt_cache=args.gt_cache,
             mutag_index_maps_path=args.mutag_index_maps_path,
             mutag_smiles_csv_path=args.mutag_smiles_csv_path,
+            mutag_splits_path=args.mutag_splits_path,
+            mutag_seed=args.mutag_seed,
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,

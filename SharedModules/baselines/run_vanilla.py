@@ -92,6 +92,8 @@ class VanillaConfig:
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
     mutag_index_maps_path: Optional[str] = None
     mutag_smiles_csv_path: Optional[str] = None
+    mutag_splits_path: Optional[str] = None
+    mutag_seed: int = 42
 
     def variant_tag(self) -> str:
         enc = self.node_encoder
@@ -131,6 +133,9 @@ class VanillaConfig:
 
 
 def run(cfg: VanillaConfig) -> dict:
+    from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
+
+    validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
     set_seed(cfg.seed)
     device = get_device()
 
@@ -149,6 +154,8 @@ def run(cfg: VanillaConfig) -> dict:
         batch_size=cfg.batch_size, normalize=(task_type == 'Regression'),
         mutag_index_maps_path=getattr(cfg, 'mutag_index_maps_path', None),
         mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
+        mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
+        mutag_seed=getattr(cfg, 'mutag_seed', 42),
     )
 
     # ── GT loader replacement (use_gt=True: synthetic rule labels) ─────────────
@@ -390,8 +397,10 @@ def run(cfg: VanillaConfig) -> dict:
         'pearson':          corr.get('pearson', float('nan')),
         'spearman':         corr.get('spearman', float('nan')),
         'gt_roc_auc_mean':  gt.get('auc_mean', float('nan')),
+        'gt_roc_n_graphs': gt.get('n_graphs', 0),
         'gt_roc_node_auc_mean': gt_node.get('auc_mean', float('nan')),
         'gt_roc_edge_auc_mean': gt_edge.get('auc_mean', float('nan')),
+        **training_summary_extras(cfg),
         **explainer_metrics,
     }
     with open(out_dir / 'summary.json', 'w') as f:
@@ -536,6 +545,10 @@ def main():
     parser.add_argument('--mutag_smiles_csv_path', default=None,
                         help='mutag only: override path to mutag_<fold>.csv '
                              '(default: convention under --data_root).')
+    parser.add_argument('--mutag_splits_path', default=None,
+                        help='mutag only: override path to mutag_<fold>_splits.pkl.')
+    parser.add_argument('--mutag_seed', type=int, default=42,
+                        help='mutag only: RNG seed when splits pickle is absent.')
     args = parser.parse_args()
 
     # Make processed_root variant-specific so rbrics_old / rbrics / all_fallback_bpe
@@ -564,6 +577,8 @@ def main():
         gt_cache=args.gt_cache,
         mutag_index_maps_path=args.mutag_index_maps_path,
         mutag_smiles_csv_path=args.mutag_smiles_csv_path,
+        mutag_splits_path=args.mutag_splits_path,
+        mutag_seed=args.mutag_seed,
     )
     run(cfg)
 
