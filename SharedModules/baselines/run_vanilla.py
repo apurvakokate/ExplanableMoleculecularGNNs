@@ -71,11 +71,7 @@ class VanillaConfig:
     load_weights_from: Optional[str] = None  # dir containing best_model.pt
     weight_vocab_variant: Optional[str] = None  # vocab variant of loaded weights
     # When True, treat --out_dir as the FINAL run directory and do NOT append
-    # <dataset>/fold<k>/<variant_tag>. The unified launcher (run_experiments.py)
-    # sets this so the on-disk path has a single dataset/fold level (no double
-    # nesting) and so config.json/summary.json/best_model.pt all live together.
-    # Legacy callers (run_priority.sh, direct invocation) leave it False and
-    # keep the historical nested layout. run_experiments.sh uses --final_out_dir.
+    # <dataset>/fold<k>/<variant_tag>. Required by run_experiments.py / run_experiments.sh.
     final_out_dir: bool = False
     use_wandb: bool = False
     wandb_project: str = 'ChemIntuit'
@@ -247,8 +243,8 @@ def run(cfg: VanillaConfig) -> dict:
         pos_weights=pos_w, patience=cfg.patience,
         save_path=str(_ckpt_dir / 'best_model.pt'), verbose=cfg.verbose,
     )
-    # Baseline runs (epochs=0) load vanilla weights but write artifacts here;
-    # mirror the checkpoint so regenerate_eval can find best_model.pt in out_dir.
+    # Baseline runs (epochs=0) load vanilla weights; mirror ckpt into out_dir so
+    # summary.json and best_model.pt live together (required by regenerate_eval).
     if (cfg.epochs == 0 and getattr(cfg, 'final_out_dir', False)
             and cfg.load_weights_from):
         _run_ckpt = out_dir / 'best_model.pt'

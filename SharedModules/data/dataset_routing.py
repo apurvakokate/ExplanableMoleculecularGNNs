@@ -209,8 +209,6 @@ def training_summary_extras(cfg) -> Dict:
     wvv = getattr(cfg, 'weight_vocab_variant', None)
     if wvv not in (None, ''):
         out['weight_vocab_variant'] = wvv
-    if int(getattr(cfg, 'epochs', 1)) == 0 and getattr(cfg, 'load_weights_from', None):
-        out['weights_dir'] = str(cfg.load_weights_from)
     if getattr(cfg, 'final_out_dir', False):
         out['final_out_dir'] = True
     if hasattr(cfg, 'unk_mode'):
