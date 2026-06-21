@@ -105,7 +105,7 @@ Phase 1 reads `{dataset}_0.csv` from `OGB_DATA_ROOT` (same root used for PyG tra
 
 OGB has **no** source explanation GT; use `--use_gt` + Phase 4 synthetic relabelling when needed.
 
-SMILES come from `{ogb_root}/{name}/mapping/mol.csv.gz` and match graph node order directly.
+SMILES come from `{ogb_root}/ogbg_molhiv/mapping/mol.csv.gz` (underscore cache dir).
 
 ---
 

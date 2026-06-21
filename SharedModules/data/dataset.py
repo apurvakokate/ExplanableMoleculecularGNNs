@@ -191,7 +191,8 @@ def load_ogb_dataset(data_dir: str, dataset_name: str):
     data_dir : str
         Root directory passed to PygGraphPropPredDataset.
     dataset_name : str
-        OGB name, e.g. ``'ogbg-molhiv'``.  Hyphens or underscores both work.
+        OGB name, e.g. ``'ogbg-molhiv'``.  On-disk cache dir uses underscores
+        (``ogbg_molhiv``); the PyG API name stays hyphenated.
 
     Returns
     -------
@@ -210,10 +211,10 @@ def load_ogb_dataset(data_dir: str, dataset_name: str):
     split_idx = dataset.get_idx_split()
 
     # Attach SMILES from mapping/mol.csv.gz (OGB guarantees row i = graph i)
-    from pathlib import Path
-    mol_csv = Path(data_dir) / name_hyphen / 'mapping' / 'mol.csv.gz'
-    if mol_csv.exists():
-        smiles_df = pd.read_csv(mol_csv)
+    from .dataset_routing import resolve_ogb_mol_csv
+    mol_csv = resolve_ogb_mol_csv(data_dir, dataset_name)
+    if mol_csv is not None:
+        smiles_df = pd.read_csv(str(mol_csv))
         if 'smiles' in smiles_df.columns and len(smiles_df) == len(dataset):
             for i, smi in enumerate(smiles_df['smiles']):
                 dataset[i].smiles = str(smi)

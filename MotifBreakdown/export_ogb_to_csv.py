@@ -5,7 +5,7 @@ the vocabulary pipeline (generate_vocab_rules.py) consumes.
 The vocab generator is CSV-based: it reads {data_root}/{dataset}_{fold}.csv with
 columns (smiles, <label>, group). OGB datasets are not CSV — they are
 PygGraphPropPredDataset objects — but OGB ships the original SMILES and labels in
-<root>/<name>/mapping/mol.csv.gz, and provides an official train/valid/test
+<root>/<ogbg_molhiv>/mapping/mol.csv.gz, and provides an official train/valid/test
 split. This script joins the two into a fold CSV so OGB datasets can be
 fragmented and thresholded exactly like the CSV datasets.
 
@@ -28,15 +28,23 @@ Notes:
 """
 from __future__ import annotations
 import argparse
+import sys
 from pathlib import Path
 import pandas as pd
+
+_HERE = Path(__file__).resolve()
+_SM = _HERE.parents[1] / 'SharedModules'
+if str(_SM) not in sys.path:
+    sys.path.insert(0, str(_SM))
+
+from SharedModules.data.dataset_routing import ogb_cache_dirname, resolve_ogb_mol_csv
 
 
 def _ensure_ogb_cached(dataset: str, ogb_root: str) -> Path:
     """Return path to mol.csv.gz, downloading the OGB dataset if needed."""
     name_hyphen = dataset.replace('_', '-')
-    mol_csv = Path(ogb_root) / name_hyphen / 'mapping' / 'mol.csv.gz'
-    if mol_csv.exists():
+    mol_csv = resolve_ogb_mol_csv(ogb_root, dataset)
+    if mol_csv is not None:
         return mol_csv
     try:
         from ogb.graphproppred import PygGraphPropPredDataset
@@ -44,9 +52,11 @@ def _ensure_ogb_cached(dataset: str, ogb_root: str) -> Path:
         raise ImportError("OGB not installed. Run: pip install ogb")
     print(f"  OGB cache missing for {name_hyphen}; downloading to {ogb_root!r} ...")
     PygGraphPropPredDataset(root=ogb_root, name=name_hyphen)
-    if not mol_csv.exists():
+    mol_csv = resolve_ogb_mol_csv(ogb_root, dataset)
+    if mol_csv is None:
+        dname = ogb_cache_dirname(dataset)
         raise FileNotFoundError(
-            f"OGB download finished but mapping file still missing: {mol_csv}")
+            f"OGB mapping file not found: {ogb_root}/{dname}/mapping/mol.csv.gz")
     return mol_csv
 
 

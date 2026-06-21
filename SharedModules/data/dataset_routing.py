@@ -65,6 +65,17 @@ def resolve_mutag_roots(data_root: str) -> tuple[str, Path]:
     return str(root / 'mutag'), root
 
 
+def ogb_cache_dirname(dataset: str) -> str:
+    """On-disk OGB cache folder (underscores), e.g. ``ogbg_molhiv``."""
+    return dataset.replace('_', '-').replace('-', '_')
+
+
+def resolve_ogb_mol_csv(ogb_root: str, dataset: str) -> Optional[Path]:
+    """Path to ``{ogb_root}/ogbg_molhiv/mapping/mol.csv.gz`` (underscore layout)."""
+    p = Path(ogb_root) / ogb_cache_dirname(dataset) / 'mapping' / 'mol.csv.gz'
+    return p if p.is_file() else None
+
+
 def resolve_data_root(
     dataset: str,
     data_root: str,
