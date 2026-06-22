@@ -146,21 +146,8 @@ _skip_redundant_fold() {
     return 1
 }
 
-# Regression datasets (Lipophilicity, esol, …) have continuous labels — no rule mining.
-# Returns 0 (true) when the dataset should be skipped in phases 1–3.
-_skip_vocab_dataset() {
-    PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
-from SharedModules.data.dataset_routing import REGRESSION_DATASETS
-import sys
-sys.exit(0 if sys.argv[1] in REGRESSION_DATASETS else 1)
-" "$1" 2>/dev/null || {
-        case "$1" in Lipophilicity|esol|freesolv|ogbg-molesol|ogbg-molfreesolv|ogbg-mollipo)
-            return 0 ;;
-        esac
-        return 1
-    }
-}
-
+# Regression datasets skip rule mining and phase-4 synthetic GT only; phases 1–3
+# still fragment, threshold, and plot node coverage.
 # Synthetic GT (phase 4) only applies to GT_SUPPORTED_DATASETS CSV benchmarks.
 _skip_synthetic_gt_dataset() {
     PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
@@ -224,10 +211,6 @@ run_frag() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
-        if _skip_vocab_dataset "$ds"; then
-            echo "  [skip] $ds — regression (no vocab/rule mining)"
-            continue
-        fi
         if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
             echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
             continue
@@ -258,10 +241,6 @@ run_frag_thresh() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4
     echo "  [$variant] method=$method (threshold from CHOSEN_THRESHOLD dict)"
     for ds in $DATASETS; do
-        if _skip_vocab_dataset "$ds"; then
-            echo "  [skip] $ds — regression (no vocab/rule mining)"
-            continue
-        fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets      "$ds" \
@@ -552,7 +531,7 @@ phase1() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 1 — Fragmentation (no threshold, 3 variants)"
-    echo "  Skips: regression datasets; datasets with all 3 variants done;"
+    echo "  Skips: datasets with all 3 variants done;"
     echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
@@ -585,14 +564,7 @@ phase2() {
     echo " PHASE 2 — Coverage vs threshold sweep (3 variants)"
     echo "══════════════════════════════════════════════════════════"
 
-    local vocab_datasets=""
-    for ds in $DATASETS; do
-        if _skip_vocab_dataset "$ds"; then
-            echo "  [skip] $ds — regression (no coverage sweep)"
-            continue
-        fi
-        vocab_datasets="$vocab_datasets $ds"
-    done
+    local vocab_datasets="$DATASETS"
 
     for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
         echo ""

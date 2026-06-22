@@ -145,12 +145,12 @@ def validate_use_gt(dataset: str, use_gt: bool, gt_cache: Optional[str]) -> None
 
 
 def assert_vocab_rule_mining_allowed(dataset: str) -> None:
-    """Motif rule mining requires discrete class labels."""
+    """Rule extraction (not fragmentation/thresholding) requires class labels."""
     if dataset in REGRESSION_DATASETS:
         raise ValueError(
-            f"Vocabulary/rule mining is not compatible with regression dataset "
-            f"{dataset!r} (continuous labels). Remove it from --datasets or "
-            "use a classification benchmark.")
+            f"Motif rule mining is not compatible with regression dataset "
+            f"{dataset!r} (continuous labels). Fragmentation, thresholding, "
+            "and coverage sweeps are still allowed.")
 
 
 def mutag_artifact_paths(

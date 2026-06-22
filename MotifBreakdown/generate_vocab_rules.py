@@ -805,7 +805,8 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
                  gmi_train: dict, gmi_test: dict,
                  rules: List[dict], labels: np.ndarray,
                  kept_motif_ids: List[int],
-                 test_occ_ctr: dict = None) -> dict:
+                 test_occ_ctr: dict = None,
+                 is_regression: bool = False) -> dict:
 
     vdir = out_dir / dataset / variant
     vdir.mkdir(parents=True, exist_ok=True)
@@ -860,9 +861,12 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
     # Metadata: exact split sizes needed by coverage_vs_threshold.py
     n_tv    = sum(1 for g in groups_all if g in ('training', 'valid'))
     n_test  = sum(1 for g in groups_all if g == 'test')
-    n0_tv   = sum(1 for g, l in zip(groups_all, labels)
-                  if g in ('training', 'valid') and int(l) == 0)
-    n1_tv   = n_tv - n0_tv
+    if is_regression:
+        n0_tv = n1_tv = None
+    else:
+        n0_tv   = sum(1 for g, l in zip(groups_all, labels)
+                      if g in ('training', 'valid') and int(l) == 0)
+        n1_tv   = n_tv - n0_tv
     import json as _json
     meta_path = vdir / 'vocab_meta.json'
     with open(meta_path, 'w') as _f:
@@ -872,6 +876,7 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
             'n_test':     n_test,
             'n0_trainval': n0_tv,
             'n1_trainval': n1_tv,
+            'task_type': 'Regression' if is_regression else 'Classification',
             'vocab_size':  len(motif_list),
             'dataset':     dataset,
             'variant':     variant,
@@ -1116,8 +1121,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         variant = f"{method}{'_fallback' if use_fallback else ''}{'_bpe' if use_bpe else ''}{'_filter' if apply_threshold else ''}{variant_suffix}"
 
     t0 = time.time()
-    from SharedModules.data.dataset_routing import assert_vocab_rule_mining_allowed
-    assert_vocab_rule_mining_allowed(dataset)
+    is_regression = TASK_TYPE.get(dataset) == 'Regression'
     smdf = _load_csv(data_root, dataset, fold)
 
     smiles_all = smdf['smiles'].tolist()
@@ -1316,12 +1320,6 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         # global_cut = int(thr * N_tv). No extra /100 (see commit fixing the
         # 100x-too-small cutoff that made --apply_threshold a near no-op).
         global_cut  = int(resolved_pct * N_tv)
-        n0_tv = sum(1 for g,l in zip(groups_all,labels_all)
-                    if g in ('training','valid') and int(l)==0)
-        n1_tv = N_tv - n0_tv
-        r0, r1 = n0_tv/max(N_tv,1), n1_tv/max(N_tv,1)
-        minority   = (1 if r0 >= 0.6 else (0 if r1 >= 0.6 else None))
-        minority_n = (n1_tv if minority==1 else (n0_tv if minority==0 else None))
 
         # Support signal = trainval occurrence count (1.0 per occurrence). This
         # is exactly the `weighted_count` semantics build_vocab stores and the
@@ -1335,18 +1333,26 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             if grp not in ('training','valid'): continue
             for smarts, _ in mf:
                 mol_counts[smarts] += 1.0
-                if int(lbl) == 0:
-                    wt_counts_0[smarts] += 1.0
-                else:
-                    wt_counts_1[smarts] += 1.0
+                if not is_regression:
+                    if int(lbl) == 0:
+                        wt_counts_0[smarts] += 1.0
+                    else:
+                        wt_counts_1[smarts] += 1.0
 
         threshold_motifs = {m for m,c in mol_counts.items() if c >= global_cut}
-        if minority is not None and minority_n is not None:
-            mb_cut = int(resolved_pct * minority_n)
-            wt = wt_counts_1 if minority == 1 else wt_counts_0
-            for m, cnt in wt.items():
-                if cnt >= mb_cut:
-                    threshold_motifs.add(m)
+        if not is_regression:
+            n0_tv = sum(1 for g,l in zip(groups_all,labels_all)
+                        if g in ('training','valid') and int(l)==0)
+            n1_tv = N_tv - n0_tv
+            r0, r1 = n0_tv/max(N_tv,1), n1_tv/max(N_tv,1)
+            minority   = (1 if r0 >= 0.6 else (0 if r1 >= 0.6 else None))
+            minority_n = (n1_tv if minority==1 else (n0_tv if minority==0 else None))
+            if minority is not None and minority_n is not None:
+                mb_cut = int(resolved_pct * minority_n)
+                wt = wt_counts_1 if minority == 1 else wt_counts_0
+                for m, cnt in wt.items():
+                    if cnt >= mb_cut:
+                        threshold_motifs.add(m)
 
         n_below = len(motif_list) - len(threshold_motifs & set(motif_list))
         print(f"    Threshold {resolved_pct*100:.3f}%: cutoff={global_cut}  "
@@ -1395,22 +1401,26 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     for s, g in zip(smiles_all, groups_all)
                     if g == 'test' and s in lookup_all}
 
-    # Rules — restricted to kept motifs so a rule never cites a -1 (unknown) motif
-    rules = extract_rules(motif_list, motif_stats, X, labels_all,
-                          rank_mode=rule_rank, threshold_motifs=threshold_motifs)
-    if rules:
-        r0 = rules[0]
-        print(f"    Best rule [{rule_rank}] "
-              f"cover={r0.get('rule_pct_match', '?')}%  "
-              f"balance={r0.get('balance', '?')}  "
-              f"sep={r0.get('separation', '?')}  "
-              f"spurious={r0.get('spurious', '?')}  "
-              f"score={r0.get('score', '?')}:")
-        print(f"      {' ∨ '.join('('+' ∧ '.join(c['motifs'])+')'for c in r0['clauses'])}")
+    # Rules — classification only; regression datasets skip rule mining.
+    if is_regression:
+        rules = []
+        print('    Rules: skipped (regression dataset — no rule mining)')
     else:
-        print('    [warn] no rules extracted — check motif support / MIN_COV; '
-              'v4 vocabs need chemfrag._strip atom-map fix (re-run phase1)')
-    print(f"    Rules: {len(rules)}")
+        rules = extract_rules(motif_list, motif_stats, X, labels_all,
+                              rank_mode=rule_rank, threshold_motifs=threshold_motifs)
+        if rules:
+            r0 = rules[0]
+            print(f"    Best rule [{rule_rank}] "
+                  f"cover={r0.get('rule_pct_match', '?')}%  "
+                  f"balance={r0.get('balance', '?')}  "
+                  f"sep={r0.get('separation', '?')}  "
+                  f"spurious={r0.get('spurious', '?')}  "
+                  f"score={r0.get('score', '?')}:")
+            print(f"      {' ∨ '.join('('+' ∧ '.join(c['motifs'])+')'for c in r0['clauses'])}")
+        else:
+            print('    [warn] no rules extracted — check motif support / MIN_COV; '
+                  'v4 vocabs need chemfrag._strip atom-map fix (re-run phase1)')
+        print(f"    Rules: {len(rules)}")
     if bpe_history:
         print(f"    BPE: {len(bpe_history)} merges")
         for h in bpe_history[:3]:
@@ -1439,7 +1449,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         gmi_train=gmi_train, gmi_test=gmi_test,
                         rules=rules, labels=labels_all,
                         kept_motif_ids=kept_motif_ids,
-                        test_occ_ctr=_test_occ)
+                        test_occ_ctr=_test_occ,
+                        is_regression=is_regression)
 
     # Statistics CSV
     motif_df, graph_df = compute_stats(
@@ -1607,13 +1618,8 @@ Examples:
     # shatter vocabs never overwrite standard-v4 vocabs.
     _shatter_suffix = '_shatter' if args.shatter else ''
 
-    from SharedModules.data.dataset_routing import REGRESSION_DATASETS
-
     all_metas = []
     for ds in args.datasets:
-        if ds in REGRESSION_DATASETS:
-            print(f"\n  [skip] {ds} — regression dataset (no vocab/rule mining)")
-            continue
         print(f"\n{'='*60}\n  {ds}\n{'='*60}")
         meta = run_dataset(ds, args.data_root, out_dir,
                            method=args.method,

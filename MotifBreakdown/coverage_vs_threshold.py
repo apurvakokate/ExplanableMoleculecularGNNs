@@ -89,7 +89,15 @@ def _load(vocab_root, dataset, variant):
         lookup_tv = {**lookup_tv, **_lp(valid_path)}
     lookup_test = _lp(Path(base + '_test_graph_lookup.pickle'))
 
-    return cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test
+    task_type = meta.get('task_type')
+    if task_type is None:
+        try:
+            from SharedModules.data.dataset_schema import TASK_TYPE
+            task_type = TASK_TYPE.get(dataset, 'Classification')
+        except ImportError:
+            task_type = 'Classification'
+
+    return cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type
 # insert this new function before compute_sweep
 
 def compute_node_coverage(data_lookup, kept_motifs):
@@ -108,7 +116,7 @@ def compute_node_coverage(data_lookup, kept_motifs):
     return sum(coverages) / len(coverages) if coverages else 0.0
 
 def compute_sweep(vocab_root, dataset, variant, thresholds=None):
-    cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test = _load(vocab_root, dataset, variant)
+    cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(vocab_root, dataset, variant)
 
     # ── Count signal: weighted_count (notebook: Σ 1/length per node-slot) ──
     if 'weighted_count' in cols.columns:
@@ -124,10 +132,10 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
 
     total_support = float(support.sum())
 
-    # Infer minority class
+    # Infer minority class (classification only — regression has no class split)
     minority = None
     n_minority = None
-    if n0_tv is not None and n1_tv is not None:
+    if task_type != 'Regression' and n0_tv is not None and n1_tv is not None:
         r0, r1 = n0_tv / n_tv, n1_tv / n_tv
         if r0 >= IMBALANCE_MARGIN:
             minority, n_minority = 1, n1_tv
