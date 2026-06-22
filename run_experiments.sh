@@ -585,23 +585,30 @@ phase2() {
     echo " PHASE 2 — Coverage vs threshold sweep (3 variants)"
     echo "══════════════════════════════════════════════════════════"
 
+    local vocab_datasets=""
     for ds in $DATASETS; do
         if _skip_vocab_dataset "$ds"; then
             echo "  [skip] $ds — regression (no coverage sweep)"
             continue
         fi
-        for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
-            echo "  [$ds / $variant]"
-            python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
-                --dataset    "$ds" \
-                --vocab_root "$VOCAB_ROOT" \
-                --variant    "$variant" \
-                --out_dir    "$OUT_ROOT/coverage_plots"
-        done
+        vocab_datasets="$vocab_datasets $ds"
+    done
+
+    for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
+        echo ""
+        echo "  [combined / $variant]"
+        python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
+            --vocab_root "$VOCAB_ROOT" \
+            --datasets   $vocab_datasets \
+            --variant    "$variant" \
+            --out_dir    "$OUT_ROOT/coverage_plots" \
+            --combine_plot
     done
 
     echo ""
     echo "Phase 2 complete. Review plots in: $OUT_ROOT/coverage_plots"
+    echo "  Per-dataset:  {dataset}_{variant}_coverage.png"
+    echo "  Combined:     all_datasets_{variant}_coverage.png"
     echo "Then:  edit CHOSEN_THRESHOLD in MotifBreakdown/generate_vocab_rules.py"
     echo "       bash run_experiments.sh phase3"
 }

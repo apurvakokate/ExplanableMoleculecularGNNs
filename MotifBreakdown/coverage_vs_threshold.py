@@ -315,30 +315,159 @@ def plot_sweep(df, dataset, variant, out_path):
     print(f"  Saved: {out_path}")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--vocab_root', required=True)
-    ap.add_argument('--dataset',    required=True)
-    ap.add_argument('--variant',    required=True)
-    ap.add_argument('--out_dir',    default='./results/coverage_plots')
-    ap.add_argument('--thresholds', nargs='*', type=float, default=None)
-    args = ap.parse_args()
+def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
+    """Overlay coverage / vocab curves for multiple datasets on one figure."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+        from matplotlib import cm
+    except ImportError:
+        print("  matplotlib not available — skipping combined plot")
+        return
+
+    if not sweeps:
+        print("  [warn] no datasets for combined plot")
+        return
+
+    # Align on the union of thresholds (sorted); reindex each df.
+    all_thr = sorted({t for df in sweeps.values() for t in df['threshold']})
+    aligned = {}
+    for ds, df in sweeps.items():
+        aligned[ds] = df.set_index('threshold').reindex(all_thr).reset_index()
+
+    xi = list(range(len(all_thr)))
+    xlbls = [f"{v*100:.3f}%" for v in all_thr]
 
     try:
-        df = compute_sweep(args.vocab_root, args.dataset, args.variant, args.thresholds)
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+        cmap = plt.colormaps['tab10'].resampled(max(len(sweeps), 1))
+    except AttributeError:
+        cmap = cm.get_cmap('tab10', max(len(sweeps), 1))
+    datasets = sorted(sweeps.keys())
 
-    print_table(df, args.dataset, args.variant)
+    def _fmt_x(ax):
+        ax.set_xticks(xi)
+        ax.set_xticklabels(xlbls, rotation=45, ha='right', fontsize=8)
+        ax.set_xlabel('Min support threshold (% of N_trainval)', fontsize=9)
+        ax.set_xlim(-0.3, len(xi) - 0.7)
 
-    out = Path(args.out_dir) / f'{args.dataset}_{args.variant}_coverage.png'
-    plot_sweep(df, args.dataset, args.variant, out)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+    fig.suptitle(f'All datasets / {variant}', fontsize=13)
 
-    csv = Path(args.out_dir) / f'{args.dataset}_{args.variant}_coverage.csv'
+    # Panel 0 — vocabulary size
+    ax0 = axes[0]
+    for i, ds in enumerate(datasets):
+        df = aligned[ds]
+        c = cmap(i)
+        ax0.plot(xi, df['vocab_size'], 'o-', color=c, lw=1.8, ms=4, label=ds)
+    ax0.set_ylabel('Vocabulary size')
+    ax0.set_title('Vocabulary size (+ minority rescue)')
+    ax0.legend(fontsize=7, loc='best')
+    ax0.grid(True, alpha=0.3)
+    _fmt_x(ax0)
+
+    # Panel 1 — train+val node coverage
+    ax1 = axes[1]
+    for i, ds in enumerate(datasets):
+        df = aligned[ds]
+        c = cmap(i)
+        ax1.plot(xi, df['coverage_tv'] * 100, 's-', color=c, lw=1.8, ms=4, label=ds)
+    ax1.set_ylim(0, 105)
+    ax1.yaxis.set_major_locator(mticker.MultipleLocator(10))
+    ax1.axhline(80, color='orange', ls='--', alpha=0.6, lw=1)
+    ax1.axhline(90, color='red', ls='--', alpha=0.6, lw=1)
+    ax1.set_ylabel('Node coverage (%)')
+    ax1.set_title('Node coverage (train+val)')
+    ax1.legend(fontsize=7, loc='lower left')
+    ax1.grid(True, alpha=0.3)
+    _fmt_x(ax1)
+
+    # Panel 2 — common motifs retained
+    ax2 = axes[2]
+    any_common = False
+    for i, ds in enumerate(datasets):
+        df = aligned[ds]
+        if df['pct_common_kept'].isna().all():
+            continue
+        any_common = True
+        c = cmap(i)
+        ax2.plot(xi, df['pct_common_kept'] * 100, '^-', color=c, lw=1.8, ms=4, label=ds)
+    if any_common:
+        ax2.set_ylim(0, 105)
+        ax2.yaxis.set_major_locator(mticker.MultipleLocator(10))
+        ax2.set_ylabel('Common motifs kept (%)')
+        ax2.set_title('Fraction of ≥1%-support motifs retained')
+        ax2.legend(fontsize=7, loc='lower left')
+        ax2.grid(True, alpha=0.3)
+        _fmt_x(ax2)
+    else:
+        ax2.set_visible(False)
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved combined: {out_path}")
+
+
+def _run_single(vocab_root, dataset, variant, out_dir, thresholds):
+    df = compute_sweep(vocab_root, dataset, variant, thresholds)
+    print_table(df, dataset, variant)
+    out_dir = Path(out_dir)
+    plot_sweep(df, dataset, variant, out_dir / f'{dataset}_{variant}_coverage.png')
+    csv = out_dir / f'{dataset}_{variant}_coverage.csv'
     csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv, index=False)
     print(f"  CSV:  {csv}")
+    return df
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--vocab_root', required=True)
+    ap.add_argument('--dataset',    default=None,
+                    help='Single dataset (legacy mode)')
+    ap.add_argument('--datasets',   nargs='*', default=None,
+                    help='Multiple datasets; use with --combine_plot for overlay')
+    ap.add_argument('--variant',    required=True)
+    ap.add_argument('--out_dir',    default='./results/coverage_plots')
+    ap.add_argument('--thresholds', nargs='*', type=float, default=None)
+    ap.add_argument('--combine_plot', action='store_true',
+                    help='Save one PNG overlaying all --datasets on the same axes')
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+
+    if args.datasets:
+        sweeps = {}
+        for ds in args.datasets:
+            vdir = Path(args.vocab_root) / ds / args.variant
+            if not (vdir / 'matrix_columns.csv').exists():
+                print(f"  [skip] {ds}/{args.variant} — no vocab (missing matrix_columns.csv)")
+                continue
+            try:
+                sweeps[ds] = _run_single(args.vocab_root, ds, args.variant,
+                                         args.out_dir, args.thresholds)
+            except FileNotFoundError as e:
+                print(f"  [skip] {ds}: {e}", file=sys.stderr)
+        if args.combine_plot and sweeps:
+            plot_combined_sweep(
+                sweeps, args.variant,
+                out_dir / f'all_datasets_{args.variant}_coverage.png')
+        elif args.combine_plot:
+            print("  [warn] --combine_plot: no datasets had vocab output")
+        return
+
+    if not args.dataset:
+        ap.error('Provide --dataset or --datasets')
+
+    try:
+        _run_single(args.vocab_root, args.dataset, args.variant,
+                    args.out_dir, args.thresholds)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':
