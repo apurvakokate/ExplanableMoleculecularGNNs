@@ -340,11 +340,14 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
     xi = list(range(len(all_thr)))
     xlbls = [f"{v*100:.3f}%" for v in all_thr]
 
-    try:
-        cmap = plt.colormaps['tab10'].resampled(max(len(sweeps), 1))
-    except AttributeError:
-        cmap = cm.get_cmap('tab10', max(len(sweeps), 1))
     datasets = sorted(sweeps.keys())
+    # Fixed palette: same dataset → same color in every panel (cmap(int) is unreliable
+    # on resampled/continuous colormaps — values >1 clip to the last color).
+    try:
+        _palette = list(plt.colormaps['tab10'].colors)
+    except AttributeError:
+        _palette = [cm.get_cmap('tab10')(i / 9.0) for i in range(10)]
+    ds_colors = {ds: _palette[i % len(_palette)] for i, ds in enumerate(datasets)}
 
     def _fmt_x(ax):
         ax.set_xticks(xi)
@@ -357,9 +360,9 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
 
     # Panel 0 — vocabulary size
     ax0 = axes[0]
-    for i, ds in enumerate(datasets):
+    for ds in datasets:
         df = aligned[ds]
-        c = cmap(i)
+        c = ds_colors[ds]
         ax0.plot(xi, df['vocab_size'], 'o-', color=c, lw=1.8, ms=4, label=ds)
     ax0.set_ylabel('Vocabulary size')
     ax0.set_title('Vocabulary size (+ minority rescue)')
@@ -369,9 +372,9 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
 
     # Panel 1 — train+val node coverage
     ax1 = axes[1]
-    for i, ds in enumerate(datasets):
+    for ds in datasets:
         df = aligned[ds]
-        c = cmap(i)
+        c = ds_colors[ds]
         ax1.plot(xi, df['coverage_tv'] * 100, 's-', color=c, lw=1.8, ms=4, label=ds)
     ax1.set_ylim(0, 105)
     ax1.yaxis.set_major_locator(mticker.MultipleLocator(10))
@@ -386,12 +389,12 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
     # Panel 2 — common motifs retained
     ax2 = axes[2]
     any_common = False
-    for i, ds in enumerate(datasets):
+    for ds in datasets:
         df = aligned[ds]
         if df['pct_common_kept'].isna().all():
             continue
         any_common = True
-        c = cmap(i)
+        c = ds_colors[ds]
         ax2.plot(xi, df['pct_common_kept'] * 100, '^-', color=c, lw=1.8, ms=4, label=ds)
     if any_common:
         ax2.set_ylim(0, 105)
