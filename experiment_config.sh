@@ -37,6 +37,8 @@ export DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP hERG Benzene Alkane_Carbo
 export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 # Union used by all phases. Override entirely: export DATASETS="BBBP Benzene"
 export DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
+# Lipophilicity / esol (regression) are auto-skipped in phases 1–3 and phase 4 GT;
+# they still train in phase 5 on real labels.
 
 # ── Cross-validation folds ────────────────────────────────────────────────────
 export FOLDS="0 1 2 3 4"

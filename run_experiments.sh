@@ -146,6 +146,49 @@ _skip_redundant_fold() {
     return 1
 }
 
+# Regression datasets (Lipophilicity, esol, …) have continuous labels — no rule mining.
+# Returns 0 (true) when the dataset should be skipped in phases 1–3.
+_skip_vocab_dataset() {
+    PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
+from SharedModules.data.dataset_routing import REGRESSION_DATASETS
+import sys
+sys.exit(0 if sys.argv[1] in REGRESSION_DATASETS else 1)
+" "$1" 2>/dev/null || {
+        case "$1" in Lipophilicity|esol|freesolv|ogbg-molesol|ogbg-molfreesolv|ogbg-mollipo)
+            return 0 ;;
+        esac
+        return 1
+    }
+}
+
+# Synthetic GT (phase 4) only applies to GT_SUPPORTED_DATASETS CSV benchmarks.
+_skip_synthetic_gt_dataset() {
+    PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
+from SharedModules.data.ground_truth import GT_SUPPORTED_DATASETS
+import sys
+sys.exit(0 if sys.argv[1] not in GT_SUPPORTED_DATASETS else 1)
+" "$1" 2>/dev/null || {
+        case "$1" in Mutagenicity|Benzene|BBBP|hERG|Alkane_Carbonyl|Fluoride_Carbonyl)
+            return 1 ;;
+        esac
+        return 0
+    }
+}
+
+# Phase 1 writes three base variants per dataset (no threshold).
+_phase1_variant_done() {
+    local ds=$1 variant=$2
+    [ -f "$VOCAB_ROOT/$ds/$variant/rules.json" ] && \
+    [ -f "$VOCAB_ROOT/$ds/$variant/vocab_meta.json" ]
+}
+
+_phase1_complete() {
+    local ds=$1
+    _phase1_variant_done "$ds" "$V_OLD" && \
+    _phase1_variant_done "$ds" "$V_RBRICS" && \
+    _phase1_variant_done "$ds" "$V_ALL"
+}
+
 _mutag_train_flags() {
     local ds=$1 fold=$2
     [ "$ds" != "mutag" ] && return 0
@@ -181,6 +224,18 @@ run_frag() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
+        if _skip_vocab_dataset "$ds"; then
+            echo "  [skip] $ds — regression (no vocab/rule mining)"
+            continue
+        fi
+        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
+            echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
+            continue
+        fi
+        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_variant_done "$ds" "$variant"; then
+            echo "  [skip] $ds / $variant — already exists"
+            continue
+        fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets  "$ds" \
@@ -203,6 +258,10 @@ run_frag_thresh() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4
     echo "  [$variant] method=$method (threshold from CHOSEN_THRESHOLD dict)"
     for ds in $DATASETS; do
+        if _skip_vocab_dataset "$ds"; then
+            echo "  [skip] $ds — regression (no vocab/rule mining)"
+            continue
+        fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets      "$ds" \
@@ -399,6 +458,10 @@ apply_gt() {
     local variant=$1 rule_idx=$2
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
     for ds in $DATASETS_CSV; do
+        if _skip_synthetic_gt_dataset "$ds"; then
+            echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
+            continue
+        fi
         for fold in $FOLDS; do
             python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
@@ -489,6 +552,8 @@ phase1() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 1 — Fragmentation (no threshold, 3 variants)"
+    echo "  Skips: regression datasets; datasets with all 3 variants done;"
+    echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
     echo "1a. rbrics_old  (legacy rbrics_only — ablation baseline)"
@@ -521,6 +586,10 @@ phase2() {
     echo "══════════════════════════════════════════════════════════"
 
     for ds in $DATASETS; do
+        if _skip_vocab_dataset "$ds"; then
+            echo "  [skip] $ds — regression (no coverage sweep)"
+            continue
+        fi
         for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
             echo "  [$ds / $variant]"
             python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
