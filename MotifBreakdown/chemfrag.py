@@ -40,7 +40,11 @@ def _strip(smi):
     m = Chem.MolFromSmiles(smi)
     if m is None: return re.sub(r'\[\d+\*\]', '[*]', smi)
     for a in m.GetAtoms():
-        if a.GetAtomicNum() == 0: a.SetIsotope(0); a.SetAtomMapNum(0)
+        if a.GetAtomicNum() == 0:
+            a.SetIsotope(0)
+        # Clear ALL atom-map numbers so chemically identical fragments from
+        # different parent atoms share one motif key (e.g. *[NH:4]* → *[NH]*).
+        a.SetAtomMapNum(0)
     return Chem.MolToSmiles(m, canonical=True, isomericSmiles=False)
 
 def frag_key(mol, atomset):

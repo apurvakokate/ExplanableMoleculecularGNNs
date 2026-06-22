@@ -328,7 +328,7 @@ def ambiguity(rule_motifs, proxy_lookup):
     return fl
 
 
-def build_dnf_rules(clauses, masks, profile, n, proxy_lookup=None):
+def build_dnf_rules(clauses, masks, profile, n, proxy_lookup=None, min_cov=MIN_COV):
     cm = [clause_mask(c,masks) for c in clauses]
     if proxy_lookup is None: proxy_lookup = build_proxy_lookup(profile)
     lc: List[frozenset] = []
@@ -342,7 +342,7 @@ def build_dnf_rules(clauses, masks, profile, n, proxy_lookup=None):
             for i in idx[1:]: final |= cm[i]
             if not final.any(): lc.append(is_); continue
             dist = label_dist(final,n)
-            if dist['pct1'] < MIN_COV: lc.append(is_); continue
+            if dist['pct1'] < min_cov: lc.append(is_); continue
             sc = [clauses[i] for i in idx]
             am = list(dict.fromkeys(m for c in sc for m in c['motifs']))
             tier.append({'n_clauses':nc,

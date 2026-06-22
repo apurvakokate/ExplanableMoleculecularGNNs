@@ -131,6 +131,9 @@ CHOSEN_THRESHOLD: dict = {
         'Lipophilicity':     0.003,
         'freesolv':          0.003,
         'tox21':             0.002,
+        'mutag':             0.002,
+        'ogbg-molhiv':       0.003,
+        'ogbg-molbace':      0.003,
     },
 
     # ── rBRICS + reBRICS (filtered) ──────────────────────────────────────────
@@ -148,6 +151,9 @@ CHOSEN_THRESHOLD: dict = {
         'Lipophilicity':     0.002,
         'freesolv':          0.002,
         'tox21':             0.001,
+        'mutag':             0.001,
+        'ogbg-molhiv':       0.002,
+        'ogbg-molbace':      0.002,
     },
 
     # ── rbrics_only / legacy (filtered) ──────────────────────────────────────
@@ -164,6 +170,9 @@ CHOSEN_THRESHOLD: dict = {
         'Lipophilicity':     0.005,
         'freesolv':          0.005,
         'tox21':             0.005,
+        'mutag':             0.002,
+        'ogbg-molhiv':       0.005,
+        'ogbg-molbace':      0.005,
     },
 }
 
@@ -698,46 +707,38 @@ def extract_rules(motif_list: List[str],
     rule candidates: a rule must reference only KEPT motifs, otherwise it would
     cite a motif the model treats as unknown. When threshold_motifs is None (no
     --apply_threshold) every motif is kept and eligible.
-
-    Input:
-        motif_list       — full vocabulary list (index = global motif_id)
-        motif_stats      — from build_vocab()
-        X                — binary matrix (molecules × motifs)
-        labels           — integer label array
-        rank_mode        — 'balanced' (default): sort by the structural
-                           balance × separation × (1-spurious) score, which
-                           targets a 50/50 synthetic split and penalises
-                           spurious/subsuming motifs. 'pct1': legacy sort by
-                           positive-coverage only.
-        threshold_motifs — set of kept (above-threshold) SMARTS, or None when no
-                           threshold is applied. Below-threshold motifs (→ -1 in
-                           the lookup) are excluded from rule candidates.
-    Output:
-        list of rule dicts. Sorted by the balance-aware score when
-        rank_mode='balanced', else by pct1 descending. Every rule carries the
-        score components (balance, separation, spurious, score) regardless of
-        mode, so the ranking can be inspected and RULE_INDEX overridden.
     """
     n = X.shape[0]
     Xd = X.toarray().astype(bool)
     fi = {s: i for i, s in enumerate(motif_list)}
 
-    # Rule candidates: above MIN_SUP, ≥ 2 atoms, not trivial, and KEPT (a
-    # below-threshold motif is -1 in the lookup, so a rule must never cite it).
-    rule_cands = [s for s in motif_list
-                  if motif_stats[s]['above_min_sup']
-                  and frag.atom_count(s) >= 2
-                  and s not in frag.TRIVIAL
-                  and (threshold_motifs is None or s in threshold_motifs)]
+    def _candidates(min_atoms: int) -> List[str]:
+        return [s for s in motif_list
+                if motif_stats[s]['above_min_sup']
+                and frag.atom_count(s) >= min_atoms
+                and s not in frag.TRIVIAL
+                and (threshold_motifs is None or s in threshold_motifs)]
+
+    rule_cands = _candidates(min_atoms=2)
     if not rule_cands:
+        rule_cands = _candidates(min_atoms=1)
+        if rule_cands:
+            print('    [warn] no ≥2-atom rule candidates; falling back to 1-atom motifs')
+    if not rule_cands:
+        print('    [warn] no rule candidates (need ≥1% support, non-trivial motifs)')
         return []
 
     all_masks = {s: Xd[:, fi[s]] for s in rule_cands}
     all_cands = [(fi[s], s, float(Xd[:, fi[s]].mean())) for s in rule_cands]
+    max_sup_pct = max(all_masks[s].mean() * 100 for s in rule_cands)
+    effective_min_cov = MIN_COV if max_sup_pct >= MIN_COV else max(1.0, max_sup_pct)
+
     top = [s for s in rule_cands
-           if all_masks[s].mean() * 100 >= MIN_COV][:TOP_N]
+           if all_masks[s].mean() * 100 >= effective_min_cov][:TOP_N]
     if not top:
-        return []
+        top = sorted(rule_cands, key=lambda s: -all_masks[s].mean())[:TOP_N]
+        print(f'    [warn] no motif ≥ {effective_min_cov:.1f}% cover; '
+              f'using top {len(top)} by support (max={max_sup_pct:.1f}%)')
 
     catalog = pipe.build_catalog()
     pipe.compute_alert_families(top, all_cands, catalog)
@@ -747,17 +748,13 @@ def extract_rules(motif_list: List[str],
     clauses = pipe.build_clauses(top, all_masks, prof, n)
     rules   = pipe.build_dnf_rules(
         sorted(clauses, key=lambda x: -x['n1'])[:30],
-        all_masks, prof, n, proxy)
+        all_masks, prof, n, proxy, min_cov=effective_min_cov)
 
-    # Per-molecule fragment lists (over the candidate motifs) for structural SNR.
     tv_frags = [[s for s in rule_cands if Xd[r, fi[s]]] for r in range(n)]
-
-    # Always attach the balance-aware score components so the ranking is
-    # inspectable; sort by the requested key.
     rules = pipe.score_dnf_rules(rules, all_masks, tv_frags, prof, sub_fams, n)
     if rank_mode == 'pct1':
         return sorted(rules, key=lambda x: -x['pct1'])
-    return rules   # already sorted by balance-aware score
+    return rules
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1379,6 +1376,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
               f"spurious={r0.get('spurious', '?')}  "
               f"score={r0.get('score', '?')}:")
         print(f"      {' ∨ '.join('('+' ∧ '.join(c['motifs'])+')'for c in r0['clauses'])}")
+    else:
+        print('    [warn] no rules extracted — check motif support / MIN_COV; '
+              'v4 vocabs need chemfrag._strip atom-map fix (re-run phase1)')
     print(f"    Rules: {len(rules)}")
     if bpe_history:
         print(f"    BPE: {len(bpe_history)} merges")
@@ -1576,8 +1576,13 @@ Examples:
     # shatter vocabs never overwrite standard-v4 vocabs.
     _shatter_suffix = '_shatter' if args.shatter else ''
 
+    from SharedModules.data.dataset_routing import REGRESSION_DATASETS
+
     all_metas = []
     for ds in args.datasets:
+        if ds in REGRESSION_DATASETS:
+            print(f"\n  [skip] {ds} — regression dataset (no vocab/rule mining)")
+            continue
         print(f"\n{'='*60}\n  {ds}\n{'='*60}")
         meta = run_dataset(ds, args.data_root, out_dir,
                            method=args.method,
