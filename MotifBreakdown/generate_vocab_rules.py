@@ -234,6 +234,40 @@ MIN_COV        = 5.0
 # ║ identically to the original pipeline.                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
+def _canonical_legacy_smarts(smarts: str) -> str:
+    """Canonical SMARTS for legacy fragment keys — strip atom-map numbers.
+
+    mutag CSV SMILES carry atom maps for graph-index alignment; uncut molecules
+    and a few _fob_tracked edge paths used to emit mapped keys like [C:1]...,
+    splitting support across chemically identical fragments.  v4 uses
+    chemfrag._strip(); legacy methods use this helper instead.
+    """
+    m = Chem.MolFromSmarts(smarts)
+    if m is None:
+        m = frag.to_mol(smarts)
+    if m is None:
+        m = Chem.MolFromSmiles(smarts)
+    if m is None:
+        return re.sub(r':\d+(?=\])', '', smarts)
+    rw = Chem.RWMol(m)
+    for a in rw.GetAtoms():
+        if a.GetAtomicNum() == 0:
+            a.SetIsotope(0)
+        a.SetAtomMapNum(0)
+    return frag.strip(Chem.MolToSmiles(
+        rw.GetMol(), canonical=True, isomericSmiles=False))
+
+
+def _canonical_legacy_smarts_from_mol(mol: Chem.Mol) -> str:
+    rw = Chem.RWMol(mol)
+    for a in rw.GetAtoms():
+        if a.GetAtomicNum() == 0:
+            a.SetIsotope(0)
+        a.SetAtomMapNum(0)
+    return frag.strip(Chem.MolToSmiles(
+        rw.GetMol(), canonical=True, isomericSmiles=False))
+
+
 def _fob_tracked(mol_mapped: Chem.Mol,
                  bond_indices: List[int]
                  ) -> List[Tuple[str, Set[int], Dict[int, int]]]:
@@ -253,8 +287,7 @@ def _fob_tracked(mol_mapped: Chem.Mol,
         idx_map = {a.GetIdx(): a.GetAtomMapNum() - 1
                    for a in mol_mapped.GetAtoms()
                    if a.GetAtomicNum() not in (0, 1) and a.GetAtomMapNum() > 0}
-        smi = frag.strip(Chem.MolToSmiles(mol_mapped, canonical=True,
-                                           isomericSmiles=False))
+        smi = _canonical_legacy_smarts_from_mol(mol_mapped)
         return [(smi, orig, idx_map)]
 
     try:
@@ -267,8 +300,7 @@ def _fob_tracked(mol_mapped: Chem.Mol,
         idx_map = {a.GetIdx(): a.GetAtomMapNum() - 1
                    for a in mol_mapped.GetAtoms()
                    if a.GetAtomicNum() not in (0, 1) and a.GetAtomMapNum() > 0}
-        smi = frag.strip(Chem.MolToSmiles(mol_mapped, canonical=True,
-                                           isomericSmiles=False))
+        smi = _canonical_legacy_smarts_from_mol(mol_mapped)
         return [(smi, orig, idx_map)]
 
     result = []
@@ -285,8 +317,7 @@ def _fob_tracked(mol_mapped: Chem.Mol,
             rw = Chem.RWMol(f)
             for a in rw.GetAtoms():
                 a.SetAtomMapNum(0)
-            fs = frag.strip(Chem.MolToSmiles(
-                rw.GetMol(), canonical=True, isomericSmiles=False))
+            fs = _canonical_legacy_smarts_from_mol(rw.GetMol())
             result.append((fs, orig_set, frag_idx_map))
 
     # A dummy-only fragment (orig_set empty) is already excluded by `if orig_set`
@@ -508,7 +539,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     if idx1:
         level1 = _fob_tracked(mol_mapped, sorted(idx1))
     else:
-        level1 = [(frag.strip(frag.canon(mol)), set(range(n)),
+        level1 = [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
                    {i: i for i in range(n)})]
 
     all_pieces: List[Tuple[str, Set[int]]] = [(s, o) for s, o, _ in level1]
@@ -551,9 +582,9 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     if missing and all_pieces:
         all_pieces[0] = (all_pieces[0][0], all_pieces[0][1] | missing)
     elif missing:
-        all_pieces = [(frag.strip(frag.canon(mol)), set(range(n)))]
+        all_pieces = [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)))]
 
-    return all_pieces
+    return [(_canonical_legacy_smarts(s), atoms) for s, atoms in all_pieces]
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
