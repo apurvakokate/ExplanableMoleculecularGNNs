@@ -23,6 +23,11 @@ Fragmentation engines (selected by `method` in run_dataset)
   discovery is delegated to the shared `brics_rbrics` module so the same
   chemistry is identified identically as in the v4 cascade.
 
+Supported CLI `--method` values: `rbrics_old`, `rbrics`, `brics`, `all`.
+There is no `rbrics_only` CLI method — pass-1 rBRICS chemistry lives in
+`_rbrics_pass1_tracked()` (used by `rbrics`) and molfragbpe5 (`cut_rbrics_only`,
+internal cascade registry only).
+
 Atom tracking (THE invariant)
 -----------------------------
 Fragment annotations are keyed by atom indices in `Chem.MolFromSmiles(orig_smi)`

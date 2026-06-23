@@ -23,8 +23,8 @@
 #
 # Three fragmentation variants:
 #   rbrics_old       — CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles)
-#   rbrics           — rBRICS + reBRICS, no fallback, no BPE
-#   all_fallback_bpe — full cascade, fallback, BPE
+#   rbrics           — rBRICS pass 1 + reBRICS, legacy SMARTS keys
+#   all_fallback_bpe — full v4 cascade, fallback, BPE
 # =============================================================================
 set -e
 
@@ -678,7 +678,7 @@ phase5_vanilla() {
 # PHASE 5b — MOSE-GNN
 #   Six configurations: all three filtered variants + all_fallback_bpe (no
 #   threshold) + all_fallback_bpe with GT relabelling.
-#   rbrics_old is an ablation — run with and without threshold.
+#   rbrics_old_filter uses the plot-path vocab with threshold applied.
 # =============================================================================
 phase5_mose() {
     _check_paths

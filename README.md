@@ -34,7 +34,7 @@ flowchart TB
     F --> G["Analysis<br/>aggregate, tables, plots"]
 ```
 
-1. **Fragmentation** — Cut each molecule with a chemistry cascade (rBRICS → BRICS → RECAP → Murcko), optionally falling back to structural cuts and a BPE-style merge. Produces a motif vocabulary plus per-atom→motif lookups.
+1. **Fragmentation** — Three experiment variants: **`rbrics_old`** (CreateMotifVocab plot path), **`rbrics`** (rBRICS + reBRICS), **`all_fallback_bpe`** (full chemistry cascade + structural fallback + BPE merge). Produces motif vocabularies and per-atom→motif lookups.
 2. **Threshold tuning** — Plot how vocabulary size trades off against atom coverage, then pick a support threshold.
 3. **Filtered vocab** — Regenerate the vocabulary applying that threshold.
 4. **Synthetic ground truth** — Auto-generate logical rules over motifs (e.g. "motif A AND NOT B → positive") and relabel the data, so explanation quality can be measured against a known answer.
@@ -174,7 +174,15 @@ python3 SharedModules/baselines/run_vanilla.py --dataset BBBP --fold 0 \
 
 ### Standalone vocabulary generation
 
+Supported `--method` values: `rbrics_old`, `rbrics`, `all` (use with `--variant` to name the output directory).
+
 ```bash
+# Plot replication (CreateMotifVocab path)
+python3 MotifBreakdown/generate_vocab_rules.py \
+  --datasets Mutagenicity --data_root $DATA_ROOT --out_dir $VOCAB_ROOT \
+  --method rbrics_old --variant rbrics_old --fold 0
+
+# Full cascade
 python3 MotifBreakdown/generate_vocab_rules.py \
   --datasets Mutagenicity --data_root $DATA_ROOT --out_dir $VOCAB_ROOT \
   --method all --fallback --bpe --variant all_fallback_bpe --fold 0

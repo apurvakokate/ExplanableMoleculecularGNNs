@@ -101,14 +101,14 @@ for ds in $DATASETS; do
   # 1b. rbrics  (rBRICS + reBRICS, clean chemistry)
   python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
     --datasets $ds --data_root $DATA_ROOT \
-    --out_dir $VOCAB_ROOT/$ds/rbrics \
-    --method rbrics --fold 0
+    --out_dir $VOCAB_ROOT \
+    --method rbrics --variant rbrics --fold 0
 
   # 1c. all+fallback+bpe  (maximum coverage)
   python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
     --datasets $ds --data_root $DATA_ROOT \
-    --out_dir $VOCAB_ROOT/$ds/all_fallback_bpe \
-    --method all --fallback --bpe --fold 0
+    --out_dir $VOCAB_ROOT \
+    --method all --fallback --bpe --variant all_fallback_bpe --fold 0
 
 done
 
@@ -128,7 +128,7 @@ coverage. Run this before deciding on a threshold.
 
 ```bash
 for ds in $DATASETS; do
-  for variant in rbrics all_fallback_bpe; do
+  for variant in rbrics_old rbrics all_fallback_bpe; do
     python3 $PROJECT/MotifBreakdown/coverage_vs_threshold.py \
       --dataset $ds \
       --vocab_root $VOCAB_ROOT \
@@ -218,12 +218,15 @@ controlled by `RULE_RANK` (default `balanced`):
 export RULE_RANK=balanced   # default; set to pct1 for legacy behaviour
 ```
 
-> **Variant note.** `rbrics` / `rbrics_old` (no fallback, no BPE) produce larger
-> fragments, so rule coverage often only *just* crosses 50% — that's expected
-> from the algorithm. `balanced` degrades gracefully here (a 40% rule still
-> scores `balance=0.8` and beats a 90% rule at `0.2`). `all_fallback_bpe` reaches
-> much higher coverage, so the balance/spurious penalties change the ranking
-> substantially versus `pct1` — inspect both if comparing variants.
+> **Variant note.** The three fragmentation variants are **`rbrics_old`** (CreateMotifVocab
+> plot replication: `BreakrBRICSBonds` + `ToSmiles` keys), **`rbrics`** (rBRICS pass 1
+> + reBRICS, legacy SMARTS keys), and **`all_fallback_bpe`** (full v4 cascade). There is
+> no separate CLI method named `rbrics_only`. `rbrics` / `rbrics_old` produce larger
+> fragments than `all_fallback_bpe`, so rule coverage often only *just* crosses 50% —
+> that's expected from the algorithm. `balanced` degrades gracefully here (a 40% rule still
+> scores `balance=0.8` and beats a 90% rule at `0.2`). `all_fallback_bpe` reaches much
+> higher coverage, so the balance/spurious penalties change the ranking substantially
+> versus `pct1` — inspect both if comparing variants.
 
 ### 4a. Inspect available rules (manual verification)
 
@@ -487,6 +490,7 @@ After all phases are complete you will have trained models on six configurations
 | `all_fallback_bpe_filter` | all+fb+bpe | yes | no | Filtered full vocab |
 | `all_fallback_bpe` + gt | all+fb+bpe | no | yes | Synthetic relabelling |
 | `rbrics_old` | CreateMotifVocab plot | no | no | Plot replication baseline |
+| `rbrics_old_filter` | CreateMotifVocab plot | yes | no | Thresholded plot-path vocab |
 
 ---
 

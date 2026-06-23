@@ -50,7 +50,7 @@ _REBRICS_DIFF_CANDIDATES = (
 )
 
 # Always check tracked output against molfragbpe5 on these (even when reBRICS
-# does not add extra cuts vs rbrics_only).
+# does not add extra cuts vs pass 1).
 _RBRICS_TRACKED_CORPUS = (
     'O=[N+]([O-])c1ccccc1',
     'CC(=O)Nc1ccc(O)cc1',
@@ -61,7 +61,7 @@ _RBRICS_TRACKED_CORPUS = (
 
 
 def _rebrics_diff_candidates():
-    """Yield SMILES to probe where cut_rbrics > cut_rbrics_only."""
+    """Yield SMILES to probe where cut_rbrics has more pieces than pass 1."""
     seen = set()
     for smi in _REBRICS_DIFF_CANDIDATES:
         if smi not in seen:
@@ -75,21 +75,21 @@ def _rebrics_diff_candidates():
 
 
 def _pick_rebrics_diff_case():
-    """Return (smi, n_rbrics_only, n_rbrics) for a mol where reBRICS adds cuts."""
+    """Return (smi, n_pass1, n_rbrics) for a mol where reBRICS adds cuts."""
     for smi in _rebrics_diff_candidates():
         frag._CACHE.clear()
         m = mol(smi)
         if m is None:
             continue
-        n_only = len(frag.cut_rbrics_only(m))
+        n_pass1 = len(frag.cut_rbrics_only(m))
         n_full = len(frag.cut_rbrics(m))
-        if n_full > n_only:
-            return smi, n_only, n_full
+        if n_full > n_pass1:
+            return smi, n_pass1, n_full
     return None, None, None
 
 
 def _rebrics_diff_probe_summary():
-    """Counts for skip messages when no reBRICS-only difference is found."""
+    """Pass-1 vs full rBRICS counts for skip messages."""
     rows = []
     for smi in _REBRICS_DIFF_CANDIDATES:
         frag._CACHE.clear()
@@ -201,10 +201,12 @@ class TestBuildCascade(unittest.TestCase):
         # build_cascade('all') must equal CHEMISTRY_CASCADE
         self.assertEqual(frag.build_cascade('all'), frag.CHEMISTRY_CASCADE)
 
-    def test_rbrics_only_has_one_method(self):
+    def test_molfrag_cascade_pass1_registry(self):
+        """molfragbpe5 keeps an internal 'rbrics_only' cascade key (not a CLI method)."""
         c = frag.build_cascade('rbrics_only')
         self.assertEqual(len(c), 1)
         self.assertEqual(c[0][0], 'rbrics_only')
+        self.assertIs(c[0][1], frag.cut_rbrics_only)
 
 
 # ─── cut functions ──────────────────────────────────────────────────────────
@@ -920,6 +922,11 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
+    def test_rbrics_only_not_a_tracked_method(self):
+        m = mol('CCO')
+        with self.assertRaises(ValueError):
+            gvr.fragment_molecule_tracked(m, 'CCO', False, 'rbrics_only')
+
     def test_rbrics_old_no_brics_bond_pair_fallback(self):
         """rbrics_old must not use BRICS.FindBRICSBonds bond-pair retry (pre-f84a45f)."""
         if not frag.RBRICS_OK:
@@ -988,10 +995,10 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         """Tracked rbrics matches cut_rbrics when reBRICS adds extra cuts."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
-        smi, _, n_full = _pick_rebrics_diff_case()
+        smi, n_pass1, n_full = _pick_rebrics_diff_case()
         if smi is None:
             self.skipTest(
-                "no SMILES where cut_rbrics > cut_rbrics_only on this rBRICS build; "
+                "no SMILES where cut_rbrics > pass 1 on this rBRICS build; "
                 "use test_rbrics_tracked_matches_molfragbpe5_corpus instead")
         m = mol(smi)
         frag._CACHE.clear()
@@ -1003,11 +1010,11 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         """reBRICS post-pass adds cuts vs pass 1 when molfragbpe5 does."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
-        smi, n_only, n_full = _pick_rebrics_diff_case()
+        smi, n_pass1, n_full = _pick_rebrics_diff_case()
         if smi is None:
             probe = ', '.join(f"{s}:{o}/{f}" for s, o, f in _rebrics_diff_probe_summary())
             self.skipTest(
-                "no SMILES where cut_rbrics > cut_rbrics_only "
+                "no SMILES where cut_rbrics > pass 1 "
                 f"(probed {probe}) — reBRICS may be inert on this build; "
                 "corpus alignment test still validates the tracked implementation")
         m = mol(smi)
@@ -1015,7 +1022,7 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         p_pass1 = _tracked_rbrics_pass1(smi)
         frag._CACHE.clear()
         p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
-        self.assertEqual(len(p_pass1), n_only, f"{smi}: tracked pass 1 mismatch")
+        self.assertEqual(len(p_pass1), n_pass1, f"{smi}: tracked pass 1 mismatch")
         self.assertEqual(len(p_full), n_full, f"{smi}: tracked rbrics mismatch")
         self.assertGreater(len(p_full), len(p_pass1),
                            f"{smi}: reBRICS should add cuts beyond pass 1")
@@ -1153,6 +1160,29 @@ class TestIntegration(unittest.TestCase):
 
     def test_method_rbrics(self):
         self._run('rbrics')
+
+    def test_method_rbrics_old(self):
+        """rbrics_old uses the plot path; plain molfragbpe5 has no matching method."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        frag._CACHE.clear()
+        mf_tracked = []
+        for smi in self.SMILES:
+            m = mol(smi)
+            mf_tracked.append(gvr.fragment_molecule_tracked(
+                m, smi, use_fallback=True, method='rbrics_old'))
+        n = len(self.LABELS)
+        ml, fid, stats = gvr.build_vocab(mf_tracked, self.LABELS)
+        lup = gvr.build_lookup(self.SMILES, mf_tracked, fid)
+        X = gvr.build_matrix(mf_tracked, fid, n)
+        for smi in self.SMILES:
+            m = mol(smi)
+            if m is None:
+                continue
+            self.assertEqual(len(lup[smi]), m.GetNumAtoms(),
+                             f"[rbrics_old] {smi}: lookup size mismatch")
+        self.assertEqual(X.shape[0], n)
+        self.assertEqual(X.shape[1], len(ml))
 
     def test_method_brics(self):
         self._run('brics')
