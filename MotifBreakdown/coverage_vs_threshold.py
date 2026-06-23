@@ -19,12 +19,13 @@ Matches the notebook (CreateMotifVocab) exactly:
                    mb_cutoff = int(thr * N_minority)
                    keep m if wt_count[minority][m] >= mb_cutoff
 
-  Node coverage (default graph_average): mean per-molecule fraction of atoms
-                 assigned to a kept motif — each graph weighted equally.
-                 Use --coverage_mode weighted_atoms to match the notebook /
-                 legacy global atom fraction (sum covered atoms / sum all atoms).
-                 The matrix weighted_count ratio is a separate quantity and is
-                 NOT what drives the notebook coverage curve.
+  Node coverage modes (--coverage_mode):
+    graph_average  — mean per-molecule atom fraction (default)
+    weighted_atoms — global covered atoms / all atoms (lookup)
+    matrix_ratio   — sum(weighted_count kept) / sum(all weighted_count);
+                     test uses n_mols_test the same way (legacy docstring)
+
+  Use --compare_coverage_modes to print graph / atoms / matrix_ratio side by side.
 
   Plot:          x = threshold % of N_trainval (bottom) + molecule count (top)
                  Panel 0: vocabulary size (linear)
@@ -130,8 +131,27 @@ def compute_node_coverage_atom_weighted(data_lookup, kept_motifs):
     return n_covered / n_total if n_total > 0 else 0.0
 
 
-def compute_coverage(mode, lookup_tv, lookup_test, kept_motifs):
+def compute_coverage_matrix_ratio(support, motif_post, cols):
+    """Legacy matrix support ratio from matrix_columns (not lookup atoms)."""
+    total = float(support.sum())
+    if total <= 0:
+        return 0.0, float('nan')
+    cov_tv = float(support[motif_post].sum()) / total
+    if 'n_mols_test' in cols.columns:
+        test_occ = cols['n_mols_test'].astype(float)
+        total_test = float(test_occ.sum())
+        cov_test = (float(test_occ[motif_post].sum()) / total_test
+                    if total_test > 0 else float('nan'))
+    else:
+        cov_test = float('nan')
+    return cov_tv, cov_test
+
+
+def compute_coverage(mode, lookup_tv, lookup_test, kept_motifs, *,
+                     support=None, motif_post=None, cols=None):
     """Dispatch coverage metrics by mode."""
+    if mode == 'matrix_ratio':
+        return compute_coverage_matrix_ratio(support, motif_post, cols)
     if mode == 'weighted_atoms':
         return (compute_node_coverage_atom_weighted(lookup_tv, kept_motifs),
                 compute_node_coverage_atom_weighted(lookup_test, kept_motifs))
@@ -139,15 +159,20 @@ def compute_coverage(mode, lookup_tv, lookup_test, kept_motifs):
             compute_node_coverage_graph_average(lookup_test, kept_motifs))
 
 
+def _mode_suffix(coverage_mode: str) -> str:
+    return '' if coverage_mode == 'graph_average' else f'_{coverage_mode}'
+
+
 # Back-compat alias
 compute_node_coverage = compute_node_coverage_graph_average
 
 def compute_sweep(vocab_root, dataset, variant, thresholds=None,
-                  coverage_mode=None):
+                  coverage_mode=None, compare_coverage_modes=False):
     mode = coverage_mode or DEFAULT_COVERAGE_MODE
-    cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(vocab_root, dataset, variant)
+    cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(
+        vocab_root, dataset, variant)
 
-    # ── Count signal: weighted_count (notebook: Σ 1/length per node-slot) ──
+    # ── Count signal: weighted_count (1.0 per train+val occurrence) ──
     if 'weighted_count' in cols.columns:
         support = cols['weighted_count']
     elif 'n_occurrences' in cols.columns:
@@ -194,9 +219,9 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None,
 
         kept_motifs = set(cols.loc[motif_post, 'motif_identity'])
         cov_tv, cov_test = compute_coverage(
-            mode, lookup_tv, lookup_test, kept_motifs)
+            mode, lookup_tv, lookup_test, kept_motifs,
+            support=support, motif_post=motif_post, cols=cols)
 
-        # Fraction of >=1% motifs kept
         if 'above_1pct' in cols.columns:
             a1   = cols['above_1pct'].astype(bool)
             n_a1 = int(a1.sum())
@@ -204,7 +229,7 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None,
         else:
             pck = float('nan')
 
-        rows.append({
+        row = {
             'threshold':        thr,
             'min_count':        global_cut,
             'mb_cut':           mb_cut,
@@ -217,16 +242,44 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None,
             'pct_common_kept':  round(pck, 4),
             'minority_class':   minority if minority is not None else -1,
             'n_trainval':       n_tv,
-        })
+            'coverage_mode':    mode,
+        }
+        if compare_coverage_modes:
+            g_tv, g_te = compute_coverage(
+                'graph_average', lookup_tv, lookup_test, kept_motifs)
+            a_tv, a_te = compute_coverage(
+                'weighted_atoms', lookup_tv, lookup_test, kept_motifs)
+            m_tv, m_te = compute_coverage_matrix_ratio(support, motif_post, cols)
+            row['coverage_tv_graph'] = round(g_tv, 4)
+            row['coverage_test_graph'] = round(g_te, 4) if not np.isnan(g_te) else float('nan')
+            row['coverage_tv_atoms'] = round(a_tv, 4)
+            row['coverage_test_atoms'] = round(a_te, 4) if not np.isnan(a_te) else float('nan')
+            row['coverage_tv_matrix'] = round(m_tv, 4)
+            row['coverage_test_matrix'] = round(m_te, 4) if not np.isnan(m_te) else float('nan')
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
 
-def print_table(df, dataset, variant):
+def print_table(df, dataset, variant, compare_coverage_modes=False):
     n_tv  = int(df['n_trainval'].iloc[0])
     minor = int(df['minority_class'].iloc[0])
+    mode  = df['coverage_mode'].iloc[0] if 'coverage_mode' in df.columns else 'graph_average'
     minor_str = f'  minority=class{minor}' if minor >= 0 else '  balanced'
-    print(f"\n  {dataset} / {variant}  (N_trainval={n_tv:,}{minor_str})")
+    print(f"\n  {dataset} / {variant}  (N_trainval={n_tv:,}{minor_str})  "
+          f"[coverage_mode={mode}]")
+
+    if compare_coverage_modes and 'coverage_tv_graph' in df.columns:
+        print(f"  {'thr%':>8}  {'vocab':>6}  {'graph%':>8}  {'atoms%':>8}  {'matrix%':>8}")
+        print(f"  {'-'*52}")
+        for _, r in df.iterrows():
+            print(f"  {r['threshold']*100:7.3f}%  {int(r['vocab_size']):6d}  "
+                  f"{r['coverage_tv_graph']*100:7.1f}%  "
+                  f"{r['coverage_tv_atoms']*100:7.1f}%  "
+                  f"{r['coverage_tv_matrix']*100:7.1f}%")
+        print()
+        return
+
     print(f"  {'thr%':>8}  {'N_cut':>6}  {'vocab':>6}  {'rescued':>7}  "
           f"{'cov_tv%':>8}  {'cov_test%':>9}  {'common%':>8}")
     print(f"  {'-'*65}")
@@ -282,8 +335,9 @@ def plot_sweep(df, dataset, variant, out_path):
         top.set_xlabel(f'Min support count  (N_trainval={n_tv:,})', fontsize=9)
 
     minor_str = f'minority=class{minor}' if minor >= 0 else 'balanced'
+    cov_mode = df['coverage_mode'].iloc[0] if 'coverage_mode' in df.columns else 'graph_average'
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    fig.suptitle(f'{dataset} / {variant}  [{minor_str}]', fontsize=13)
+    fig.suptitle(f'{dataset} / {variant}  [{minor_str}]  cov={cov_mode}', fontsize=13)
 
     # Panel 0: vocabulary size (linear)
     ax0 = axes[0]
@@ -314,8 +368,13 @@ def plot_sweep(df, dataset, variant, out_path):
     ax1.axhline(80, color='orange', ls='--', alpha=0.7, label='80%')
     ax1.axhline(90, color='red',    ls='--', alpha=0.7, label='90%')
     ax1.legend(fontsize=8)
-    ax1.set_ylabel('Node coverage (%)')
-    ax1.set_title('Node coverage  (% atoms in known motifs)')
+    ax1.set_ylabel('Coverage (%)')
+    cov_titles = {
+        'graph_average': 'Node coverage (% atoms in kept motifs, per-graph mean)',
+        'weighted_atoms': 'Atom coverage (global atom fraction, lookup)',
+        'matrix_ratio': 'Matrix ratio (kept weighted_count / total)',
+    }
+    ax1.set_title(cov_titles.get(cov_mode, 'Coverage (train+val)'))
     ax1.grid(True, alpha=0.3)
     _fmt_x(ax1)
 
@@ -456,7 +515,7 @@ def write_combined_tables(sweeps: dict, variant: str, out_dir: Path,
         parts.append(part)
 
     long_df = pd.concat(parts, ignore_index=True)
-    long_path = out_dir / f'all_datasets_{variant}_coverage.csv'
+    long_path = out_dir / f'all_datasets_{variant}{_mode_suffix(coverage_mode)}_coverage.csv'
     long_df.to_csv(long_path, index=False)
     print(f"  Saved combined table: {long_path}")
 
@@ -475,7 +534,7 @@ def write_combined_tables(sweeps: dict, variant: str, out_dir: Path,
             wide = (wide * scale).round(1)
         else:
             wide = wide.round(0)
-        wide_path = out_dir / f'all_datasets_{variant}_{suffix}.csv'
+        wide_path = out_dir / f'all_datasets_{variant}{_mode_suffix(coverage_mode)}_{suffix}.csv'
         wide.reset_index().to_csv(wide_path, index=False)
         print(f"  Saved combined table: {wide_path}")
 
@@ -507,14 +566,19 @@ def _print_combined_summary(long_df: pd.DataFrame, variant: str,
     print()
 
 
-def _run_single(vocab_root, dataset, variant, out_dir, thresholds, coverage_mode=None):
+def _run_single(vocab_root, dataset, variant, out_dir, thresholds,
+                coverage_mode=None, compare_coverage_modes=False):
     mode = coverage_mode or DEFAULT_COVERAGE_MODE
-    df = compute_sweep(vocab_root, dataset, variant, thresholds, coverage_mode=mode)
-    print(f"  [coverage_mode={mode}]")
-    print_table(df, dataset, variant)
+    df = compute_sweep(vocab_root, dataset, variant, thresholds,
+                       coverage_mode=mode,
+                       compare_coverage_modes=compare_coverage_modes)
+    print_table(df, dataset, variant, compare_coverage_modes=compare_coverage_modes)
+    tag = _mode_suffix(mode)
+    cmp_tag = '_compare' if compare_coverage_modes else ''
     out_dir = Path(out_dir)
-    plot_sweep(df, dataset, variant, out_dir / f'{dataset}_{variant}_coverage.png')
-    csv = out_dir / f'{dataset}_{variant}_coverage.csv'
+    plot_sweep(df, dataset, variant,
+               out_dir / f'{dataset}_{variant}{tag}{cmp_tag}_coverage.png')
+    csv = out_dir / f'{dataset}_{variant}{tag}{cmp_tag}_coverage.csv'
     csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv, index=False)
     print(f"  CSV:  {csv}")
@@ -534,14 +598,18 @@ def main():
     ap.add_argument('--combine_plot', action='store_true',
                     help='Save one PNG overlaying all --datasets on the same axes')
     ap.add_argument('--coverage_mode',
-                    choices=('weighted_atoms', 'graph_average'),
+                    choices=('weighted_atoms', 'graph_average', 'matrix_ratio'),
                     default=None,
-                    help='Node coverage: graph_average (default, per-molecule mean) '
-                         'or weighted_atoms (global atom fraction, notebook-style)')
+                    help='Coverage: graph_average (default), weighted_atoms (lookup), '
+                         'or matrix_ratio (sum weighted_count kept / total)')
+    ap.add_argument('--compare_coverage_modes', action='store_true',
+                    help='Print/plot with graph, atoms, and matrix_ratio columns')
     args = ap.parse_args()
 
     coverage_mode = args.coverage_mode or DEFAULT_COVERAGE_MODE
     out_dir = Path(args.out_dir)
+    tag = _mode_suffix(coverage_mode)
+    cmp_tag = '_compare' if args.compare_coverage_modes else ''
 
     if args.datasets:
         sweeps = {}
@@ -553,13 +621,14 @@ def main():
             try:
                 sweeps[ds] = _run_single(args.vocab_root, ds, args.variant,
                                          args.out_dir, args.thresholds,
-                                         coverage_mode=coverage_mode)
+                                         coverage_mode=coverage_mode,
+                                         compare_coverage_modes=args.compare_coverage_modes)
             except FileNotFoundError as e:
                 print(f"  [skip] {ds}: {e}", file=sys.stderr)
         if args.combine_plot and sweeps:
             plot_combined_sweep(
                 sweeps, args.variant,
-                out_dir / f'all_datasets_{args.variant}_coverage.png')
+                out_dir / f'all_datasets_{args.variant}{tag}{cmp_tag}_coverage.png')
             write_combined_tables(sweeps, args.variant, out_dir, coverage_mode)
         elif args.combine_plot:
             print("  [warn] --combine_plot: no datasets had vocab output")
@@ -570,7 +639,9 @@ def main():
 
     try:
         _run_single(args.vocab_root, args.dataset, args.variant,
-                    args.out_dir, args.thresholds, coverage_mode=coverage_mode)
+                    args.out_dir, args.thresholds,
+                    coverage_mode=coverage_mode,
+                    compare_coverage_modes=args.compare_coverage_modes)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
