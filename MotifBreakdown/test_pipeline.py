@@ -127,6 +127,13 @@ class TestStrip(unittest.TestCase):
     def test_already_normalised(self):
         self.assertEqual(frag.strip('[*]c1ccccc1'), '[*]c1ccccc1')
 
+    def test_preserve_typed_dummies(self):
+        frag.set_normalize_dummy_wildcards(False)
+        try:
+            self.assertEqual(frag.strip('[16*]CC'), '[16*]CC')
+        finally:
+            frag.set_normalize_dummy_wildcards(True)
+
 
 class TestAtomCount(unittest.TestCase):
     def test_benzene(self):
@@ -973,7 +980,12 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
                            "rbrics_old should native-BRICS fallback when no rBRICS bonds")
 
     def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
-        """Tracked rbrics pass 1 / full rbrics match molfragbpe5 on a fixed corpus."""
+        """Tracked rbrics pass 1 / full rbrics vs molfragbpe5 (count sanity check).
+
+        Pass 1 is aligned with cut_rbrics_only (FOB). Full rbrics is compared to
+        cut_rbrics (BreakrBRICSBonds + reBRICS) — implementations differ; counts
+        should match on this corpus but are not guaranteed byte-identical.
+        """
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         for smi in _RBRICS_TRACKED_CORPUS:

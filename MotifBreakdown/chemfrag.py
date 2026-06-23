@@ -36,11 +36,23 @@ def canon_mol(s):
         pass
     return Chem.MolToSmiles(m, canonical=True, isomericSmiles=False)
 
+_NORMALIZE_DUMMY_WILDCARDS = True
+
+
+def set_normalize_dummy_wildcards(v: bool) -> None:
+    """Match molfragbpe5.strip / generate_vocab_rules --preserve_typed_dummies."""
+    global _NORMALIZE_DUMMY_WILDCARDS
+    _NORMALIZE_DUMMY_WILDCARDS = v
+
+
 def _strip(smi):
     m = Chem.MolFromSmiles(smi)
-    if m is None: return re.sub(r'\[\d+\*\]', '[*]', smi)
+    if m is None:
+        if _NORMALIZE_DUMMY_WILDCARDS:
+            return re.sub(r'\[\d+\*\]', '[*]', smi)
+        return smi
     for a in m.GetAtoms():
-        if a.GetAtomicNum() == 0:
+        if a.GetAtomicNum() == 0 and _NORMALIZE_DUMMY_WILDCARDS:
             a.SetIsotope(0)
         # Clear ALL atom-map numbers so chemically identical fragments from
         # different parent atoms share one motif key (e.g. *[NH:4]* → *[NH]*).

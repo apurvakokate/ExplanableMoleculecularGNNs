@@ -116,6 +116,18 @@ done
 bash run_experiments.sh phase1
 ```
 
+Optional ablation — keep typed dummies `[16*]` / `[4*]` as distinct motif keys
+(instead of collapsing to `[*]`). Applies to `rbrics`, `brics`, and
+`all_fallback_bpe` only; `rbrics_old` plot path is unchanged. Appends
+`_typed_dummies` to the variant directory name:
+
+```bash
+python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
+  --datasets Mutagenicity --data_root $DATA_ROOT --out_dir $VOCAB_ROOT \
+  --method rbrics --variant rbrics --preserve_typed_dummies --fold 0
+# → $VOCAB_ROOT/Mutagenicity/rbrics_typed_dummies/
+```
+
 **Outputs** per dataset/variant: `vocab.pkl`, `matrix.pkl`, `matrix_columns.csv`,
 `meta.json`, `rules.json`, `vocab_meta.json`, `bpe_*.json`
 

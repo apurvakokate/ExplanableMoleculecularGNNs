@@ -28,6 +28,10 @@ There is no `rbrics_only` CLI method — pass-1 rBRICS chemistry lives in
 `_rbrics_pass1_tracked()` (used by `rbrics`) and molfragbpe5 (`cut_rbrics_only`,
 internal cascade registry only).
 
+`--preserve_typed_dummies` keeps [16*]/[4*] attachment types as distinct motif
+keys (default: normalize all dummies to [*]). Applies to rbrics/brics/all — not
+rbrics_old (plot path uses MolToSmiles keys directly).
+
 Atom tracking (THE invariant)
 -----------------------------
 Fragment annotations are keyed by atom indices in `Chem.MolFromSmiles(orig_smi)`
@@ -166,8 +170,9 @@ CHOSEN_THRESHOLD: dict = {
     },
 
     # ── rbrics_old plot path (filtered) ──────────────────────────────────────
-    # Virtually identical to rbrics in practice (reBRICS rarely fires on these
-    # datasets).  Coverage curves match rbrics to 3 decimal places.
+    # CreateMotifVocab replication path (BreakrBRICSBonds + ToSmiles keys).
+    # Thresholds come from the rbrics_old coverage elbow — NOT interchangeable
+    # with rbrics_filter (different breaker, keys, and motif support counts).
     'rbrics_old_filter': {
         'Mutagenicity':      0.002,   # ← never ≥80%
         'Benzene':           0.005,   # ← never ≥80%
@@ -249,6 +254,9 @@ def _canonical_legacy_smarts(smarts: str) -> str:
     and a few _fob_tracked edge paths used to emit mapped keys like [C:1]...,
     splitting support across chemically identical fragments.  v4 uses
     chemfrag._strip(); legacy methods use this helper instead.
+
+    When molfragbpe5.normalize_dummy_wildcards() is False (--preserve_typed_dummies),
+    typed dummies ([16*] vs [4*]) are kept distinct in the motif key.
     """
     m = Chem.MolFromSmarts(smarts)
     if m is None:
@@ -256,24 +264,25 @@ def _canonical_legacy_smarts(smarts: str) -> str:
     if m is None:
         m = Chem.MolFromSmiles(smarts)
     if m is None:
-        return re.sub(r':\d+(?=\])', '', smarts)
+        s = re.sub(r':\d+(?=\])', '', smarts)
+        return frag.strip(s) if frag.normalize_dummy_wildcards() else s
     rw = Chem.RWMol(m)
     for a in rw.GetAtoms():
-        if a.GetAtomicNum() == 0:
+        if a.GetAtomicNum() == 0 and frag.normalize_dummy_wildcards():
             a.SetIsotope(0)
         a.SetAtomMapNum(0)
-    return frag.strip(Chem.MolToSmiles(
-        rw.GetMol(), canonical=True, isomericSmiles=False))
+    smi = Chem.MolToSmiles(rw.GetMol(), canonical=True, isomericSmiles=False)
+    return frag.strip(smi) if frag.normalize_dummy_wildcards() else smi
 
 
 def _canonical_legacy_smarts_from_mol(mol: Chem.Mol) -> str:
     rw = Chem.RWMol(mol)
     for a in rw.GetAtoms():
-        if a.GetAtomicNum() == 0:
+        if a.GetAtomicNum() == 0 and frag.normalize_dummy_wildcards():
             a.SetIsotope(0)
         a.SetAtomMapNum(0)
-    return frag.strip(Chem.MolToSmiles(
-        rw.GetMol(), canonical=True, isomericSmiles=False))
+    smi = Chem.MolToSmiles(rw.GetMol(), canonical=True, isomericSmiles=False)
+    return frag.strip(smi) if frag.normalize_dummy_wildcards() else smi
 
 
 def _fob_tracked(mol_mapped: Chem.Mol,
@@ -727,8 +736,9 @@ def fragment_molecule_tracked(mol: Chem.Mol,
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ END LEGACY ATOM-TRACKED FRAGMENTATION (DISABLED).                        ║
-# ║ run_dataset() uses chemfrag_v4_adapter.fragment_tracked_v4 instead.      ║
+# ║ END LEGACY ATOM-TRACKED FRAGMENTATION.                                   ║
+# ║ Used by run_dataset() for method in {rbrics, rbrics_old, brics}; v4     ║
+# ║ (method='all') uses chemfrag_v4_adapter.fragment_tracked_v4 instead.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 
@@ -767,10 +777,7 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
         seen: Set[str] = set()
         is_tv = (groups is None) or (groups[i] in ('training', 'valid'))
         for smarts, atom_set in mol_frags:
-            # Per node-slot 1/length weighting nets to 1.0 per occurrence, so
-            # weighted_count == trainval occurrence count. The threshold filter
-            # (run_dataset) and coverage_vs_threshold.py both threshold on this
-            # same 1.0-per-occurrence signal — keep them in sync.
+            # Flat +1.0 per fragment occurrence in train+val (see coverage_vs_threshold).
             w = 1.0
             raw[smarts]['n_occurrences'] += 1
             if is_tv:
@@ -1234,7 +1241,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 variant_override: Optional[str] = None,
                 variant_suffix: str = '',
                 shatter: bool = True,
-                rule_rank: str = 'balanced'):
+                rule_rank: str = 'balanced',
+                preserve_typed_dummies: bool = False):
     """Run the full pipeline for one dataset with given settings.
 
     Args:
@@ -1259,6 +1267,10 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     else:
         variant = f"{method}{'_fallback' if use_fallback else ''}{'_bpe' if use_bpe else ''}{'_filter' if apply_threshold else ''}{variant_suffix}"
 
+    frag.set_normalize_dummy_wildcards(not preserve_typed_dummies)
+    import chemfrag as _chemfrag
+    _chemfrag.set_normalize_dummy_wildcards(not preserve_typed_dummies)
+
     t0 = time.time()
     is_regression = TASK_TYPE.get(dataset) == 'Regression'
     smdf = _load_csv(data_root, dataset, fold)
@@ -1282,6 +1294,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             resolved_pct = get_chosen_threshold(variant, dataset)
 
     print(f"\n  method={method}  fallback={use_fallback}  bpe={use_bpe}"
+          f"  preserve_typed_dummies={preserve_typed_dummies}"
           f"  threshold={'off' if not apply_threshold else f'{resolved_pct*100:.3f}%'}"
           f"  → {variant}")
 
@@ -1329,11 +1342,10 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         if _legacy_method == 'rbrics_old' and (not RBRICS_OK or BreakrBRICSBonds is None):
             raise RuntimeError(
                 "rbrics_old requires rBRICS_public.py in MotifBreakdown/")
-        if ((method in ('rbrics', 'rbrics_old') or variant.startswith('rbrics_old'))
-                and not _BR.RBRICS_OK):
-            print("    [warn] rBRICS_public not available — rbrics/rbrics_old leave "
-                  "molecules unsplit (no BRICS fallback). Install rBRICS and "
-                  "re-run phase1.")
+        if method == 'rbrics' and not _BR.RBRICS_OK:
+            print("    [warn] rBRICS_public not available — rbrics leaves "
+                  "molecules unsplit on pass 1 (no reBRICS). Install rBRICS "
+                  "and re-run phase1.")
         # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
         # NOTE: the legacy prevalence-BPE merge is intentionally DISABLED. The
         # plain (untracked) fragmentation that fed `frag.bpe_merge`, and the BPE
@@ -1471,10 +1483,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         # 100x-too-small cutoff that made --apply_threshold a near no-op).
         global_cut  = int(resolved_pct * N_tv)
 
-        # Support signal = trainval occurrence count (1.0 per occurrence). This
-        # is exactly the `weighted_count` semantics build_vocab stores and the
-        # coverage_vs_threshold sweep thresholds on (per node-slot 1/length nets
-        # to 1.0 per occurrence), so the elbow plot and the applied filter agree.
+        # Support signal = trainval occurrence count (1.0 per fragment occurrence).
+        # Same semantics as build_vocab weighted_count and coverage_vs_threshold.py.
         from collections import Counter as _Counter
         mol_counts  = _Counter()
         wt_counts_0 = _Counter()
@@ -1728,6 +1738,11 @@ Examples:
                         'merge a finer floor. Measured ~20%% smaller vocab and '
                         'equal-or-better env-consistency. Variant name gets a '
                         '"_shatter" suffix so it does not collide with standard v4.')
+    p.add_argument('--preserve_typed_dummies', action='store_true',
+                   help='Keep typed attachment points ([16*], [4*], …) as distinct '
+                        'motif keys instead of normalizing all dummies to [*]. '
+                        'Applies to rbrics, brics, and all/v4 — not rbrics_old '
+                        '(plot path). Appends "_typed_dummies" to the variant name.')
     p.add_argument('--min_atoms', type=int, default=MIN_FRAG_ATOMS,
                    help=f'Min atoms for BPE fragment to stand alone (default {MIN_FRAG_ATOMS})')
     p.add_argument('--max_diam',  type=int, default=GNN_LAYERS,
@@ -1767,6 +1782,7 @@ Examples:
     # state into each other. The output variant name gets a distinct suffix so
     # shatter vocabs never overwrite standard-v4 vocabs.
     _shatter_suffix = '_shatter' if args.shatter else ''
+    _dummy_suffix = '_typed_dummies' if args.preserve_typed_dummies else ''
 
     all_metas = []
     for ds in args.datasets:
@@ -1783,9 +1799,10 @@ Examples:
                            apply_threshold=args.apply_threshold,
                            threshold_pct=args.threshold_pct,
                            variant_override=args.variant,
-                           variant_suffix=_shatter_suffix,
+                           variant_suffix=_shatter_suffix + _dummy_suffix,
                            shatter=bool(args.shatter),
-                           rule_rank=args.rule_rank)
+                           rule_rank=args.rule_rank,
+                           preserve_typed_dummies=args.preserve_typed_dummies)
         meta['dataset'] = ds
         all_metas.append(meta)
 

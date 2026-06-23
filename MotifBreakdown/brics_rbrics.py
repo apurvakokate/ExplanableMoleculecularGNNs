@@ -59,14 +59,13 @@ def rebrics_bonds(mol: Chem.Mol) -> List[Tuple[int, int]]:
 
 
 def rbrics_full_bonds(mol: Chem.Mol) -> List[Tuple[int, int]]:
-    """The COMPLETE rBRICS algorithm: rBRICS environment bonds
-    (``FindrBRICSBonds``) PLUS reBRICS long-aliphatic-chain bonds
-    (``FindreBRICSBonds``).
+    """Union of rBRICS environment bonds and reBRICS chain bonds on one mol.
 
-    This is the single shared definition of "rBRICS" used by BOTH the legacy
-    engine (``method='rbrics'``) and the v4 cascade's rBRICS stage, so the same
-    algorithm fragments identically in both. (Use :func:`rbrics_bonds` for the
-    environment-only pass (``cut_rbrics_only`` / pass 1 of ``method='rbrics'``.)
+    ``FindrBRICSBonds`` plus ``FindreBRICSBonds`` on the **parent** molecule.
+    Used by the v4 cascade's single-stage rBRICS partition — NOT by the legacy
+    tracked ``method='rbrics'`` path in generate_vocab_rules.py, which uses
+    pass-1 ``FindrBRICSBonds`` only, then ``_rebrics_pass_tracked`` on each
+    fragment (matches molfragbpe5.cut_rbrics intent, not this union-on-parent).
 
     Duplicate pairs across the two finders are harmless — callers dedup via
     :func:`nonring_bond_indices` (a set of bond indices). [] if rBRICS absent.

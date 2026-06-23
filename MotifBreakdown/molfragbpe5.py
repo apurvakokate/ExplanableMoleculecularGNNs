@@ -109,11 +109,29 @@ RECAP_SPECS: List[Tuple] = [s for s in [
 # UTILITIES
 # ─────────────────────────────────────────────────────────────────────────────
 
+# When True (default), typed dummies ([16*], [4*]) collapse to [*] in motif keys.
+# Set False via set_normalize_dummy_wildcards(False) / --preserve_typed_dummies
+# in generate_vocab_rules.py to keep attachment-point types distinct.
+_NORMALIZE_DUMMY_WILDCARDS = True
+
+
+def normalize_dummy_wildcards() -> bool:
+    return _NORMALIZE_DUMMY_WILDCARDS
+
+
+def set_normalize_dummy_wildcards(v: bool) -> None:
+    global _NORMALIZE_DUMMY_WILDCARDS
+    _NORMALIZE_DUMMY_WILDCARDS = v
+
+
 def strip(s: str) -> str:
-    """Normalise all wildcard formats to [*].
+    """Normalise wildcard formats to [*] when normalize_dummy_wildcards() is True.
+
     Input:  any SMARTS/SMILES string
-    Output: same string with [16*],[4*],* → [*]
+    Output: same string with [16*],[4*],* → [*] (or unchanged when preserving types)
     """
+    if not _NORMALIZE_DUMMY_WILDCARDS:
+        return s
     s = re.sub(r'\[\d+\*\]', '[*]', s)
     s = re.sub(r'(?<!\[)\*',  '[*]', s)
     return s
@@ -278,15 +296,20 @@ def _fob(mol: Chem.Mol, bond_idx: List[int]) -> List[str]:
 
 
 def cut_rbrics(mol: Chem.Mol) -> List[str]:
-    """rBRICS: FindrBRICSBonds followed by reBRICS post-processing.
+    """rBRICS: FindrBRICSBonds + BreakrBRICSBonds + reBRICS post-processing.
 
-    This is the CORRECT and COMPLETE rBRICS usage as documented:
-      1. FindrBRICSBonds  — finds all 16+ BRICS bond environments
-      2. BreakrBRICSBonds — breaks those bonds
-      3. reBRICS          — recursively breaks any fragment containing a
-                            CCCCCC chain (long aliphatic chains only)
+    Plain (untracked) path used by molfragbpe5 cascades:
+      1. FindrBRICSBonds  — environment bonds
+      2. BreakrBRICSBonds — break (same breaker as rbrics_old / plot path)
+      3. reBRICS          — further split fragments with CCCCCC chains
 
-    Output uses [*] normalised SMARTS via strip().
+    Legacy **tracked** ``method='rbrics'`` in generate_vocab_rules.py uses a
+    different implementation: pass-1 FragmentOnBonds (_rbrics_pass1_tracked)
+    plus _rebrics_pass_tracked on each fragment. Bond sets usually agree; piece
+    boundaries and motif keys can differ slightly. Tests compare fragment counts
+    as a sanity check, not byte-identical outputs.
+
+    Output uses [*] normalised SMARTS via strip() unless --preserve_typed_dummies.
     Input:  RDKit Mol
     Output: list of fragment SMARTS, or [] if no eligible bonds
     """
@@ -617,12 +640,8 @@ def fragment_molecule(mol: Chem.Mol, hier: Hierarchy,
         break   # first method that fires wins; stop trying others
 
     if not all_leaves:
-        if method == 'rbrics_only':
-            # Old behaviour: uncut molecules stored as plain canonical SMILES, no wildcards
-            frag_smi = mol_smi
-        else:
-            # New behaviour: identity fragment with [*] attachment points
-            frag_smi = f'[*]{mol_smi}[*]' if '[*]' not in mol_smi else mol_smi
+        # Identity leaf when no chemistry cut fired ([*] caps for attachment).
+        frag_smi = f'[*]{mol_smi}[*]' if '[*]' not in mol_smi else mol_smi
         hier.touch(frag_smi, mol_smi, depth=1, method='identity')
         hier.nodes[frag_smi].support += 1
         hier.nodes[mol_smi].children.add(frag_smi)

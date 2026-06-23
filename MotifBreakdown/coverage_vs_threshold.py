@@ -3,10 +3,9 @@
 
 Matches the notebook (CreateMotifVocab) exactly:
 
-  Count signal:  weighted_count = sum of (1/motif_length) per node-slot, which
-                 nets to 1.0 per occurrence — i.e. a plain train+val occurrence
-                 count, regardless of motif size. This is the SAME signal the
-                 vocab filter (generate_vocab_rules.run_dataset) thresholds on.
+  Count signal:  weighted_count — flat +1.0 per fragment occurrence in
+                 train+val (same as build_vocab in generate_vocab_rules.py).
+                 Cutoff: int(thr * N_trainval).
 
   Global cutoff: int(thr * N_trainval)  where `thr` is the fraction in
                  CHOSEN_THRESHOLD (e.g. 0.002 = 0.2%) and N_trainval is the
@@ -118,7 +117,7 @@ def compute_node_coverage(data_lookup, kept_motifs):
 def compute_sweep(vocab_root, dataset, variant, thresholds=None):
     cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(vocab_root, dataset, variant)
 
-    # ── Count signal: weighted_count (notebook: Σ 1/length per node-slot) ──
+    # ── Count signal: weighted_count (flat +1.0 per fragment occurrence) ──
     if 'weighted_count' in cols.columns:
         support = cols['weighted_count']
     elif 'n_occurrences' in cols.columns:
