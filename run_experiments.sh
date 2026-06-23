@@ -22,7 +22,7 @@
 #   collect          print results table
 #
 # Three fragmentation variants:
-#   rbrics_old       — rbrics_only (legacy DomainDrivenGlobalExpl, ablation)
+#   rbrics_old       — rbrics_only + FragmentOnBRICSBonds fallback (~18% mols)
 #   rbrics           — rBRICS + reBRICS, no fallback, no BPE
 #   all_fallback_bpe — full cascade, fallback, BPE
 # =============================================================================
@@ -542,7 +542,7 @@ phase1() {
     echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
-    echo "1a. rbrics_old  (legacy rbrics_only — ablation baseline)"
+    echo "1a. rbrics_old  (rBRICS + native BRICS fallback on no rBRICS bonds)"
     run_frag rbrics_only 0 0 "$V_OLD"
 
     echo "1b. rbrics  (rBRICS + reBRICS, no fallback, no BPE)"

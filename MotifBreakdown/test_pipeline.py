@@ -915,8 +915,8 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
-    def test_rbrics_old_no_brics_fallback(self):
-        """rbrics_old must use FindrBRICSBonds only — never FindBRICSBonds."""
+    def test_rbrics_old_no_brics_bond_pair_fallback(self):
+        """rbrics_old must not use BRICS.FindBRICSBonds bond-pair retry (pre-f84a45f)."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         import unittest.mock as mock
@@ -932,7 +932,22 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
 
         with mock.patch.object(BR, 'brics_bonds', side_effect=_spy):
             gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-        self.assertEqual(calls, [], "rbrics_old must not fall back to FindBRICSBonds")
+        self.assertEqual(calls, [], "rbrics_old must not call BRICS.FindBRICSBonds pairs")
+
+    def test_rbrics_old_native_brics_fallback_when_no_rbrics_bonds(self):
+        """rbrics_old uses FragmentOnBRICSBonds when FindrBRICSBonds finds nothing."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        import unittest.mock as mock
+        import brics_rbrics as BR
+        smi = 'CC(=O)Nc1ccc(O)cc1'
+        m = mol(smi)
+        with mock.patch.object(BR, 'rbrics_bonds', return_value=[]):
+            old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+            only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+        self.assertEqual(len(only), 1, "rbrics_only leaves whole mol when no rBRICS bonds")
+        self.assertGreater(len(old), 1,
+                           "rbrics_old should native-BRICS fallback when no rBRICS bonds")
 
     def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
         """Tracked rbrics / rbrics_only match molfragbpe5 on a fixed corpus."""
@@ -947,13 +962,9 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
             frag._CACHE.clear()
             tr_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
             frag._CACHE.clear()
-            tr_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-            frag._CACHE.clear()
             tr_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
             self.assertEqual(len(tr_only), ref_only,
                              f"{smi}: tracked rbrics_only != cut_rbrics_only")
-            self.assertEqual(len(tr_old), ref_only,
-                             f"{smi}: rbrics_old != cut_rbrics_only")
             self.assertEqual(len(tr_full), ref_full,
                              f"{smi}: tracked rbrics != cut_rbrics")
 
@@ -987,11 +998,8 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         frag._CACHE.clear()
         p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
         frag._CACHE.clear()
-        p_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-        frag._CACHE.clear()
         p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
         self.assertEqual(len(p_only), n_only, f"{smi}: tracked rbrics_only mismatch")
-        self.assertEqual(len(p_old), n_only, f"{smi}: rbrics_old should match rbrics_only")
         self.assertEqual(len(p_full), n_full, f"{smi}: tracked rbrics mismatch")
         self.assertGreater(len(p_full), len(p_only),
                            f"{smi}: reBRICS should add cuts beyond rbrics_only")
