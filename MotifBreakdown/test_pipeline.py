@@ -934,23 +934,15 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
             gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
         self.assertEqual(calls, [], "rbrics_old must not call BRICS.FindBRICSBonds pairs")
 
-    def test_rbrics_old_matches_brics_replicate(self):
-        """rbrics_old uses the same fragmentation + keys as brics_replicate."""
+    def test_rbrics_old_plot_path_corpus(self):
+        """rbrics_old plot path returns full atom coverage on a small corpus."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
-        corpus = [
-            'CC(=O)Nc1ccc(O)cc1',
-            'Cc1ccccc1',
-            'O=[N+]([O-])c1ccccc1',
-            'CCO',
-        ]
-        for smi in corpus:
+        for smi in ('CC(=O)Nc1ccc(O)cc1', 'Cc1ccccc1', 'O=[N+]([O-])c1ccccc1', 'CCO'):
             m = mol(smi)
-            old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-            rep = gvr.fragment_molecule_tracked(m, smi, False, 'brics_replicate')
-            self.assertEqual(
-                sorted(old), sorted(rep),
-                f"{smi}: rbrics_old != brics_replicate")
+            pieces = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+            covered = {a for _, atoms in pieces for a in atoms}
+            self.assertEqual(covered, set(range(m.GetNumAtoms())), smi)
 
     def test_rbrics_old_native_brics_fallback_when_no_rbrics_bonds(self):
         """rbrics_old uses FragmentOnBRICSBonds when FindrBRICSBonds finds nothing."""

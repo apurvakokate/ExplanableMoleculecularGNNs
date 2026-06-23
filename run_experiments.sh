@@ -114,7 +114,6 @@ _check_paths() {
 V_OLD="rbrics_old"               # method=rbrics_old, CreateMotifVocab plot path
 V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
-V_BRICS="brics_replicate"        # CreateMotifVocab BRICS coverage plot path
 # V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
 
 # Three filtered variants (threshold applied):
@@ -217,7 +216,6 @@ run_frag() {
             continue
         fi
         # Skip only when re-running the standard phase1 trio and all three exist.
-        # Other variants (e.g. brics_replicate) must not be blocked by this.
         if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
             case "$variant" in
                 "$V_OLD"|"$V_RBRICS"|"$V_ALL")
@@ -593,43 +591,6 @@ phase2() {
 }
 
 # =============================================================================
-# PHASE 1 (BRICS replicate) — Fragmentation for CreateMotifVocab BRICS plot
-# =============================================================================
-phase1_brics() {
-    _check_paths
-    echo ""
-    echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 1 (BRICS) — brics_replicate fragmentation"
-    echo "  Matches replicate_brics_coverage_plot.py (FindrBRICSBonds +"
-    echo "  BreakrBRICSBonds + FragmentOnBRICSBonds fallback)"
-    echo "══════════════════════════════════════════════════════════"
-    run_frag brics_replicate 0 0 "$V_BRICS"
-    echo ""
-    echo "Phase 1 (BRICS) complete. Next: bash run_experiments.sh phase2_brics"
-}
-
-# =============================================================================
-# PHASE 2 (BRICS replicate) — Coverage vs threshold for brics_replicate
-# =============================================================================
-phase2_brics() {
-    _check_paths
-    echo ""
-    echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 2 (BRICS) — Coverage vs threshold (brics_replicate)"
-    echo "══════════════════════════════════════════════════════════"
-    python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
-        --vocab_root "$VOCAB_ROOT" \
-        --datasets   $DATASETS \
-        --variant    "$V_BRICS" \
-        --out_dir    "$OUT_ROOT/coverage_plots" \
-        --combine_plot
-    echo ""
-    echo "Phase 2 (BRICS) complete. Plots in: $OUT_ROOT/coverage_plots"
-    echo "  Per-dataset:  {dataset}_brics_replicate_coverage.png"
-    echo "  Combined:     all_datasets_brics_replicate_coverage.png"
-}
-
-# =============================================================================
 # PHASE 3 — Thresholded vocabularies
 #   All three variants re-fragmented with threshold applied.
 # =============================================================================
@@ -888,9 +849,7 @@ PHASE="${1:-}"
 case "$PHASE" in
     phase0)           phase0 ;;
     phase1)           phase1 ;;
-    phase1_brics)     phase1_brics ;;
     phase2)           phase2 ;;
-    phase2_brics)     phase2_brics ;;
     phase3)           phase3 ;;
     phase4)           phase4 ;;
     phase5_vanilla)   phase5_vanilla ;;
@@ -918,9 +877,7 @@ case "$PHASE" in
         echo "Phases:"
         echo "  phase0            export mutag/OGB CSV bridges (DATASETS_SPECIAL)"
         echo "  phase1            fragment all 3 variants (rbrics_old, rbrics, all_fallback_bpe)"
-        echo "  phase1_brics      fragment brics_replicate (CreateMotifVocab BRICS plot)"
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
-        echo "  phase2_brics      coverage vs threshold for brics_replicate only"
         echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT               (requires RULE_INDEX)"
         echo "  phase5_vanilla    vanilla GNN (3 variants)"
