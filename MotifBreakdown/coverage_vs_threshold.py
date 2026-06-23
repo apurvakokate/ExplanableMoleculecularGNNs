@@ -40,7 +40,7 @@ Usage:
         --variant rbrics \\
         --out_dir ./results/coverage_plots
 """
-import argparse, json, sys
+import argparse, json, os, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -49,6 +49,12 @@ import pickle
 
 
 IMBALANCE_MARGIN = 0.6
+
+# TEMP(testing): revert default to "graph_average" after comparing plot curves.
+#   weighted_atoms   — sum(covered atoms) / sum(all atoms) in lookups
+#   weighted_support — sum(weighted_count kept) / total from matrix_columns
+#   graph_average    — mean per-molecule node fraction (intended production default)
+DEFAULT_COVERAGE_MODE = os.environ.get('COVERAGE_MODE', 'weighted_atoms')
 
 def _lp(path):
     with open(path, 'rb') as f:
@@ -100,9 +106,8 @@ def _load(vocab_root, dataset, variant):
     return cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type
 # insert this new function before compute_sweep
 
-def compute_node_coverage(data_lookup, kept_motifs):
-    """Fraction of nodes per graph whose motif is in kept_motifs, averaged across graphs.
-    Matches old Utils_vocab.compute_node_coverage exactly."""
+def compute_node_coverage_graph_average(data_lookup, kept_motifs):
+    """Mean per-molecule node fraction (each graph weighted equally)."""
     coverages = []
     for node2motif in data_lookup.values():
         total = len(node2motif)
@@ -115,7 +120,53 @@ def compute_node_coverage(data_lookup, kept_motifs):
         coverages.append(covered / total)
     return sum(coverages) / len(coverages) if coverages else 0.0
 
-def compute_sweep(vocab_root, dataset, variant, thresholds=None):
+
+def compute_node_coverage_atom_weighted(data_lookup, kept_motifs):
+    """Global atom fraction: each atom counts equally across all graphs."""
+    n_total = n_covered = 0
+    for node2motif in data_lookup.values():
+        for v in node2motif.values():
+            n_total += 1
+            if (v[0] if isinstance(v, tuple) else v) in kept_motifs:
+                n_covered += 1
+    return n_covered / n_total if n_total > 0 else 0.0
+
+
+def compute_coverage_weighted_support(support, motif_post, cols):
+    """Notebook/docstring ratio: kept motif mass / total weighted_count."""
+    total = float(support.sum())
+    if total <= 0:
+        return 0.0, float('nan')
+    cov_tv = float(support[motif_post].sum()) / total
+    if 'n_mols_test' in cols.columns:
+        test_occ = cols['n_mols_test'].astype(float)
+        total_test = float(test_occ.sum())
+        cov_test = (float(test_occ[motif_post].sum()) / total_test
+                    if total_test > 0 else float('nan'))
+    else:
+        cov_test = float('nan')
+    return cov_tv, cov_test
+
+
+def compute_coverage(mode, support, motif_post, cols, lookup_tv, lookup_test,
+                     kept_motifs):
+    """Dispatch coverage metrics by mode."""
+    if mode == 'weighted_support':
+        return compute_coverage_weighted_support(support, motif_post, cols)
+    if mode == 'weighted_atoms':
+        return (compute_node_coverage_atom_weighted(lookup_tv, kept_motifs),
+                compute_node_coverage_atom_weighted(lookup_test, kept_motifs))
+    # graph_average (production default after testing)
+    return (compute_node_coverage_graph_average(lookup_tv, kept_motifs),
+            compute_node_coverage_graph_average(lookup_test, kept_motifs))
+
+
+# Back-compat alias
+compute_node_coverage = compute_node_coverage_graph_average
+
+def compute_sweep(vocab_root, dataset, variant, thresholds=None,
+                  coverage_mode=None):
+    mode = coverage_mode or DEFAULT_COVERAGE_MODE
     cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(vocab_root, dataset, variant)
 
     # ── Count signal: weighted_count (notebook: Σ 1/length per node-slot) ──
@@ -129,8 +180,6 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
     # Per-class weighted counts for minority rescue
     wt0 = cols['wt_count_0'] if 'wt_count_0' in cols.columns else None
     wt1 = cols['wt_count_1'] if 'wt_count_1' in cols.columns else None
-
-    total_support = float(support.sum())
 
     # Infer minority class (classification only — regression has no class split)
     minority = None
@@ -165,20 +214,9 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
 
         n_rescued = int(motif_post.sum()) - int(mask_global.sum())
 
-        # # Node coverage: weighted sum for kept motifs / total weighted sum
-        # cov_tv = float(support[motif_post].sum()) / total_support if total_support > 0 else 0.0
-
-        # # Test coverage: n_mols_test is the per-motif test occurrence count.
-        # # Denominator = total test occurrences across ALL motifs (kept + filtered).
-        # if 'n_mols_test' in cols.columns:
-        #     test_occ   = cols['n_mols_test'].astype(float)
-        #     total_test = float(test_occ.sum())
-        #     cov_test   = float(test_occ[motif_post].sum()) / total_test if total_test > 0 else 0.0
-        # else:
-        #     cov_test = float('nan')
         kept_motifs = set(cols.loc[motif_post, 'motif_identity'])
-        cov_tv   = compute_node_coverage(lookup_tv,   kept_motifs)
-        cov_test = compute_node_coverage(lookup_test, kept_motifs)
+        cov_tv, cov_test = compute_coverage(
+            mode, support, motif_post, cols, lookup_tv, lookup_test, kept_motifs)
 
         # Fraction of >=1% motifs kept
         if 'above_1pct' in cols.columns:
@@ -422,8 +460,10 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
     print(f"  Saved combined: {out_path}")
 
 
-def _run_single(vocab_root, dataset, variant, out_dir, thresholds):
-    df = compute_sweep(vocab_root, dataset, variant, thresholds)
+def _run_single(vocab_root, dataset, variant, out_dir, thresholds, coverage_mode=None):
+    mode = coverage_mode or DEFAULT_COVERAGE_MODE
+    df = compute_sweep(vocab_root, dataset, variant, thresholds, coverage_mode=mode)
+    print(f"  [coverage_mode={mode}]")
     print_table(df, dataset, variant)
     out_dir = Path(out_dir)
     plot_sweep(df, dataset, variant, out_dir / f'{dataset}_{variant}_coverage.png')
@@ -446,8 +486,14 @@ def main():
     ap.add_argument('--thresholds', nargs='*', type=float, default=None)
     ap.add_argument('--combine_plot', action='store_true',
                     help='Save one PNG overlaying all --datasets on the same axes')
+    ap.add_argument('--coverage_mode',
+                    choices=('weighted_atoms', 'weighted_support', 'graph_average'),
+                    default=None,
+                    help='Node coverage aggregation (default: COVERAGE_MODE env or '
+                         f'{DEFAULT_COVERAGE_MODE!r}; TEMP testing uses weighted_atoms)')
     args = ap.parse_args()
 
+    coverage_mode = args.coverage_mode or DEFAULT_COVERAGE_MODE
     out_dir = Path(args.out_dir)
 
     if args.datasets:
@@ -459,7 +505,8 @@ def main():
                 continue
             try:
                 sweeps[ds] = _run_single(args.vocab_root, ds, args.variant,
-                                         args.out_dir, args.thresholds)
+                                         args.out_dir, args.thresholds,
+                                         coverage_mode=coverage_mode)
             except FileNotFoundError as e:
                 print(f"  [skip] {ds}: {e}", file=sys.stderr)
         if args.combine_plot and sweeps:
@@ -475,7 +522,7 @@ def main():
 
     try:
         _run_single(args.vocab_root, args.dataset, args.variant,
-                    args.out_dir, args.thresholds)
+                    args.out_dir, args.thresholds, coverage_mode=coverage_mode)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
