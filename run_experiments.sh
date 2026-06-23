@@ -22,7 +22,7 @@
 #   collect          print results table
 #
 # Three fragmentation variants:
-#   rbrics_old       — rbrics_only + FragmentOnBRICSBonds fallback (~18% mols)
+#   rbrics_old       — CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles)
 #   rbrics           — rBRICS + reBRICS, no fallback, no BPE
 #   all_fallback_bpe — full cascade, fallback, BPE
 # =============================================================================
@@ -111,7 +111,7 @@ _check_paths() {
 
 # ── Vocabulary variant names ───────────────────────────────────────────────────
 # Three base variants (no threshold):
-V_OLD="rbrics_old"               # method=rbrics_only, legacy behaviour
+V_OLD="rbrics_old"               # method=rbrics_old, CreateMotifVocab plot path
 V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
 V_BRICS="brics_replicate"        # CreateMotifVocab BRICS coverage plot path
@@ -542,8 +542,8 @@ phase1() {
     echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
-    echo "1a. rbrics_old  (rBRICS + native BRICS fallback on no rBRICS bonds)"
-    run_frag rbrics_only 0 0 "$V_OLD"
+    echo "1a. rbrics_old  (CreateMotifVocab plot path — BreakrBRICSBonds + ToSmiles)"
+    run_frag rbrics_old 0 0 "$V_OLD"
 
     echo "1b. rbrics  (rBRICS + reBRICS, no fallback, no BPE)"
     run_frag rbrics 0 0 "$V_RBRICS"
@@ -643,7 +643,7 @@ phase3() {
     echo "══════════════════════════════════════════════════════════"
 
     echo "3a. rbrics_old_filter"
-    run_frag_thresh rbrics_only 0 0 "$V_OLD_TH"
+    run_frag_thresh rbrics_old 0 0 "$V_OLD_TH"
 
     echo "3b. rbrics_filter"
     run_frag_thresh rbrics 0 0 "$V_RBRICS_TH"

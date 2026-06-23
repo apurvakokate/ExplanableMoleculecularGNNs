@@ -16,13 +16,15 @@ Fragmentation engines (selected by `method` in run_dataset)
   + BreakrBRICSBonds (falls back to Chem.FragmentOnBRICSBonds when no rBRICS
   bonds). Motif keys use MolToSmiles(isomericSmiles=False) — see
   fragment_brics_replicate_tracked().
-* method in {'rbrics','rbrics_old','rbrics_only','brics'} → LEGACY single-pass
-  flat fragmenter (fragment_molecule_tracked): exactly ONE chemistry pass
-  (one BRICS/rBRICS bond cut over the whole molecule), with reBRICS folded into
-  the 'rbrics' cut. No recursive cascade, no structural fallback, no BPE merge
-  (those legacy stages remain in the file only as commented reference blocks).
-  BRICS/rBRICS bond discovery is delegated to the shared `brics_rbrics` module
-  so the same chemistry is identified identically as in the v4 cascade.
+* method == 'rbrics_old' (or method='rbrics_only' with variant name rbrics_old*)
+  → same as brics_replicate: FindrBRICSBonds + BreakrBRICSBonds, MolToSmiles keys.
+* method in {'rbrics','rbrics_only','brics'} → LEGACY single-pass flat fragmenter
+  (fragment_molecule_tracked): exactly ONE chemistry pass (one BRICS/rBRICS bond
+  cut over the whole molecule), with reBRICS folded into the 'rbrics' cut. No
+  recursive cascade, no structural fallback, no BPE merge (those legacy stages
+  remain in the file only as commented reference blocks). BRICS/rBRICS bond
+  discovery is delegated to the shared `brics_rbrics` module so the same
+  chemistry is identified identically as in the v4 cascade.
 
 Atom tracking (THE invariant)
 -----------------------------
@@ -231,7 +233,7 @@ MIN_COV        = 5.0
 # ║ run_dataset() routes by --method:                                        ║
 # ║   'all'         -> v4 cascade + MDL merge (chemfrag_v4_adapter)           ║
 # ║   'rbrics'      -> rBRICS + reBRICS  (two-shot, flat, no tree/merge)      ║
-# ║   'rbrics_old'  -> rBRICS + native BRICS fallback (FragmentOnBRICSBonds)  ║
+# ║   'rbrics_old'  -> CreateMotifVocab plot path (same as brics_replicate)   ║
 # ║   'rbrics_only'                                                           ║
 # ║   'brics'       -> BRICS only        (flat, no tree/merge)                ║
 # ║ The functions below implement the flat legacy path and ARE called for    ║
@@ -603,52 +605,6 @@ def fragment_brics_replicate_tracked(mol: Chem.Mol,
     return out
 
 
-def _native_brics_fallback_tracked(
-    mol_mapped: Chem.Mol, n: int,
-) -> List[Tuple[str, Set[int], Dict[int, int]]]:
-    """Native BRICS decomposition when FindrBRICSBonds finds no bonds (rbrics_old).
-
-    Same fallback as brics_replicate / BreakrBRICSBonds(mol, []): calls
-    Chem.FragmentOnBRICSBonds internally. Uses 1-indexed atom maps and
-    _canonical_legacy_smarts for motif keys (rest of rbrics_old path).
-    """
-    if not RBRICS_OK or BreakrBRICSBonds is None:
-        orig = {a.GetAtomMapNum() - 1 for a in mol_mapped.GetAtoms()
-                if a.GetAtomicNum() not in (0, 1) and a.GetAtomMapNum() > 0}
-        smi = _canonical_legacy_smarts_from_mol(mol_mapped)
-        return [(smi, orig or set(range(n)), {i: i for i in range(n)})]
-
-    try:
-        broken = BreakrBRICSBonds(Chem.Mol(mol_mapped), [])
-        pieces = Chem.GetMolFrags(broken, asMols=True)
-    except Exception:
-        pieces = [Chem.Mol(mol_mapped)]
-
-    result: List[Tuple[str, Set[int], Dict[int, int]]] = []
-    for f in pieces:
-        orig_set: Set[int] = set()
-        frag_idx_map: Dict[int, int] = {}
-        for atom in f.GetAtoms():
-            if atom.GetAtomicNum() != 0 and atom.GetAtomMapNum() > 0:
-                orig_idx = atom.GetAtomMapNum() - 1
-                orig_set.add(orig_idx)
-                frag_idx_map[atom.GetIdx()] = orig_idx
-        if orig_set:
-            rw = Chem.RWMol(f)
-            for a in rw.GetAtoms():
-                a.SetAtomMapNum(0)
-            fs = _canonical_legacy_smarts_from_mol(rw.GetMol())
-            result.append((fs, orig_set, frag_idx_map))
-
-    if len(result) >= 2:
-        return result
-
-    orig = {a.GetAtomMapNum() - 1 for a in mol_mapped.GetAtoms()
-            if a.GetAtomicNum() not in (0, 1) and a.GetAtomMapNum() > 0}
-    smi = _canonical_legacy_smarts_from_mol(mol_mapped)
-    return [(smi, orig or set(range(n)), {i: i for i in range(n)})]
-
-
 def fragment_molecule_tracked(mol: Chem.Mol,
                                orig_smi: str,
                                use_fallback: bool,
@@ -663,9 +619,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     sub-pass for method='rbrics':
         brics        — BRICS bonds
         rbrics_only  — rBRICS environment bonds (FindrBRICSBonds); no fallback
-        rbrics_old   — FindrBRICSBonds + FragmentOnBonds; if no rBRICS bonds,
-                       native BRICS via BreakrBRICSBonds([]) (same ~18% fallback
-                       as brics_replicate), legacy SMARTS keys
+        rbrics_old   — CreateMotifVocab plot path (same as brics_replicate)
         rbrics       — FindrBRICSBonds, then reBRICS on each fragment (matches
                        molfragbpe5.cut_rbrics; NOT rbrics_full_bonds on parent)
     BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
@@ -680,7 +634,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     Output:
         list of (fragment_smarts, {original_atom_indices}) covering ALL n atoms
     """
-    if method == 'brics_replicate':
+    if method in ('brics_replicate', 'rbrics_old'):
         return fragment_brics_replicate_tracked(mol, orig_smi)
 
     import brics_rbrics as BR
@@ -698,20 +652,16 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     # Primary cut over the whole molecule:
     #   brics                             -> FindBRICSBonds
     #   rbrics_only                         -> FindrBRICSBonds only; whole mol if none
-    #   rbrics_old                          -> FindrBRICSBonds + FragmentOnBonds;
-    #                                        if none: FragmentOnBRICSBonds fallback
     #   rbrics                              -> FindrBRICSBonds; reBRICS on fragments
     if method == 'brics':
         idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    elif method in ('rbrics_only', 'rbrics_old', 'rbrics'):
+    elif method in ('rbrics_only', 'rbrics'):
         idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
     else:
         raise ValueError(f"unknown legacy method: {method!r}")
 
     if idx1:
         level1 = _fob_tracked(mol_mapped, sorted(idx1))
-    elif method == 'rbrics_old':
-        level1 = _native_brics_fallback_tracked(mol_mapped, n)
     else:
         level1 = [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
                    {i: i for i in range(n)})]
@@ -1343,9 +1293,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     #   method in {'rbrics','rbrics_old', -> LEGACY flat fragmenter (no tree, no
     #              'rbrics_only','brics'}   merge): a one-shot/two-shot bond cut.
     #                                         'rbrics'      = rBRICS + reBRICS  (two-shot)
-    #                                         'rbrics_old'  = rBRICS + FragmentOnBRICSBonds
-    #                                                       fallback when no rBRICS bonds
-    #                                         'rbrics_only'   (no reBRICS post-pass)
+    #                                         'rbrics_old'  = CreateMotifVocab plot path
+    #                                                       (BreakrBRICSBonds + ToSmiles)
+    #                                         'rbrics_only' = rBRICS only, no fallback
     #                                         'brics'       = BRICS only
     #                                       These feed straight into build_vocab and
     #                                       support --apply_threshold exactly as before.
@@ -1358,15 +1308,24 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     bpe_history: List[dict] = []
 
     _LEGACY_METHODS = {'rbrics', 'rbrics_old', 'rbrics_only', 'brics', 'brics_replicate'}
-    _legacy_method = ('rbrics_only' if method in ('rbrics_old', 'rbrics_only')
-                      else method)
+    if method == 'brics_replicate':
+        _legacy_method = 'brics_replicate'
+    elif method == 'rbrics_old' or variant.startswith('rbrics_old'):
+        _legacy_method = 'rbrics_old'
+    elif method == 'rbrics_only':
+        _legacy_method = 'rbrics_only'
+    else:
+        _legacy_method = method
 
     if method in _LEGACY_METHODS:
         import brics_rbrics as _BR
         if method == 'brics_replicate' and (not RBRICS_OK or BreakrBRICSBonds is None):
             raise RuntimeError(
                 "method='brics_replicate' requires rBRICS_public.py in MotifBreakdown/")
-        if (method in ('rbrics', 'rbrics_old', 'rbrics_only')
+        if _legacy_method == 'rbrics_old' and (not RBRICS_OK or BreakrBRICSBonds is None):
+            raise RuntimeError(
+                "rbrics_old requires rBRICS_public.py in MotifBreakdown/")
+        if ((method in ('rbrics', 'rbrics_old', 'rbrics_only') or variant.startswith('rbrics_old'))
                 and not _BR.RBRICS_OK):
             print("    [warn] rBRICS_public not available — rbrics/rbrics_old leave "
                   "molecules unsplit (no BRICS fallback). Install rBRICS and "
