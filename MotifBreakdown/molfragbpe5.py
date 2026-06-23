@@ -327,7 +327,7 @@ def cut_rbrics_only(mol: Chem.Mol) -> List[str]:
       - cut_rbrics_only: FindrBRICSBonds only, no reBRICS post-processing
 
     Output uses [*] normalised SMARTS via strip().
-    Use method='rbrics_only' to trigger this path.
+    Internal cascade key only (molfragbpe5.build_cascade); not a CLI --method.
     Input:  RDKit Mol
     Output: list of fragment SMARTS, or [] if no eligible bonds
     """

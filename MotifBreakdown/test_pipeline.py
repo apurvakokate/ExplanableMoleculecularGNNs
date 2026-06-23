@@ -99,6 +99,12 @@ def _rebrics_diff_probe_summary():
         rows.append((smi, len(frag.cut_rbrics_only(m)), len(frag.cut_rbrics(m))))
     return rows
 
+def _tracked_rbrics_pass1(smi):
+    """Tracked pass-1 pieces (FindrBRICSBonds only), for reBRICS tests."""
+    m = mol(smi)
+    level1 = gvr._rbrics_pass1_tracked(m, smi)
+    return [(s, o) for s, o, _ in level1]
+
 def atom_n(m):
     return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() not in (0, 1))
 
@@ -850,17 +856,16 @@ class TestBondIndicesFor(unittest.TestCase):
 class TestFragmentMoleculeTracked(unittest.TestCase):
     """Tests the single-pass legacy engine fragment_molecule_tracked.
 
-    Legacy is ONE chemistry pass: 'brics', 'rbrics_only', or 'rbrics'
-    (rBRICS + reBRICS sub-pass). The recursive cascade and structural fallback
-    are disabled; 'all' is handled by the v4 adapter, not this function.
+    Legacy methods: 'brics', 'rbrics' (pass 1 + reBRICS), 'rbrics_old' (plot path).
+    The recursive cascade and structural fallback are disabled; 'all' is handled
+    by the v4 adapter, not this function.
     """
 
-    def test_full_coverage_rbrics_only(self):
+    def test_full_coverage_rbrics_pass1(self):
         m = mol('O=[N+]([O-])c1ccccc1')
-        pieces = gvr.fragment_molecule_tracked(m, 'O=[N+]([O-])c1ccccc1',
-                                                use_fallback=False,
-                                                method='rbrics_only')
-        covered = {a for _,s in pieces for a in s}
+        smi = 'O=[N+]([O-])c1ccccc1'
+        pieces = _tracked_rbrics_pass1(smi)
+        covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
     def test_full_coverage_rbrics(self):
@@ -954,13 +959,14 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         m = mol(smi)
         with mock.patch.object(BR, 'rbrics_bonds', return_value=[]):
             old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-            only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
-        self.assertEqual(len(only), 1, "rbrics_only leaves whole mol when no rBRICS bonds")
+            pass1 = _tracked_rbrics_pass1(smi)
+        self.assertEqual(len(pass1), 1,
+                         "rBRICS pass 1 leaves whole mol when no rBRICS bonds")
         self.assertGreater(len(old), 1,
                            "rbrics_old should native-BRICS fallback when no rBRICS bonds")
 
     def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
-        """Tracked rbrics / rbrics_only match molfragbpe5 on a fixed corpus."""
+        """Tracked rbrics pass 1 / full rbrics match molfragbpe5 on a fixed corpus."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         for smi in _RBRICS_TRACKED_CORPUS:
@@ -970,11 +976,11 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
             ref_only = len(frag.cut_rbrics_only(m))
             ref_full = len(frag.cut_rbrics(m))
             frag._CACHE.clear()
-            tr_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+            tr_pass1 = _tracked_rbrics_pass1(smi)
             frag._CACHE.clear()
             tr_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
-            self.assertEqual(len(tr_only), ref_only,
-                             f"{smi}: tracked rbrics_only != cut_rbrics_only")
+            self.assertEqual(len(tr_pass1), ref_only,
+                             f"{smi}: tracked pass 1 != cut_rbrics_only")
             self.assertEqual(len(tr_full), ref_full,
                              f"{smi}: tracked rbrics != cut_rbrics")
 
@@ -993,8 +999,8 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         self.assertEqual(len(p_full), n_full,
                          f"{smi}: tracked rbrics != cut_rbrics reference")
 
-    def test_rbrics_rebrics_pass_differs_from_rbrics_only(self):
-        """reBRICS post-pass adds cuts vs rbrics_only when molfragbpe5 does."""
+    def test_rbrics_rebrics_pass_differs_from_pass1(self):
+        """reBRICS post-pass adds cuts vs pass 1 when molfragbpe5 does."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         smi, n_only, n_full = _pick_rebrics_diff_case()
@@ -1006,13 +1012,13 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
                 "corpus alignment test still validates the tracked implementation")
         m = mol(smi)
         frag._CACHE.clear()
-        p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+        p_pass1 = _tracked_rbrics_pass1(smi)
         frag._CACHE.clear()
         p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
-        self.assertEqual(len(p_only), n_only, f"{smi}: tracked rbrics_only mismatch")
+        self.assertEqual(len(p_pass1), n_only, f"{smi}: tracked pass 1 mismatch")
         self.assertEqual(len(p_full), n_full, f"{smi}: tracked rbrics mismatch")
-        self.assertGreater(len(p_full), len(p_only),
-                           f"{smi}: reBRICS should add cuts beyond rbrics_only")
+        self.assertGreater(len(p_full), len(p_pass1),
+                           f"{smi}: reBRICS should add cuts beyond pass 1")
 
 
 # ─── build_vocab ────────────────────────────────────────────────────────────
@@ -1145,9 +1151,6 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(X.shape[0], n)
         self.assertEqual(X.shape[1], len(ml))
 
-    def test_method_rbrics_only(self):
-        self._run('rbrics_only')
-
     def test_method_rbrics(self):
         self._run('rbrics')
 
@@ -1161,7 +1164,7 @@ class TestIntegration(unittest.TestCase):
 
         # rBRICS-dependent assertions — skip if rBRICS not installed
         if frag.RBRICS_OK:
-            for method in ('rbrics', 'rbrics_only', 'rbrics_old'):
+            for method in ('rbrics', 'rbrics_old'):
                 frag._CACHE.clear()
                 pieces = gvr.fragment_molecule_tracked(m, smi,
                                                         use_fallback=False,

@@ -55,7 +55,7 @@ cd $PROJECT/MotifSAT     && python3 tests/test_motifsat.py
 
 | Name | Method | Fallback | BPE | Notes |
 |---|---|---|---|---|
-| `rbrics_old` | `rbrics_only` | no | no | Legacy DomainDrivenGlobalExpl behaviour |
+| `rbrics_old` | `rbrics_old` | no | no | CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles) |
 | `rbrics` | `rbrics` | no | no | rBRICS+reBRICS, no fallback, no BPE |
 | `all_fallback_bpe` | `all` | yes | yes | Full cascade with fallback and BPE |
 
@@ -92,11 +92,11 @@ Produces vocabulary files for all three variants. No threshold applied yet.
 # All three variants in one go
 for ds in $DATASETS; do
 
-  # 1a. rbrics_old  (replicates original BRICS behaviour for baseline comparison)
+  # 1a. rbrics_old  (CreateMotifVocab plot replication)
   python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
     --datasets $ds --data_root $DATA_ROOT \
-    --out_dir $VOCAB_ROOT/$ds/rbrics_old \
-    --method rbrics_only --fold 0
+    --out_dir $VOCAB_ROOT \
+    --method rbrics_old --variant rbrics_old --fold 0
 
   # 1b. rbrics  (rBRICS + reBRICS, clean chemistry)
   python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
@@ -486,7 +486,7 @@ After all phases are complete you will have trained models on six configurations
 | `all_fallback_bpe` | all+fb+bpe | no | no | Full motif coverage |
 | `all_fallback_bpe_filter` | all+fb+bpe | yes | no | Filtered full vocab |
 | `all_fallback_bpe` + gt | all+fb+bpe | no | yes | Synthetic relabelling |
-| `rbrics_old` | BRICS legacy | no | no | Ablation baseline |
+| `rbrics_old` | CreateMotifVocab plot | no | no | Plot replication baseline |
 
 ---
 

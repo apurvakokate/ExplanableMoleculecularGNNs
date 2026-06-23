@@ -66,7 +66,7 @@ def rbrics_full_bonds(mol: Chem.Mol) -> List[Tuple[int, int]]:
     This is the single shared definition of "rBRICS" used by BOTH the legacy
     engine (``method='rbrics'``) and the v4 cascade's rBRICS stage, so the same
     algorithm fragments identically in both. (Use :func:`rbrics_bonds` for the
-    environment-only variant, ``method='rbrics_only'``.)
+    environment-only pass (``cut_rbrics_only`` / pass 1 of ``method='rbrics'``.)
 
     Duplicate pairs across the two finders are harmless — callers dedup via
     :func:`nonring_bond_indices` (a set of bond indices). [] if rBRICS absent.
