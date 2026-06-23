@@ -156,6 +156,25 @@ CHOSEN_THRESHOLD: dict = {
         'ogbg-molbace':      0.002,
     },
 
+    # ── standard BRICS only (filtered) ─────────────────────────────────────────
+    # Coarser cuts than rBRICS (e.g. Ar-NO2 left intact). Tune after phase2
+    # coverage sweep on variant `brics` / `brics_filter`.
+    'brics_filter': {
+        'Mutagenicity':      0.001,
+        'Benzene':           0.001,
+        'BBBP':              0.004,
+        'hERG':              0.002,
+        'Alkane_Carbonyl':   0.002,
+        'Fluoride_Carbonyl': 0.002,
+        'esol':              0.001,
+        'Lipophilicity':     0.002,
+        'freesolv':          0.002,
+        'tox21':             0.001,
+        'mutag':             0.001,
+        'ogbg-molhiv':       0.002,
+        'ogbg-molbace':      0.002,
+    },
+
     # ── rbrics_only / legacy (filtered) ──────────────────────────────────────
     # Virtually identical to rbrics in practice (reBRICS rarely fires on these
     # datasets).  Coverage curves match rbrics to 3 decimal places.
