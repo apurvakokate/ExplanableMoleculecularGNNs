@@ -915,6 +915,25 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
+    def test_rbrics_old_no_brics_fallback(self):
+        """rbrics_old must use FindrBRICSBonds only — never FindBRICSBonds."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        import unittest.mock as mock
+        import brics_rbrics as BR
+        smi = 'CC(=O)Nc1ccc(O)cc1'
+        m = mol(smi)
+        calls: list = []
+        orig = BR.brics_bonds
+
+        def _spy(mol):
+            calls.append(True)
+            return orig(mol)
+
+        with mock.patch.object(BR, 'brics_bonds', side_effect=_spy):
+            gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+        self.assertEqual(calls, [], "rbrics_old must not fall back to FindBRICSBonds")
+
     def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
         """Tracked rbrics / rbrics_only match molfragbpe5 on a fixed corpus."""
         if not frag.RBRICS_OK:

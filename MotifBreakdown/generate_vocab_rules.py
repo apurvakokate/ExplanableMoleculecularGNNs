@@ -559,7 +559,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     sub-pass for method='rbrics':
         brics        — BRICS bonds
         rbrics_only  — rBRICS environment bonds (FindrBRICSBonds)
-        rbrics_old   — alias for rbrics_only
+        rbrics_old   — FindrBRICSBonds only (no reBRICS, no BRICS fallback)
         rbrics       — FindrBRICSBonds, then reBRICS on each fragment (matches
                        molfragbpe5.cut_rbrics; NOT rbrics_full_bonds on parent)
     BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
@@ -587,19 +587,15 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     mol_clean = frag.to_mol(frag.strip(orig_smi)) or mol
 
     # Primary cut over the whole molecule:
-    #   brics / rbrics_only / rbrics_old  -> FindrBRICSBonds (or BRICS)
-    #   rbrics                             -> FindrBRICSBonds only; reBRICS runs
-    #                                        on fragments in _rebrics_pass_tracked
+    #   brics                             -> FindBRICSBonds
+    #   rbrics_only / rbrics_old          -> FindrBRICSBonds ONLY (no reBRICS,
+    #                                        no FindBRICSBonds fallback — matches
+    #                                        molfragbpe5.cut_rbrics_only)
+    #   rbrics                            -> FindrBRICSBonds; reBRICS on fragments
     if method == 'brics':
         idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    elif method in ('rbrics_only', 'rbrics_old'):
+    elif method in ('rbrics_only', 'rbrics_old', 'rbrics'):
         idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
-        if not idx1:
-            idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    elif method == 'rbrics':
-        idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
-        if not idx1:
-            idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
     else:
         raise ValueError(f"unknown legacy method: {method!r}")
 
@@ -1257,9 +1253,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         import brics_rbrics as _BR
         if (method in ('rbrics', 'rbrics_old', 'rbrics_only')
                 and not _BR.RBRICS_OK):
-            print("    [warn] rBRICS_public not available — rbrics and rbrics_old "
-                  "both fall back to BRICS; vocabs will be identical until "
-                  "rBRICS is installed and phase1 is re-run.")
+            print("    [warn] rBRICS_public not available — rbrics/rbrics_old leave "
+                  "molecules unsplit (no BRICS fallback). Install rBRICS and "
+                  "re-run phase1.")
         # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
         # NOTE: the legacy prevalence-BPE merge is intentionally DISABLED. The
         # plain (untracked) fragmentation that fed `frag.bpe_merge`, and the BPE
