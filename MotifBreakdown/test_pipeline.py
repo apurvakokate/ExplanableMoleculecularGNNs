@@ -39,6 +39,30 @@ import chemfrag_v4_adapter as v4
 def mol(smi):
     return Chem.MolFromSmiles(smi)
 
+# reBRICS adds cuts when a post-rBRICS fragment still contains CCCCCC.
+# Plain alkyl chains (e.g. decane) are often fully split in pass 1 already.
+_REBRICS_DIFF_CANDIDATES = (
+    'c1ccccc1OCCCCCC',
+    'c1ccccc1OCCCCCCC',
+    'c1ccccc1CCCCCCCC',
+    'CCOc1ccccc1CCCCCCCC',
+    'CCCCCCCCCCCCCCCC',
+)
+
+
+def _pick_rebrics_diff_case():
+    """Return (smi, n_rbrics_only, n_rbrics) for a mol where reBRICS adds cuts."""
+    for smi in _REBRICS_DIFF_CANDIDATES:
+        frag._CACHE.clear()
+        m = mol(smi)
+        if m is None:
+            continue
+        n_only = len(frag.cut_rbrics_only(m))
+        n_full = len(frag.cut_rbrics(m))
+        if n_full > n_only:
+            return smi, n_only, n_full
+    return None, None, None
+
 def atom_n(m):
     return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() not in (0, 1))
 
@@ -855,6 +879,39 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
+    def test_rbrics_tracked_matches_molfragbpe5_cut_rbrics(self):
+        """Tracked rbrics path matches molfragbpe5.cut_rbrics fragment counts."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        smi, _, n_full = _pick_rebrics_diff_case()
+        if smi is None:
+            self.skipTest("no candidate where reBRICS adds cuts")
+        m = mol(smi)
+        frag._CACHE.clear()
+        p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+        self.assertEqual(len(p_full), n_full,
+                         f"{smi}: tracked rbrics != cut_rbrics reference")
+
+    def test_rbrics_rebrics_pass_differs_from_rbrics_only(self):
+        """reBRICS post-pass adds cuts vs rbrics_only (molfragbpe5 reference)."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        smi, n_only, n_full = _pick_rebrics_diff_case()
+        if smi is None:
+            self.skipTest("no candidate where reBRICS adds cuts")
+        m = mol(smi)
+        frag._CACHE.clear()
+        p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+        frag._CACHE.clear()
+        p_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+        frag._CACHE.clear()
+        p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+        self.assertEqual(len(p_only), n_only, f"{smi}: tracked rbrics_only mismatch")
+        self.assertEqual(len(p_old), n_only, f"{smi}: rbrics_old should match rbrics_only")
+        self.assertEqual(len(p_full), n_full, f"{smi}: tracked rbrics mismatch")
+        self.assertGreater(len(p_full), len(p_only),
+                           f"{smi}: reBRICS should add cuts beyond rbrics_only")
+
 
 # ─── build_vocab ────────────────────────────────────────────────────────────
 
@@ -1017,22 +1074,6 @@ class TestIntegration(unittest.TestCase):
                                                   method='brics')
         self.assertEqual(len(pieces_b), 1,
                          "BRICS should NOT split Ar-NO2")
-
-    def test_rbrics_rebrics_pass_differs_from_rbrics_only(self):
-        """reBRICS post-pass splits long aliphatic chains that rbrics_only keeps."""
-        if not frag.RBRICS_OK:
-            self.skipTest("rBRICS not installed")
-        smi = 'CCCCCCCCCC'
-        m = mol(smi)
-        frag._CACHE.clear()
-        p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
-        frag._CACHE.clear()
-        p_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
-        frag._CACHE.clear()
-        p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
-        self.assertEqual(len(p_only), len(p_old))
-        self.assertGreater(len(p_full), len(p_only),
-                           "rbrics should split long chains via reBRICS post-pass")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
