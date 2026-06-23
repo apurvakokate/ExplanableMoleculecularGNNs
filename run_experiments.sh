@@ -579,8 +579,11 @@ phase2() {
 
     echo ""
     echo "Phase 2 complete. Review plots in: $OUT_ROOT/coverage_plots"
-    echo "  Per-dataset:  {dataset}_{variant}_coverage.png"
+    echo "  Per-dataset:  {dataset}_{variant}_coverage.png / .csv"
     echo "  Combined:     all_datasets_{variant}_coverage.png"
+    echo "                  all_datasets_{variant}_coverage.csv (long)"
+    echo "                  all_datasets_{variant}_cov_tv_pct.csv (wide)"
+    echo "                  all_datasets_{variant}_vocab_size.csv (wide)"
     echo "Then:  edit CHOSEN_THRESHOLD in MotifBreakdown/generate_vocab_rules.py"
     echo "       bash run_experiments.sh phase3"
 }
