@@ -49,10 +49,34 @@ _REBRICS_DIFF_CANDIDATES = (
     'CCCCCCCCCCCCCCCC',
 )
 
+# Always check tracked output against molfragbpe5 on these (even when reBRICS
+# does not add extra cuts vs rbrics_only).
+_RBRICS_TRACKED_CORPUS = (
+    'O=[N+]([O-])c1ccccc1',
+    'CC(=O)Nc1ccc(O)cc1',
+    'CCCCCCCCCC',
+    'c1ccccc1OCCCCCC',
+    'c1ccccc1CCCCCCCC',
+)
+
+
+def _rebrics_diff_candidates():
+    """Yield SMILES to probe where cut_rbrics > cut_rbrics_only."""
+    seen = set()
+    for smi in _REBRICS_DIFF_CANDIDATES:
+        if smi not in seen:
+            seen.add(smi)
+            yield smi
+    for n in range(6, 21):
+        for smi in (f'c1ccccc1{"C" * n}', f'c1ccccc1O{"C" * n}'):
+            if smi not in seen:
+                seen.add(smi)
+                yield smi
+
 
 def _pick_rebrics_diff_case():
     """Return (smi, n_rbrics_only, n_rbrics) for a mol where reBRICS adds cuts."""
-    for smi in _REBRICS_DIFF_CANDIDATES:
+    for smi in _rebrics_diff_candidates():
         frag._CACHE.clear()
         m = mol(smi)
         if m is None:
@@ -62,6 +86,18 @@ def _pick_rebrics_diff_case():
         if n_full > n_only:
             return smi, n_only, n_full
     return None, None, None
+
+
+def _rebrics_diff_probe_summary():
+    """Counts for skip messages when no reBRICS-only difference is found."""
+    rows = []
+    for smi in _REBRICS_DIFF_CANDIDATES:
+        frag._CACHE.clear()
+        m = mol(smi)
+        if m is None:
+            continue
+        rows.append((smi, len(frag.cut_rbrics_only(m)), len(frag.cut_rbrics(m))))
+    return rows
 
 def atom_n(m):
     return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() not in (0, 1))
@@ -879,13 +915,38 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         covered = {a for _, s in pieces for a in s}
         self.assertEqual(covered, set(range(m.GetNumAtoms())))
 
+    def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
+        """Tracked rbrics / rbrics_only match molfragbpe5 on a fixed corpus."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        for smi in _RBRICS_TRACKED_CORPUS:
+            m = mol(smi)
+            self.assertIsNotNone(m, smi)
+            frag._CACHE.clear()
+            ref_only = len(frag.cut_rbrics_only(m))
+            ref_full = len(frag.cut_rbrics(m))
+            frag._CACHE.clear()
+            tr_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+            frag._CACHE.clear()
+            tr_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+            frag._CACHE.clear()
+            tr_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+            self.assertEqual(len(tr_only), ref_only,
+                             f"{smi}: tracked rbrics_only != cut_rbrics_only")
+            self.assertEqual(len(tr_old), ref_only,
+                             f"{smi}: rbrics_old != cut_rbrics_only")
+            self.assertEqual(len(tr_full), ref_full,
+                             f"{smi}: tracked rbrics != cut_rbrics")
+
     def test_rbrics_tracked_matches_molfragbpe5_cut_rbrics(self):
-        """Tracked rbrics path matches molfragbpe5.cut_rbrics fragment counts."""
+        """Tracked rbrics matches cut_rbrics when reBRICS adds extra cuts."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         smi, _, n_full = _pick_rebrics_diff_case()
         if smi is None:
-            self.skipTest("no candidate where reBRICS adds cuts")
+            self.skipTest(
+                "no SMILES where cut_rbrics > cut_rbrics_only on this rBRICS build; "
+                "use test_rbrics_tracked_matches_molfragbpe5_corpus instead")
         m = mol(smi)
         frag._CACHE.clear()
         p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
@@ -893,12 +954,16 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
                          f"{smi}: tracked rbrics != cut_rbrics reference")
 
     def test_rbrics_rebrics_pass_differs_from_rbrics_only(self):
-        """reBRICS post-pass adds cuts vs rbrics_only (molfragbpe5 reference)."""
+        """reBRICS post-pass adds cuts vs rbrics_only when molfragbpe5 does."""
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         smi, n_only, n_full = _pick_rebrics_diff_case()
         if smi is None:
-            self.skipTest("no candidate where reBRICS adds cuts")
+            probe = ', '.join(f"{s}:{o}/{f}" for s, o, f in _rebrics_diff_probe_summary())
+            self.skipTest(
+                "no SMILES where cut_rbrics > cut_rbrics_only "
+                f"(probed {probe}) — reBRICS may be inert on this build; "
+                "corpus alignment test still validates the tracked implementation")
         m = mol(smi)
         frag._CACHE.clear()
         p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
