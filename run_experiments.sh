@@ -212,13 +212,19 @@ run_frag() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
-        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
-            echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
-            continue
-        fi
         if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_variant_done "$ds" "$variant"; then
             echo "  [skip] $ds / $variant — already exists"
             continue
+        fi
+        # Skip only when re-running the standard phase1 trio and all three exist.
+        # Other variants (e.g. brics_replicate) must not be blocked by this.
+        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
+            case "$variant" in
+                "$V_OLD"|"$V_RBRICS"|"$V_ALL")
+                    echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
+                    continue
+                    ;;
+            esac
         fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
