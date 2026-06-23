@@ -10,7 +10,7 @@
 #
 # Phases:
 #   phase0           export mutag/OGB CSV bridges (DATASETS_SPECIAL)
-#   phase1           fragmentation, no threshold (all 4 variants)
+#   phase1           fragmentation, no threshold (all 3 variants)
 #   phase2           coverage vs threshold sweep  (review, then edit CHOSEN_THRESHOLD)
 #   phase3           thresholded vocabularies     (reads CHOSEN_THRESHOLD dict)
 #   phase4           synthetic GT                 (requires RULE_INDEX)
@@ -21,10 +21,9 @@
 #   phase5_motifsat  train MotifSAT
 #   collect          print results table
 #
-# Four fragmentation variants:
+# Three fragmentation variants:
 #   rbrics_old       — rbrics_only (legacy DomainDrivenGlobalExpl, ablation)
 #   rbrics           — rBRICS + reBRICS, no fallback, no BPE
-#   brics            — standard BRICS only (flat single pass, no fallback, no BPE)
 #   all_fallback_bpe — full cascade, fallback, BPE
 # =============================================================================
 set -e
@@ -114,14 +113,12 @@ _check_paths() {
 # Three base variants (no threshold):
 V_OLD="rbrics_old"               # method=rbrics_only, legacy behaviour
 V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
-V_BRICS="brics"                  # method=brics, no fallback, no BPE
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
 # V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
 
 # Three filtered variants (threshold applied):
 V_OLD_TH="rbrics_old_filter"
 V_RBRICS_TH="rbrics_filter"
-V_BRICS_TH="brics_filter"
 V_ALL_TH="all_fallback_bpe_filter"
 
 # GT-relabelled variant (from phase4):
@@ -176,7 +173,6 @@ _phase1_complete() {
     local ds=$1
     _phase1_variant_done "$ds" "$V_OLD" && \
     _phase1_variant_done "$ds" "$V_RBRICS" && \
-    _phase1_variant_done "$ds" "$V_BRICS" && \
     _phase1_variant_done "$ds" "$V_ALL"
 }
 
@@ -216,7 +212,7 @@ run_frag() {
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
         if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
-            echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_BRICS, $V_ALL)"
+            echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
             continue
         fi
         if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_variant_done "$ds" "$variant"; then
@@ -402,7 +398,6 @@ run_baselines() {
     case "$eval_variant" in
         "${V_OLD_TH}")    weight_variant="$V_OLD" ;;
         "${V_RBRICS_TH}") weight_variant="$V_RBRICS" ;;
-        "${V_BRICS_TH}")  weight_variant="$V_BRICS" ;;
         "${V_ALL_TH}")    weight_variant="$V_ALL" ;;
     esac
     for backbone in $BACKBONES; do
@@ -528,15 +523,15 @@ _check_special_exports() {
 
 # =============================================================================
 # PHASE 1 — Fragmentation, no threshold
-#   Four variants: rbrics_old, rbrics, brics, all_fallback_bpe
+#   Three variants: rbrics_old, rbrics, all_fallback_bpe
 # =============================================================================
 phase1() {
     _check_paths
     _check_special_exports
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 1 — Fragmentation (no threshold, 4 variants)"
-    echo "  Skips: datasets with all 4 variants done;"
+    echo " PHASE 1 — Fragmentation (no threshold, 3 variants)"
+    echo "  Skips: datasets with all 3 variants done;"
     echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
@@ -546,32 +541,16 @@ phase1() {
     echo "1b. rbrics  (rBRICS + reBRICS, no fallback, no BPE)"
     run_frag rbrics 0 0 "$V_RBRICS"
 
-    echo "1c. brics  (standard BRICS only, no fallback, no BPE)"
-    run_frag brics 0 0 "$V_BRICS"
-
-    echo "1d. all_fallback_bpe  (full cascade, fallback, BPE)"
+    echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
     run_frag all 1 1 "$V_ALL"
 
-    # echo "1e. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
+    # echo "1d. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
     # run_frag all 1 1 "$V_ALL" 1   # → vocab dir all_fallback_bpe_shatter (no phase5 yet)
 
     echo ""
     echo "Phase 1 complete. Vocabularies in: $VOCAB_ROOT"
-    echo "Variants: $V_OLD  $V_RBRICS  $V_BRICS  $V_ALL"
+    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL"
     echo "Next: bash run_experiments.sh phase2  (review coverage plots)"
-}
-
-# BRICS-only shortcuts (same as phase1/3 steps 1c / 3c).
-phase1_brics() {
-    _check_paths
-    _check_special_exports
-    echo ""
-    echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 1 — BRICS fragmentation only ($V_BRICS)"
-    echo "══════════════════════════════════════════════════════════"
-    run_frag brics 0 0 "$V_BRICS"
-    echo ""
-    echo "Next: bash run_experiments.sh phase2  (include $V_BRICS in sweep)"
 }
 
 # =============================================================================
@@ -582,12 +561,12 @@ phase2() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 2 — Coverage vs threshold sweep (4 variants)"
+    echo " PHASE 2 — Coverage vs threshold sweep (3 variants)"
     echo "══════════════════════════════════════════════════════════"
 
     local vocab_datasets="$DATASETS"
 
-    for variant in "$V_OLD" "$V_RBRICS" "$V_BRICS" "$V_ALL"; do
+    for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
         echo ""
         echo "  [combined / $variant]"
         python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
@@ -600,11 +579,8 @@ phase2() {
 
     echo ""
     echo "Phase 2 complete. Review plots in: $OUT_ROOT/coverage_plots"
-    echo "  Per-dataset:  {dataset}_{variant}_coverage.png / .csv"
+    echo "  Per-dataset:  {dataset}_{variant}_coverage.png"
     echo "  Combined:     all_datasets_{variant}_coverage.png"
-    echo "                  all_datasets_{variant}_coverage.csv (long)"
-    echo "                  all_datasets_{variant}_cov_tv_pct.csv (wide)"
-    echo "                  all_datasets_{variant}_vocab_size.csv (wide)"
     echo "Then:  edit CHOSEN_THRESHOLD in MotifBreakdown/generate_vocab_rules.py"
     echo "       bash run_experiments.sh phase3"
 }
@@ -628,16 +604,13 @@ phase3() {
     echo "3b. rbrics_filter"
     run_frag_thresh rbrics 0 0 "$V_RBRICS_TH"
 
-    echo "3c. brics_filter"
-    run_frag_thresh brics 0 0 "$V_BRICS_TH"
-
-    echo "3d. all_fallback_bpe_filter"
+    echo "3c. all_fallback_bpe_filter"
     run_frag_thresh all 1 1 "$V_ALL_TH"
 
     echo ""
-    echo "Phase 3 complete.  Eight vocabularies now available:"
-    echo "  No threshold: $V_OLD  $V_RBRICS  $V_BRICS  $V_ALL"
-    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_BRICS_TH  $V_ALL_TH"
+    echo "Phase 3 complete.  Six vocabularies now available:"
+    echo "  No threshold: $V_OLD  $V_RBRICS  $V_ALL"
+    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_ALL_TH"
     echo ""
     echo "To change thresholds: edit CHOSEN_THRESHOLD in"
     echo "  MotifBreakdown/generate_vocab_rules.py"
@@ -645,16 +618,6 @@ phase3() {
     echo "Next: review rules then:"
     echo "  export RULE_INDEX=<n>"
     echo "  bash run_experiments.sh phase4"
-}
-
-phase3_brics() {
-    echo ""
-    echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 3 — BRICS threshold only ($V_BRICS_TH)"
-    echo "══════════════════════════════════════════════════════════"
-    run_frag_thresh brics 0 0 "$V_BRICS_TH"
-    echo ""
-    echo "Phase 3 (brics) complete."
 }
 
 # =============================================================================
@@ -675,16 +638,14 @@ phase4() {
 
     echo ""
     echo "Phase 4 complete.  GT cache: $OUT_ROOT/gt_cache"
-    echo "Nine configurations now available:"
+    echo "Seven configurations now available:"
     echo "  1. $V_OLD             (no threshold)"
     echo "  2. $V_RBRICS          (no threshold)"
-    echo "  3. $V_BRICS           (no threshold)"
-    echo "  4. $V_ALL             (no threshold)"
-    echo "  5. $V_OLD_TH          (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  6. $V_RBRICS_TH       (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  7. $V_BRICS_TH        (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  8. $V_ALL_TH          (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  9. $V_ALL + GT        (relabelled, rule=$RULE_INDEX)"
+    echo "  3. $V_ALL             (no threshold)"
+    echo "  4. $V_OLD_TH          (threshold per CHOSEN_THRESHOLD dict)"
+    echo "  5. $V_RBRICS_TH       (threshold per CHOSEN_THRESHOLD dict)"
+    echo "  6. $V_ALL_TH          (threshold per CHOSEN_THRESHOLD dict)"
+    echo "  7. $V_ALL + GT        (relabelled, rule=$RULE_INDEX)"
     echo ""
     echo "Next: bash run_experiments.sh phase5_vanilla"
 }
@@ -698,12 +659,11 @@ phase5_vanilla() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5a — Vanilla GNN (4 vocab variants)"
+    echo " PHASE 5a — Vanilla GNN (3 vocab variants)"
     echo "══════════════════════════════════════════════════════════"
 
     run_vanilla "$V_OLD"
     run_vanilla "$V_RBRICS"
-    run_vanilla "$V_BRICS"
     run_vanilla "$V_ALL"
 
     echo "Vanilla training complete."
@@ -725,7 +685,6 @@ phase5_mose() {
     # Filtered variants (main comparison)
     run_mose "$V_OLD_TH"    "--w_feat --w_readout"
     run_mose "$V_RBRICS_TH" "--w_feat --w_readout"
-    run_mose "$V_BRICS_TH"  "--w_feat --w_readout"
     run_mose "$V_ALL_TH"    "--w_feat --w_readout"
 
     # No-threshold full cascade (ablation: does filtering help?)
@@ -772,12 +731,11 @@ phase5_gsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5c — Base GSAT (no motif method, 4 variants)"
+    echo " PHASE 5c — Base GSAT (no motif method, 3 variants)"
     echo "══════════════════════════════════════════════════════════"
 
     run_gsat "$V_OLD"
     run_gsat "$V_RBRICS"
-    run_gsat "$V_BRICS"
     run_gsat "$V_ALL"
 
     echo "Base GSAT training complete."
@@ -792,14 +750,14 @@ phase5_baselines() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5d — Post-hoc baselines on vanilla (8 eval vocabs)"
+    echo " PHASE 5d — Post-hoc baselines on vanilla (6 eval vocabs)"
     echo "══════════════════════════════════════════════════════════"
 
     # Evaluate each vocab variant (model weights fixed; vocab changes which
     # motifs get mapped to nodes for scoring).
     for eval_variant in \
-        "$V_OLD"       "$V_RBRICS"    "$V_BRICS"     "$V_ALL" \
-        "$V_OLD_TH"    "$V_RBRICS_TH" "$V_BRICS_TH"  "$V_ALL_TH"; do
+        "$V_OLD"       "$V_RBRICS"    "$V_ALL" \
+        "$V_OLD_TH"    "$V_RBRICS_TH" "$V_ALL_TH"; do
         run_baselines "$eval_variant"
     done
 
@@ -816,12 +774,11 @@ phase5_motifsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5e — MotifSAT readout | no IB | no noise (4 variants)"
+    echo " PHASE 5e — MotifSAT readout | no IB | no noise (3 variants)"
     echo "══════════════════════════════════════════════════════════"
 
     run_motifsat "$V_OLD"
     run_motifsat "$V_RBRICS"
-    run_motifsat "$V_BRICS"
     run_motifsat "$V_ALL"
 
     # GT-relabelled run: same V_ALL vocab + fragmentation; only data.y
@@ -887,10 +844,8 @@ PHASE="${1:-}"
 case "$PHASE" in
     phase0)           phase0 ;;
     phase1)           phase1 ;;
-    phase1_brics)     phase1_brics ;;
     phase2)           phase2 ;;
     phase3)           phase3 ;;
-    phase3_brics)     phase3_brics ;;
     phase4)           phase4 ;;
     phase5_vanilla)   phase5_vanilla ;;
     phase5_mose)      phase5_mose ;;
@@ -916,17 +871,15 @@ case "$PHASE" in
         echo ""
         echo "Phases:"
         echo "  phase0            export mutag/OGB CSV bridges (DATASETS_SPECIAL)"
-        echo "  phase1            fragment all 4 variants (rbrics_old, rbrics, brics, all_fallback_bpe)"
-        echo "  phase1_brics      fragment brics only (quick BRICS ablation)"
+        echo "  phase1            fragment all 3 variants (rbrics_old, rbrics, all_fallback_bpe)"
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
-        echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
-        echo "  phase3_brics      threshold brics only"
+        echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT               (requires RULE_INDEX)"
-        echo "  phase5_vanilla    vanilla GNN (4 variants)"
-        echo "  phase5_mose       MOSE-GNN (7 configs + GT)"
-        echo "  phase5_gsat       base GSAT (4 variants)"
-        echo "  phase5_baselines  post-hoc on vanilla (8 eval vocabs)"
-        echo "  phase5_motifsat   MotifSAT (4 variants + GT)"
+        echo "  phase5_vanilla    vanilla GNN (3 variants)"
+        echo "  phase5_mose       MOSE-GNN (6 configs)"
+        echo "  phase5_gsat       base GSAT (3 variants)"
+        echo "  phase5_baselines  post-hoc on vanilla (6 eval vocabs)"
+        echo "  phase5_motifsat   MotifSAT (3 variants + GT)"
         echo "  collect           print results table"
         echo "  analyze           regenerate eval + tables + plots (single entry point)"
         echo ""

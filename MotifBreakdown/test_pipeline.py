@@ -1002,7 +1002,7 @@ class TestIntegration(unittest.TestCase):
 
         # rBRICS-dependent assertions — skip if rBRICS not installed
         if frag.RBRICS_OK:
-            for method in ('rbrics', 'rbrics_only'):
+            for method in ('rbrics', 'rbrics_only', 'rbrics_old'):
                 frag._CACHE.clear()
                 pieces = gvr.fragment_molecule_tracked(m, smi,
                                                         use_fallback=False,
@@ -1017,6 +1017,22 @@ class TestIntegration(unittest.TestCase):
                                                   method='brics')
         self.assertEqual(len(pieces_b), 1,
                          "BRICS should NOT split Ar-NO2")
+
+    def test_rbrics_rebrics_pass_differs_from_rbrics_only(self):
+        """reBRICS post-pass splits long aliphatic chains that rbrics_only keeps."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        smi = 'CCCCCCCCCC'
+        m = mol(smi)
+        frag._CACHE.clear()
+        p_only = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_only')
+        frag._CACHE.clear()
+        p_old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+        frag._CACHE.clear()
+        p_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+        self.assertEqual(len(p_only), len(p_old))
+        self.assertGreater(len(p_full), len(p_only),
+                           "rbrics should split long chains via reBRICS post-pass")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -156,25 +156,6 @@ CHOSEN_THRESHOLD: dict = {
         'ogbg-molbace':      0.002,
     },
 
-    # ── standard BRICS only (filtered) ─────────────────────────────────────────
-    # Coarser cuts than rBRICS (e.g. Ar-NO2 left intact). Tune after phase2
-    # coverage sweep on variant `brics` / `brics_filter`.
-    'brics_filter': {
-        'Mutagenicity':      0.001,
-        'Benzene':           0.001,
-        'BBBP':              0.004,
-        'hERG':              0.002,
-        'Alkane_Carbonyl':   0.002,
-        'Fluoride_Carbonyl': 0.002,
-        'esol':              0.001,
-        'Lipophilicity':     0.002,
-        'freesolv':          0.002,
-        'tox21':             0.001,
-        'mutag':             0.001,
-        'ogbg-molhiv':       0.002,
-        'ogbg-molbace':      0.002,
-    },
-
     # ── rbrics_only / legacy (filtered) ──────────────────────────────────────
     # Virtually identical to rbrics in practice (reBRICS rarely fires on these
     # datasets).  Coverage curves match rbrics to 3 decimal places.
@@ -345,6 +326,73 @@ def _fob_tracked(mol_mapped: Chem.Mol,
     return result
 
 
+_REBRICS_CHAIN = Chem.MolFromSmiles("CCCCCC")
+
+
+def _rebrics_pass_tracked(
+    level1: List[Tuple[str, Set[int], Dict[int, int]]],
+) -> List[Tuple[str, Set[int]]]:
+    """reBRICS post-pass on rBRICS fragments (matches molfragbpe5.cut_rbrics).
+
+    FindreBRICSBonds only fires on fragments that still contain a CCCCCC chain
+    after the initial FindrBRICSBonds cut — unioning reBRICS bonds on the whole
+    parent molecule (rbrics_full_bonds) misses those cuts and makes rbrics ==
+    rbrics_only on most drug-like molecules.
+    """
+    import brics_rbrics as BR
+    if not BR.RBRICS_OK or _REBRICS_CHAIN is None:
+        return [(s, o) for s, o, _ in level1]
+
+    pool = list(level1)
+    breakable = [True] * len(pool)
+
+    for _ in range(100):
+        if not any(breakable):
+            break
+        new_pool: List[Tuple[str, Set[int], Dict[int, int]]] = []
+        new_breakable: List[bool] = []
+
+        for (smarts, orig_set, idx_map), can_break in zip(pool, breakable):
+            if not can_break:
+                new_pool.append((smarts, orig_set, idx_map))
+                new_breakable.append(False)
+                continue
+
+            fm_clean = frag.to_mol(frag.strip(smarts))
+            if (fm_clean is None
+                    or fm_clean.GetNumHeavyAtoms() <= 5
+                    or not fm_clean.HasSubstructMatch(_REBRICS_CHAIN)):
+                new_pool.append((smarts, orig_set, idx_map))
+                new_breakable.append(False)
+                continue
+
+            re_idx = sorted(BR.nonring_bond_indices(
+                fm_clean, BR.rebrics_bonds(fm_clean)))
+            if not re_idx:
+                new_pool.append((smarts, orig_set, idx_map))
+                new_breakable.append(False)
+                continue
+
+            fm_mapped = _stamp_mol(smarts, idx_map)
+            if fm_mapped is None:
+                new_pool.append((smarts, orig_set, idx_map))
+                new_breakable.append(False)
+                continue
+
+            sub = _fob_tracked(fm_mapped, re_idx)
+            if len(sub) >= 2:
+                new_pool.extend(sub)
+                new_breakable.extend([True] * len(sub))
+            else:
+                new_pool.append((smarts, orig_set, idx_map))
+                new_breakable.append(False)
+
+        pool = new_pool
+        breakable = new_breakable
+
+    return [(s, o) for s, o, _ in pool]
+
+
 def _stamp_mol(smarts: str, idx_map: Dict[int, int]) -> Optional[Chem.Mol]:
     """Create mol from smarts and stamp atom-map numbers from idx_map.
     idx_map: {fragment_atom_idx: original_atom_idx}.
@@ -507,12 +555,13 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     Uses orig_smi (exact CSV SMILES) to create mol, ensuring atom indices
     match the GNN DataLoader (which also calls Chem.MolFromSmiles(orig_smi)).
 
-    Legacy is intentionally ONE chemistry pass (no recursive cascade, no
-    structural fallback):
+    Legacy is intentionally ONE primary chemistry pass plus an optional reBRICS
+    sub-pass for method='rbrics':
         brics        — BRICS bonds
         rbrics_only  — rBRICS environment bonds (FindrBRICSBonds)
-        rbrics       — rBRICS + reBRICS bonds (the full rBRICS algorithm),
-                       identical to the v4 cascade's rBRICS stage
+        rbrics_old   — alias for rbrics_only
+        rbrics       — FindrBRICSBonds, then reBRICS on each fragment (matches
+                       molfragbpe5.cut_rbrics; NOT rbrics_full_bonds on parent)
     BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
     module — single source of truth with the v4 cascade (chemfrag.py).
 
@@ -521,7 +570,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
         orig_smi     — original CSV SMILES string (key for lookup dict)
         use_fallback — accepted for signature compatibility; the legacy
                        structural fallback is DISABLED (see commented block).
-        method       — 'rbrics' | 'rbrics_only' | 'brics'
+        method       — 'rbrics' | 'rbrics_only' | 'rbrics_old' | 'brics'
     Output:
         list of (fragment_smarts, {original_atom_indices}) covering ALL n atoms
     """
@@ -537,23 +586,22 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     # Clean (unmapped) mol for bond discovery — same atom indexing as `mol`.
     mol_clean = frag.to_mol(frag.strip(orig_smi)) or mol
 
-    # Single primary cut: one bond set over the whole molecule. BRICS/rBRICS
-    # bond discovery is the SAME shared algorithm the v4 cascade uses:
-    #   brics        -> BRICS bonds
-    #   rbrics_only  -> rBRICS environment bonds (FindrBRICSBonds)
-    #   rbrics       -> rBRICS + reBRICS bonds (full rBRICS algorithm, identical
-    #                   to the v4 cascade's rBRICS stage). reBRICS is folded into
-    #                   the single cut, so no separate sub-pass is needed.
+    # Primary cut over the whole molecule:
+    #   brics / rbrics_only / rbrics_old  -> FindrBRICSBonds (or BRICS)
+    #   rbrics                             -> FindrBRICSBonds only; reBRICS runs
+    #                                        on fragments in _rebrics_pass_tracked
     if method == 'brics':
         idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    elif method == 'rbrics_only':
+    elif method in ('rbrics_only', 'rbrics_old'):
         idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
-        if not idx1:                       # rBRICS unavailable / nothing to cut
+        if not idx1:
             idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
-    else:  # 'rbrics'
-        idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_full_bonds(mol_clean))
-        if not idx1:                       # rBRICS unavailable / nothing to cut
+    elif method == 'rbrics':
+        idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
+        if not idx1:
             idx1 = BR.nonring_bond_indices(mol_clean, BR.brics_bonds(mol_clean))
+    else:
+        raise ValueError(f"unknown legacy method: {method!r}")
 
     if idx1:
         level1 = _fob_tracked(mol_mapped, sorted(idx1))
@@ -561,7 +609,10 @@ def fragment_molecule_tracked(mol: Chem.Mol,
         level1 = [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
                    {i: i for i in range(n)})]
 
-    all_pieces: List[Tuple[str, Set[int]]] = [(s, o) for s, o, _ in level1]
+    if method == 'rbrics':
+        all_pieces = _rebrics_pass_tracked(level1)
+    else:
+        all_pieces = [(s, o) for s, o, _ in level1]
 
     # ── Step 2 (recursive exhaustive cascade via _cascade_tracked) and Step 3
     #    (structural fallback) are DISABLED: legacy is a single chemistry pass.
@@ -1203,6 +1254,12 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                       else method)
 
     if method in _LEGACY_METHODS:
+        import brics_rbrics as _BR
+        if (method in ('rbrics', 'rbrics_old', 'rbrics_only')
+                and not _BR.RBRICS_OK):
+            print("    [warn] rBRICS_public not available — rbrics and rbrics_old "
+                  "both fall back to BRICS; vocabs will be identical until "
+                  "rBRICS is installed and phase1 is re-run.")
         # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
         # NOTE: the legacy prevalence-BPE merge is intentionally DISABLED. The
         # plain (untracked) fragmentation that fed `frag.bpe_merge`, and the BPE
