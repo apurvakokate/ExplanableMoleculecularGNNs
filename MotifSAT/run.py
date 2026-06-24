@@ -28,7 +28,7 @@ from SharedModules.evaluation.pipeline import EvalPipeline
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger, build_impact_cache_from_eval
 from SharedModules.evaluation.wandb_logger import WandbLogger
 from SharedModules.evaluation.metrics import evaluate_predictions
-from SharedModules.evaluation.multi_explanation import MultiExplanationAnalysis
+from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 from SharedModules.utils import set_seed, get_device
 
 from config import MotifSATConfig
@@ -420,26 +420,23 @@ def run(cfg: MotifSATConfig) -> dict:
 
     pipeline.print_summary(results)
 
-    # Multi-explanation analysis (motif_method=readout only, noise comparison)
-    if cfg.run_multi_explanation and cfg.motif_method == "readout":
-        try:
-            print("\n  Running multi-explanation analysis ...")
-            # Use aggregated attention as motif scores for MotifSAT
-            _me_scores = _aggregate_att_to_motif(
+    # Multi-explanation (optional inline; default is post-hoc via analysis/run_multi_explanation.py)
+    if cfg.run_multi_explanation and not cfg.learn_edge_att:
+        agg_fn = _aggregate_att_to_motif if cfg.motif_method in ('readout', 'none') else None
+        _me_scores = summary_scores
+        if not _me_scores and agg_fn is not None:
+            _me_scores = agg_fn(
                 model, test_list, device,
                 learn_edge_att=cfg.learn_edge_att,
                 max_graphs=cfg.max_motifs_eval or 500,
             ).get("mean", {})
-            analysis = MultiExplanationAnalysis(
-                model, vocab, test_list, device,
-                motif_scores=_me_scores,  # per-vocabulary aggregated attention scores
-                task_type=task_type,
-                max_motifs=cfg.max_motifs_eval,
-            )
-            analysis.run(local_filter="p75")
-            analysis.save(str(out_dir / "multi_explanation"))
-        except Exception as e:
-            print(f"  [warn] Multi-explanation failed: {e}")
+        run_multi_explanation_posthoc(
+            model, vocab, test_list, device, task_type, out_dir,
+            motif_scores=_me_scores or None,
+            learn_edge_att=cfg.learn_edge_att,
+            att_aggregate_fn=agg_fn,
+            max_motifs=cfg.max_motifs_eval,
+        )
 
     # Save
     dfs = pipeline.to_dataframe(results)
@@ -598,6 +595,9 @@ def main():
                              "eval pipeline (regenerates summary + per-motif CSVs).")
     parser.add_argument("--load_weights_from", default=None,
                         help="Run dir or path to best_model.pt for --eval_only.")
+    parser.add_argument("--run_multi_explanation", action="store_true",
+                        help="Run H0/H1/H2 multi-explanation inline after eval "
+                             "(default: post-hoc via analysis/run_multi_explanation.py).")
     parser.add_argument("--conv_normalize", default="l2",
                         choices=["l2", "layernorm", "none"],
                         help="Per-conv normalization (default l2).")
@@ -647,6 +647,7 @@ def main():
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,
             gin_inner_bn=args.gin_inner_bn,
+            run_multi_explanation=args.run_multi_explanation,
         )
     run(cfg)
 

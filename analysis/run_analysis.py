@@ -6,6 +6,8 @@ output tree. Wraps the individual analysis modules:
 
   regenerate   re-run eval-only on existing checkpoints (no retraining), so the
                new explainability metrics land in each run's summary.json + CSVs
+  multi_explanation  post-hoc H0/H1/H2 on MOSE / MotifSAT / GSAT (node-attention)
+  probe          masked-node feature-recovery probe on ante-hoc checkpoints
   collect      rebuild <out_root>/all_results.csv from all summary.json files
   table        pivot all_results.csv -> dataset×family×variant rows, backbone
                cols (mean±std), written as markdown per metric
@@ -28,10 +30,9 @@ Notes
 -----
 * `regenerate` requires --data_root/--vocab_root (and ideally --processed_root).
   Pair each checkpoint with the vocab it was TRAINED on.
-* The masked-node probe needs a live model in memory, so it is intentionally NOT
-  part of this batch CLI; import it instead:
-      from analysis.probe_masked_nodes import probe_run
-      probe_run(model, test_list, device)
+* `multi_explanation` and `probe` are post-hoc on saved checkpoints:
+      python analysis/run_multi_explanation.py --out_root ... --data_root ... --vocab_root ...
+      python analysis/probe_masked_nodes.py --out_root ... --data_root ... --vocab_root ...
 """
 from __future__ import annotations
 
@@ -214,6 +215,29 @@ def step_table(args) -> int:
     return 0
 
 
+def step_multi_explanation(args) -> int:
+    if not (args.data_root and args.vocab_root):
+        print('[multi_explanation] needs --data_root and --vocab_root; skipping.')
+        return 1
+    cmd = [sys.executable, str(ANALYSIS / 'run_multi_explanation.py'),
+           '--out_root', args.out_root,
+           '--data_root', args.data_root, '--vocab_root', args.vocab_root]
+    print('\n=== post-hoc multi-explanation (H0/H1/H2) ===')
+    return subprocess.run(cmd).returncode
+
+
+def step_probe(args) -> int:
+    if not (args.data_root and args.vocab_root):
+        print('[probe] needs --data_root and --vocab_root; skipping.')
+        return 1
+    cmd = [sys.executable, str(ANALYSIS / 'probe_masked_nodes.py'),
+           '--out_root', args.out_root,
+           '--data_root', args.data_root, '--vocab_root', args.vocab_root,
+           '--save', 'masked_node_probe.csv']
+    print('\n=== masked-node feature probe ===')
+    return subprocess.run(cmd).returncode
+
+
 def step_plots(args) -> int:
     cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
            '--out_root', args.out_root,
@@ -267,13 +291,22 @@ def main():
     p_tb.add_argument('--csv', default=None)
     p_tb.add_argument('--metrics', nargs='*', default=None)
 
+    p_me = sub.add_parser('multi_explanation', help='post-hoc H0/H1/H2 analysis')
+    path_args(p_me)
+    train_args(p_me)
+
+    p_pr = sub.add_parser('probe', help='masked-node feature-recovery probe')
+    path_args(p_pr)
+    train_args(p_pr)
+
     p_pl = sub.add_parser('plots', help='score-vs-impact grid + counts')
     path_args(p_pl)
     p_pl.add_argument('--group', default='family')
     p_pl.add_argument('--facet', default='variant')
     p_pl.add_argument('--nbins', type=int, default=6)
 
-    p_all = sub.add_parser('all', help='regenerate -> collect -> table -> plots')
+    p_all = sub.add_parser('all',
+                           help='regenerate -> multi_explanation -> probe -> collect -> table -> plots')
     collect_args(p_all)
     train_args(p_all)
     p_all.add_argument('--csv', default=None)
@@ -283,11 +316,17 @@ def main():
     p_all.add_argument('--nbins', type=int, default=6)
     p_all.add_argument('--skip_regenerate', action='store_true',
                        help='Use existing summaries; do not re-run eval.')
+    p_all.add_argument('--skip_multi_explanation', action='store_true')
+    p_all.add_argument('--skip_probe', action='store_true')
 
     args = ap.parse_args()
 
     if args.command == 'regenerate':
         sys.exit(step_regenerate(args))
+    if args.command == 'multi_explanation':
+        sys.exit(step_multi_explanation(args))
+    if args.command == 'probe':
+        sys.exit(step_probe(args))
     if args.command == 'collect':
         sys.exit(step_collect(args))
     if args.command == 'table':
@@ -302,6 +341,12 @@ def main():
             else:
                 print('[all] no --data_root/--vocab_root; skipping regenerate '
                       '(using existing summaries).')
+        if not getattr(args, 'skip_multi_explanation', False):
+            if args.data_root and args.vocab_root:
+                rc |= step_multi_explanation(args)
+        if not getattr(args, 'skip_probe', False):
+            if args.data_root and args.vocab_root:
+                rc |= step_probe(args)
         rc |= step_collect(args)
         rc |= step_table(args)
         rc |= step_plots(args)

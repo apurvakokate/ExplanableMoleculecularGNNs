@@ -53,24 +53,25 @@ DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
-MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-1}"
+MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
 WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProject"
-# MotifSAT message injection (w_message).  Prior to the argparse fix, w_message
-# defaulted to True and could not be disabled, so every base-GSAT and MotifSAT
-# run used message injection.  This toggle preserves that behaviour by default.
-# Set MOTIFSAT_W_MESSAGE=0 to train without message injection.
 ENCODER_NORM="${ENCODER_NORM:-off}"
-MOTIFSAT_W_MESSAGE="${MOTIFSAT_W_MESSAGE:-1}"
-if [ "$MOTIFSAT_W_MESSAGE" = "1" ]; then
-    WM_FLAG="--w_message"
-else
-    WM_FLAG=""
-fi
+# Default injection presets (3-bit: w_feat / w_message / w_readout):
+#   MOSE     101  (--w_feat --w_readout)
+#   MotifSAT 111  (--w_feat --w_message --w_readout)
+#   GSAT     010  (--w_message; node att → edge att via src×dst in gnn_base)
+MOSE_INJ="${MOSE_INJ:---w_feat --w_readout}"
+MOTIFSAT_INJ="${MOTIFSAT_INJ:---w_feat --w_message --w_readout}"
+GSAT_INJ="${GSAT_INJ:---w_message}"
+GSAT_LEARN_EDGE_ATT="${GSAT_LEARN_EDGE_ATT:-0}"
 _mose_extra_flags() {
     local extra=""
     [ "$MOSE_RUN_MULTI_EXPLANATION" = "1" ] && extra="--run_multi_explanation"
     echo "$extra"
+}
+_gsat_learn_edge_att_flag() {
+    [ "$GSAT_LEARN_EDGE_ATT" = "1" ] && echo "--learn_edge_att"
 }
 # Rule ranking for rules.json (rule_index 0 = best). 'balanced' sorts by
 # balance × separation × (1-spurious) to target a ~50/50 synthetic GT split and
@@ -326,9 +327,9 @@ run_mose() {
 }
 
 run_gsat() {
-    local variant=$1
+    local variant=$1 inj_args=${2:-$GSAT_INJ}
     for backbone in $BACKBONES; do
-        echo "  [BaseGSAT] backbone=$backbone vocab=$variant"
+        echo "  [BaseGSAT] backbone=$backbone vocab=$variant inj=$inj_args learn_edge_att=$GSAT_LEARN_EDGE_ATT"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
                 _skip_redundant_fold "$ds" "$fold" && continue
@@ -340,7 +341,8 @@ run_gsat() {
                     --dataset         "$ds" --fold "$eff_fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    none \
-                    --learn_edge_att \
+                    $inj_args \
+                    $(_gsat_learn_edge_att_flag) \
                     --noise           node \
                     --info_loss_level node \
                     --info_loss_coef  1.0 \
@@ -359,9 +361,9 @@ run_gsat() {
 }
 
 run_motifsat() {
-    local variant=$1
+    local variant=$1 inj_args=${2:-$MOTIFSAT_INJ}
     for backbone in $BACKBONES; do
-        echo "  [MotifSAT readout] backbone=$backbone vocab=$variant"
+        echo "  [MotifSAT readout] backbone=$backbone vocab=$variant inj=$inj_args"
         for ds in $DATASETS; do
             for fold in $FOLDS; do
                 _skip_redundant_fold "$ds" "$fold" && continue
@@ -376,7 +378,7 @@ run_motifsat() {
                     --noise           none \
                     --info_loss_level none \
                     --info_loss_coef  0.0 \
-                    --w_feat --w_readout $WM_FLAG \
+                    $inj_args \
                     --epochs          "$EPOCHS" \
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
@@ -676,24 +678,26 @@ phase5_vanilla() {
 
 # =============================================================================
 # PHASE 5b — MOSE-GNN
-#   Six configurations: all three filtered variants + all_fallback_bpe (no
-#   threshold) + all_fallback_bpe with GT relabelling.
-#   rbrics_old_filter uses the plot-path vocab with threshold applied.
+#   Seven configurations: three filtered + three unfiltered base vocabs +
+#   all_fallback_bpe with GT relabelling (when phase4 gt_cache exists).
+#   Default injection: 101 (--w_feat --w_readout).
 # =============================================================================
 phase5_mose() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5b — MOSE-GNN (w_feat + w_readout)"
+    echo " PHASE 5b — MOSE-GNN (injection 101: w_feat + w_readout)"
     echo "══════════════════════════════════════════════════════════"
 
-    # Filtered variants (main comparison)
-    run_mose "$V_OLD_TH"    "--w_feat --w_readout"
-    run_mose "$V_RBRICS_TH" "--w_feat --w_readout"
-    run_mose "$V_ALL_TH"    "--w_feat --w_readout"
+    # Filtered variants (thresholded vocabs)
+    run_mose "$V_OLD_TH"    "$MOSE_INJ"
+    run_mose "$V_RBRICS_TH" "$MOSE_INJ"
+    run_mose "$V_ALL_TH"    "$MOSE_INJ"
 
-    # No-threshold full cascade (ablation: does filtering help?)
-    run_mose "$V_ALL"       "--w_feat --w_readout"
+    # Unfiltered base vocabs (MOSE supports both filtered and unfiltered)
+    run_mose "$V_OLD"       "$MOSE_INJ"
+    run_mose "$V_RBRICS"    "$MOSE_INJ"
+    run_mose "$V_ALL"       "$MOSE_INJ"
 
     # Synthetic GT relabelling (main novel contribution)
     # Requires phase4 to have been run.
@@ -730,13 +734,15 @@ phase5_mose() {
 
 # =============================================================================
 # PHASE 5c — Base GSAT
-#   Comparison point: GSAT with no motif method, across all three base variants.
+#   Node-level attention + message injection (default 010: --w_message).
+#   learn_edge_att=False by default (node att scaled to edges via src×dst).
+#   Set GSAT_LEARN_EDGE_ATT=1 for the legacy edge-attention MLP path.
 # =============================================================================
 phase5_gsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5c — Base GSAT (no motif method, 3 variants)"
+    echo " PHASE 5c — Base GSAT (injection 010: w_message, learn_edge_att=$GSAT_LEARN_EDGE_ATT)"
     echo "══════════════════════════════════════════════════════════"
 
     run_gsat "$V_OLD"
@@ -771,20 +777,19 @@ phase5_baselines() {
 
 # =============================================================================
 # PHASE 5e — MotifSAT
-#   Readout-level motif aggregation, no IB, no noise.
-#   learn_edge_att must be False for valid motif score aggregation.
-#   Three base variants + GT-relabelled.
+#   Readout-level motif aggregation; default injection 111 (w_feat+w_message+w_readout).
+#   Unfiltered base vocabs only (MotifSAT builds embeddings — filtering N/A).
 # =============================================================================
 phase5_motifsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5e — MotifSAT readout | no IB | no noise (3 variants)"
+    echo " PHASE 5e — MotifSAT readout (injection 111, unfiltered vocabs)"
     echo "══════════════════════════════════════════════════════════"
 
-    run_motifsat "$V_OLD"
-    run_motifsat "$V_RBRICS"
-    run_motifsat "$V_ALL"
+    run_motifsat "$V_OLD"    "$MOTIFSAT_INJ"
+    run_motifsat "$V_RBRICS" "$MOTIFSAT_INJ"
+    run_motifsat "$V_ALL"    "$MOTIFSAT_INJ"
 
     # GT-relabelled run: same V_ALL vocab + fragmentation; only data.y
     # and data.edge_label differ (set by phase4 apply_gt.py).
@@ -803,7 +808,7 @@ phase5_motifsat() {
                         --noise           none \
                         --info_loss_level none \
                         --info_loss_coef  0.0 \
-                        --w_feat --w_readout $WM_FLAG \
+                        --w_feat --w_readout --w_message \
                         --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                         --epochs          "$EPOCHS" \
                         --data_root       "$DATA_ROOT" \
@@ -821,6 +826,39 @@ phase5_motifsat() {
     fi
 
     echo "MotifSAT training complete."
+}
+
+# =============================================================================
+# Post-hoc H0/H1/H2 multi-explanation (MOSE, MotifSAT, GSAT node-attention)
+#   Run after phase5 training completes. Skips vanilla/baselines and
+#   learn_edge_att GSAT runs automatically.
+# =============================================================================
+multi_explanation() {
+    _check_paths
+    echo ""
+    echo "══════════════════════════════════════════════════════════"
+    echo " Post-hoc multi-explanation (H0/H1/H2)"
+    echo "══════════════════════════════════════════════════════════"
+    python3 "$PROJECT/analysis/run_multi_explanation.py" \
+        --out_root   "$OUT_ROOT" \
+        --data_root  "$DATA_ROOT" \
+        --vocab_root "$VOCAB_ROOT"
+}
+
+# =============================================================================
+# Post-hoc masked-node feature probe (MOSE / MotifSAT readout / GSAT node-att)
+# =============================================================================
+probe_masked_nodes() {
+    _check_paths
+    echo ""
+    echo "══════════════════════════════════════════════════════════"
+    echo " Masked-node feature probe"
+    echo "══════════════════════════════════════════════════════════"
+    python3 "$PROJECT/analysis/probe_masked_nodes.py" \
+        --out_root   "$OUT_ROOT" \
+        --data_root  "$DATA_ROOT" \
+        --vocab_root "$VOCAB_ROOT" \
+        --save       masked_node_probe.csv
 }
 
 # =============================================================================
@@ -857,6 +895,8 @@ case "$PHASE" in
     phase5_gsat)      phase5_gsat ;;
     phase5_baselines) phase5_baselines ;;
     phase5_motifsat)  phase5_motifsat ;;
+    multi_explanation) multi_explanation ;;
+    probe_masked_nodes) probe_masked_nodes ;;
     collect)          collect_results ;;
     analyze|analysis)
         # Single entry point for all analysis + plots. Regenerates eval metrics
@@ -881,10 +921,12 @@ case "$PHASE" in
         echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT               (requires RULE_INDEX)"
         echo "  phase5_vanilla    vanilla GNN (3 variants)"
-        echo "  phase5_mose       MOSE-GNN (6 configs)"
-        echo "  phase5_gsat       base GSAT (3 variants)"
+        echo "  phase5_mose       MOSE-GNN (7 configs: 3 filtered + 3 unfiltered + GT)"
+        echo "  phase5_gsat       base GSAT (3 variants, injection 010)"
         echo "  phase5_baselines  post-hoc on vanilla (6 eval vocabs)"
-        echo "  phase5_motifsat   MotifSAT (3 variants + GT)"
+        echo "  phase5_motifsat   MotifSAT (3 unfiltered variants + GT)"
+        echo "  multi_explanation post-hoc H0/H1/H2 on MOSE/MotifSAT/GSAT"
+        echo "  probe_masked_nodes post-hoc masked-node feature probe"
         echo "  collect           print results table"
         echo "  analyze           regenerate eval + tables + plots (single entry point)"
         echo ""

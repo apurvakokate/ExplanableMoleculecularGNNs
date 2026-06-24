@@ -26,7 +26,7 @@ from SharedModules.evaluation.pipeline import EvalPipeline
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger, build_impact_cache_from_eval
 from SharedModules.evaluation.wandb_logger import WandbLogger
 from SharedModules.evaluation.metrics import evaluate_predictions
-from SharedModules.evaluation.multi_explanation import MultiExplanationAnalysis
+from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 from SharedModules.utils import set_seed, get_device
 
 from config import MOSEConfig
@@ -282,20 +282,13 @@ def run(cfg: MOSEConfig) -> dict:
         run_motif_impact=cfg.run_motif_impact,
     )
 
-    # Multi-explanation analysis (optional, runs masked forward passes)
+    # Multi-explanation (optional inline; default is post-hoc via analysis/run_multi_explanation.py)
     if cfg.run_multi_explanation and flat_scores:
-        try:
-            print('\n  Running multi-explanation analysis ...')
-            analysis = MultiExplanationAnalysis(
-                model, vocab, test_list, device,
-                motif_scores=flat_scores,
-                task_type=task_type,
-                max_motifs=cfg.max_motifs_eval,
-            )
-            analysis.run(local_filter='p75')
-            analysis.save(str(out_dir / 'multi_explanation'))
-        except Exception as e:
-            print(f'  [warn] Multi-explanation failed: {e}')
+        run_multi_explanation_posthoc(
+            model, vocab, test_list, device, task_type, out_dir,
+            motif_scores=flat_scores,
+            max_motifs=cfg.max_motifs_eval,
+        )
 
     # Save results
     dfs = pipeline.to_dataframe(results)
@@ -410,6 +403,10 @@ def main():
                         help='Size/sparsity reg. If omitted, resolved per '
                              '(backbone, dataset) from reg_config.py (PNA→GIN).')
     parser.add_argument('--epochs',      type=int, default=150)
+    parser.add_argument('--gnn_lr',      type=float, default=None,
+                        help='LR for GNN backbone params (default 0.001 from MOSEConfig).')
+    parser.add_argument('--explainer_lr', type=float, default=None,
+                        help='LR for motif-importance / explainer params (default 0.01).')
     parser.add_argument('--data_root',   default='./datasets/FOLDS')
     parser.add_argument('--vocab_root',  default='./motifsat_output')
     parser.add_argument('--vocab_variant', default='all_fallback_bpe')
@@ -489,7 +486,10 @@ def main():
             w_feat=args.w_feat, w_message=args.w_message,
             w_readout=args.w_readout,
             ent_reg=_ent, size_reg=_size,
-            epochs=args.epochs, data_root=args.data_root,
+            epochs=args.epochs,
+            gnn_lr=0.001 if args.gnn_lr is None else args.gnn_lr,
+            explainer_lr=0.01 if args.explainer_lr is None else args.explainer_lr,
+            data_root=args.data_root,
             vocab_root=args.vocab_root, vocab_variant=args.vocab_variant,
             node_encoder=args.node_encoder,
             processed_root=_proc_root,

@@ -63,6 +63,10 @@ def _append_hparams(cmd: list[str], meta: dict, *, data_root: str | None = None)
         cmd += ['--num_layers', str(meta['num_layers'])]
     if meta.get('hidden_dim') is not None:
         cmd += ['--hidden_dim', str(meta['hidden_dim'])]
+    if meta.get('gnn_lr') is not None:
+        cmd += ['--gnn_lr', str(meta['gnn_lr'])]
+    if meta.get('explainer_lr') is not None:
+        cmd += ['--explainer_lr', str(meta['explainer_lr'])]
     if meta.get('gin_inner_bn') is False:
         cmd += ['--no_gin_inner_bn']
     if _flag(meta.get('apply_layer_norm')):
@@ -164,13 +168,12 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
         cmd = [sys.executable, str(REPO / 'MOSE-GNN' / 'run.py')] + common
         if meta.get('unk_mode') not in (None, ''):
             cmd += ['--unk_mode', str(meta['unk_mode'])]
-        if _flag(meta.get('run_multi_explanation')):
-            cmd += ['--run_multi_explanation']
         for f, name in ((meta.get('w_feat'), '--w_feat'),
                         (meta.get('w_message'), '--w_message'),
                         (meta.get('w_readout'), '--w_readout')):
             if _flag(f):
                 cmd.append(name)
+        # multi-explanation is post-hoc (analysis/run_multi_explanation.py)
         cmd += ['--eval_only', '--load_weights_from', str(run_dir)]
         return cmd
 

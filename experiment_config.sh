@@ -55,8 +55,16 @@ export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encode
 export EPOCHS="100"
 # Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
 export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
-# MOSE multi-explanation analysis (H0/H1/H2); extra masked forward passes
-export MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-1}"
+# MOSE multi-explanation (H0/H1/H2) runs post-hoc — see phase multi_explanation.
+# Set to 1 only to run inline during MOSE training (not recommended at scale).
+export MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
+# GSAT: learn_edge_att=False (default) uses node scores × for edge message scaling.
+# Set GSAT_LEARN_EDGE_ATT=1 for the legacy separate edge-attention MLP path.
+export GSAT_LEARN_EDGE_ATT="${GSAT_LEARN_EDGE_ATT:-0}"
+# Default injection CLI flags (override for ablation sweeps):
+export MOSE_INJ="${MOSE_INJ:---w_feat --w_readout}"          # 101
+export MOTIFSAT_INJ="${MOTIFSAT_INJ:---w_feat --w_message --w_readout}"  # 111
+export GSAT_INJ="${GSAT_INJ:---w_message}"                    # 010
 
 # ── Phase 3: thresholds ───────────────────────────────────────────────────────
 # Thresholds are set per-dataset in a dict — no shell variable needed.

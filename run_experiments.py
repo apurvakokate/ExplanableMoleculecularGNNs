@@ -140,7 +140,9 @@ def build_arg_parser():
     p.add_argument('--features', default=None, help='onehot,linear')
     p.add_argument('--layer_norm', default=None, help='none,l2,layernorm (between conv layers)')
     p.add_argument('--encoder_norm', default=None, help='off,on (LayerNorm after linear encoder; vanilla only)')
-    p.add_argument('--injection', default='111', help='3-bit w_feat/w_message/w_readout, e.g. 111,101')
+    p.add_argument('--injection', default='101',
+                   help='3-bit w_feat/w_message/w_readout per family default 101 (MOSE). '
+                        'Use 111 for MotifSAT, 010 for GSAT when sweeping those families.')
     p.add_argument('--epochs', default='100', help='e.g. 100 or 50,100,200')
     p.add_argument('--synthetic', default='off', help='off,on (train on phase-4 GT relabelled data)')
     p.add_argument('--preset', default=None,
@@ -180,10 +182,12 @@ def build_arg_parser():
     # MotifSAT-specific
     p.add_argument('--motif_method', default='readout', help='readout|none (none ⇒ base GSAT)')
 
-    # MOSE-specific (default on — same as MOSE_RUN_MULTI_EXPLANATION=1 in experiment_config.sh)
+    # MOSE-specific (default off — use analysis/run_multi_explanation.py post-hoc)
     p.add_argument('--mose_run_multi_explanation', choices=('0', '1'), default=None,
-                   help='MOSE H0/H1/H2 analysis via --run_multi_explanation '
-                        '(default: MOSE_RUN_MULTI_EXPLANATION env or 1)')
+                   help='MOSE inline H0/H1/H2 via --run_multi_explanation '
+                        '(default: off; use post-hoc multi_explanation phase)')
+    p.add_argument('--gsat_learn_edge_att', action='store_true',
+                   help='GSAT: use separate edge-attention MLP (default: node att only)')
 
     # extra passthrough + control
     p.add_argument('--extra', default='', help='extra flags appended verbatim to every trainer call')
@@ -361,11 +365,15 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn, backbone):
         if syn == 'on':
             cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp == 'gsat':
-        # GSAT baseline: edge-attention + node IB, no MOSE injection.
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr),
                 '--motif_method', 'none',
-                '--learn_edge_att', '--noise', 'node',
+                '--noise', 'node',
                 '--info_loss_level', 'node', '--info_loss_coef', '1.0']
+        if w_feat: cmd += ['--w_feat']
+        if w_msg:  cmd += ['--w_message']
+        if w_read: cmd += ['--w_readout']
+        if getattr(args, 'gsat_learn_edge_att', False):
+            cmd += ['--learn_edge_att']
         if syn == 'on':
             cmd += ['--use_gt', '--gt_cache', args.gt_cache]
     elif exp == 'motifsat':
