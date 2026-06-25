@@ -9,6 +9,12 @@ wandb/
 # intentionally NOT ignored. If you want to ignore only the generated plots,
 # they live under results/plots/ which is already covered by results/ above.
 
+# ── Local artifact validation / report outputs (never commit) ───────────────
+_validate_vocab/
+analysis/_vocab_ppt_figs/
+analysis/vocab_phase1_results.pptx
+analysis/build_vocab_phase1_ppt.py
+
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

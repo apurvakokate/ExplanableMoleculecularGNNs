@@ -300,18 +300,17 @@ def cut_rbrics(mol: Chem.Mol) -> List[str]:
 
     Plain (untracked) path used by molfragbpe5 cascades:
       1. FindrBRICSBonds  — environment bonds
-      2. BreakrBRICSBonds — break (same breaker as rbrics_old / plot path)
+      2. BreakrBRICSBonds — break; falls back to FragmentOnBRICSBonds when
+         FindrBRICSBonds finds nothing (same as rbrics_old / tracked rbrics)
       3. reBRICS          — further split fragments with CCCCCC chains
 
-    Legacy **tracked** ``method='rbrics'`` in generate_vocab_rules.py uses a
-    different implementation: pass-1 FragmentOnBonds (_rbrics_pass1_tracked)
-    plus _rebrics_pass_tracked on each fragment. Bond sets usually agree; piece
-    boundaries and motif keys can differ slightly. Tests compare fragment counts
-    as a sanity check, not byte-identical outputs.
+    Tracked ``method='rbrics'`` in generate_vocab_rules.py uses the same
+    BreakrBRICSBonds pass 1 (_rbrics_pass1_tracked) plus _rebrics_pass_tracked.
+    Motif keys differ ([*] canonical SMARTS vs plain * in rbrics_old).
 
     Output uses [*] normalised SMARTS via strip() unless --preserve_typed_dummies.
     Input:  RDKit Mol
-    Output: list of fragment SMARTS, or [] if no eligible bonds
+    Output: list of fragment SMARTS, or [] if fewer than 2 real fragments result
     """
     key = ('rb', canon(mol))
     if key in _CACHE:
@@ -321,9 +320,6 @@ def cut_rbrics(mol: Chem.Mol) -> List[str]:
         return []
     try:
         bonds = list(FindrBRICSBonds(mol))
-        if not bonds:
-            _CACHE[key] = []
-            return []
         broken = BreakrBRICSBonds(mol, bonds)
         frags  = Chem.GetMolFrags(broken, asMols=True)
         frags  = reBRICS(frags)

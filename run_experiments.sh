@@ -10,7 +10,7 @@
 #
 # Phases:
 #   phase0           export mutag/OGB CSV bridges (DATASETS_SPECIAL)
-#   phase1           fragmentation, no threshold (all 3 variants)
+#   phase1           fragmentation, no threshold (4 variants)
 #   phase2           coverage vs threshold sweep  (review, then edit CHOSEN_THRESHOLD)
 #   phase3           thresholded vocabularies     (reads CHOSEN_THRESHOLD dict)
 #   phase4           synthetic GT                 (requires RULE_INDEX)
@@ -21,9 +21,10 @@
 #   phase5_motifsat  train MotifSAT
 #   collect          print results table
 #
-# Three fragmentation variants:
+# Four fragmentation variants:
 #   rbrics_old       — CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles)
-#   rbrics           — rBRICS pass 1 + reBRICS, legacy SMARTS keys
+#   rbrics           — BreakrBRICSBonds (rBRICS else BRICS fallback) + reBRICS
+#   rbrics_with_struct_fallback — same + structural fallback on single fragments
 #   all_fallback_bpe — full v4 cascade, fallback, BPE
 # =============================================================================
 set -e
@@ -113,13 +114,15 @@ _check_paths() {
 # ── Vocabulary variant names ───────────────────────────────────────────────────
 # Three base variants (no threshold):
 V_OLD="rbrics_old"               # method=rbrics_old, CreateMotifVocab plot path
-V_RBRICS="rbrics"                # method=rbrics, no fallback, no BPE
+V_RBRICS="rbrics"                # method=rbrics, no structural fallback, no BPE
+V_RBRICS_SF="rbrics_with_struct_fallback"  # method=rbrics + structural fallback
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
 # V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
 
 # Three filtered variants (threshold applied):
 V_OLD_TH="rbrics_old_filter"
 V_RBRICS_TH="rbrics_filter"
+V_RBRICS_SF_TH="rbrics_with_struct_fallback_filter"
 V_ALL_TH="all_fallback_bpe_filter"
 
 # GT-relabelled variant (from phase4):
@@ -545,8 +548,11 @@ phase1() {
     echo "1a. rbrics_old  (CreateMotifVocab plot path — BreakrBRICSBonds + ToSmiles)"
     run_frag rbrics_old 0 0 "$V_OLD"
 
-    echo "1b. rbrics  (rBRICS + reBRICS, no fallback, no BPE)"
+    echo "1b. rbrics  (BreakrBRICSBonds + BRICS fallback + reBRICS)"
     run_frag rbrics 0 0 "$V_RBRICS"
+
+    echo "1d. rbrics_with_struct_fallback  (rBRICS/BRICS fallback + reBRICS + structural fallback)"
+    run_frag rbrics 1 0 "$V_RBRICS_SF"
 
     echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
     run_frag all 1 1 "$V_ALL"
@@ -556,24 +562,24 @@ phase1() {
 
     echo ""
     echo "Phase 1 complete. Vocabularies in: $VOCAB_ROOT"
-    echo "Variants: $V_OLD  $V_RBRICS  $V_ALL"
+    echo "Variants: $V_OLD  $V_RBRICS  $V_RBRICS_SF  $V_ALL"
     echo "Next: bash run_experiments.sh phase2  (review coverage plots)"
 }
 
 # =============================================================================
 # PHASE 2 — Coverage vs threshold sweep
-#   All three base variants swept so you can compare curves side by side.
+#   All four base variants swept so you can compare curves side by side.
 # =============================================================================
 phase2() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 2 — Coverage vs threshold sweep (3 variants)"
+    echo " PHASE 2 — Coverage vs threshold sweep (4 variants)"
     echo "══════════════════════════════════════════════════════════"
 
     local vocab_datasets="$DATASETS"
 
-    for variant in "$V_OLD" "$V_RBRICS" "$V_ALL"; do
+    for variant in "$V_OLD" "$V_RBRICS" "$V_RBRICS_SF" "$V_ALL"; do
         echo ""
         echo "  [combined / $variant]"
         python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
@@ -594,7 +600,7 @@ phase2() {
 
 # =============================================================================
 # PHASE 3 — Thresholded vocabularies
-#   All three variants re-fragmented with threshold applied.
+#   All four filtered variants re-fragmented with threshold applied.
 # =============================================================================
 phase3() {
     # Thresholds are read from CHOSEN_THRESHOLD in generate_vocab_rules.py.
@@ -611,13 +617,16 @@ phase3() {
     echo "3b. rbrics_filter"
     run_frag_thresh rbrics 0 0 "$V_RBRICS_TH"
 
+    echo "3d. rbrics_with_struct_fallback_filter"
+    run_frag_thresh rbrics 1 0 "$V_RBRICS_SF_TH"
+
     echo "3c. all_fallback_bpe_filter"
     run_frag_thresh all 1 1 "$V_ALL_TH"
 
     echo ""
-    echo "Phase 3 complete.  Six vocabularies now available:"
-    echo "  No threshold: $V_OLD  $V_RBRICS  $V_ALL"
-    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_ALL_TH"
+    echo "Phase 3 complete.  Vocabularies now available:"
+    echo "  No threshold: $V_OLD  $V_RBRICS  $V_RBRICS_SF  $V_ALL"
+    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_RBRICS_SF_TH  $V_ALL_TH"
     echo ""
     echo "To change thresholds: edit CHOSEN_THRESHOLD in"
     echo "  MotifBreakdown/generate_vocab_rules.py"

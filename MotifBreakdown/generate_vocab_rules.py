@@ -17,16 +17,16 @@ Fragmentation engines (selected by `method` in run_dataset)
   bonds). Motif keys use MolToSmiles(isomericSmiles=False) — see
   fragment_rbrics_old_tracked().
 * method in {'rbrics','brics'} → LEGACY flat fragmenter (fragment_molecule_tracked):
-  one primary rBRICS/BRICS bond cut; `rbrics` adds a reBRICS post-pass on fragments.
-  No recursive cascade, no structural fallback, no BPE merge (those legacy stages
-  remain in the file only as commented reference blocks). BRICS/rBRICS bond
-  discovery is delegated to the shared `brics_rbrics` module so the same
-  chemistry is identified identically as in the v4 cascade.
+  `rbrics` pass 1: FindrBRICSBonds + BreakrBRICSBonds (native BRICS fallback
+  via FragmentOnBRICSBonds when no rBRICS bonds), then reBRICS on fragments.
+  `--fallback` adds structural cuts when still one piece (rbrics_with_struct_fallback).
+  No recursive cascade, no BPE merge. BRICS bond discovery for method='brics' uses
+  the shared `brics_rbrics` module (v4 cascade parity).
 
 Supported CLI `--method` values: `rbrics_old`, `rbrics`, `brics`, `all`.
 There is no `rbrics_only` CLI method — pass-1 rBRICS chemistry lives in
-`_rbrics_pass1_tracked()` (used by `rbrics`) and molfragbpe5 (`cut_rbrics_only`,
-internal cascade registry only).
+`_rbrics_pass1_tracked()` (BreakrBRICSBonds + BRICS fallback, used by `rbrics`)
+and molfragbpe5 (`cut_rbrics_only`, internal cascade registry only).
 
 `--preserve_typed_dummies` keeps [16*]/[4*] attachment types as distinct motif
 keys (default: normalize all dummies to [*]). Applies to rbrics/brics/all — not
@@ -124,69 +124,85 @@ from data.dataset_schema import DATASET_COLUMN, TASK_TYPE   # type: ignore
 # Threshold semantics: percentage of N_trainval.
 #   0.002 → motif must appear in ≥ 0.2% of train+val molecules
 #
-# Suggested values are derived from the coverage vs threshold elbow plots.
-# Aim for the last threshold that keeps node coverage ≥ 80%.
-# Datasets where rbrics/rbrics_old never reach 80% use 0.001 (minimum).
+# Derived from phase-2 coverage CSVs (June 2026).  Selection policy:
+#   1. Default 0.005 (0.5%) when cov ≥ 50% and vocab ≤ 200 at that point.
+#   2. Otherwise pick the *lowest* threshold (highest coverage) that still
+#      meets both constraints — e.g. BBBP/all_fallback_bpe → 0.006 not 0.009
+#      because vocab is already low at 0.6% and 0.7–0.9% only shaves a few
+#      motifs while coverage falls sharply.
+#   3. If still impossible (minority rescue / rbrics fragmentation), use the
+#      lowest-vocab point with cov ≥ 50%, or best available coverage.
 # ─────────────────────────────────────────────────────────────────────────────
 CHOSEN_THRESHOLD: dict = {
 
     # ── all + fallback + BPE (filtered) ──────────────────────────────────────
-    # High coverage: BPE merges tiny fragments → compact vocab + broad coverage.
-    # These thresholds reflect per-dataset elbow points (last ≥ 80% coverage).
     'all_fallback_bpe_filter': {
-        'Mutagenicity':      0.002,   # elbow: vocab 212→108, cov 87.6%→81.8%
-        'Benzene':           0.006,   # elbow: vocab 273→82,  cov 92.2%→80.6%
-        'BBBP':              0.006,   # elbow: vocab 426→118, cov 100%→90.3%
-        'hERG':              0.003,
-        'Alkane_Carbonyl':   0.003,
-        'Fluoride_Carbonyl': 0.003,
-        'esol':              0.002,
-        'Lipophilicity':     0.003,
-        'freesolv':          0.003,
-        'tox21':             0.002,
-        'mutag':             0.002,
-        'ogbg-molhiv':       0.003,
-        'ogbg-molbace':      0.003,
+        'Mutagenicity':      0.002,   # vocab=176, cov=51.9% (consistent 0.2%)
+        'Benzene':           0.005,   # default 0.5%: vocab=105, cov=56.3%
+        'BBBP':              0.006,   # vocab=176, cov=54.9% (consistent 0.6%)
+        'hERG':              0.004,   # vocab=169, cov=51.5% (0.5%→48% cov)
+        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=132, cov=64.2%
+        'Fluoride_Carbonyl': 0.005,   # default 0.5%: vocab=185, cov=62.6%
+        'esol':              0.005,   # default 0.5%: vocab=81,  cov=53.9%
+        'Lipophilicity':     0.005,   # default 0.5%: vocab=132, cov=58.8%
+        'freesolv':          0.005,   # (no phase-2 CSV — same class as esol)
+        'tox21':             0.005,
+        'mutag':             0.005,   # default 0.5%: vocab=97,  cov=66.8%
+        'ogbg-molhiv':       0.005,   # ← UPDATE after all_fallback_bpe phase-2
+        'ogbg-molbace':      0.005,   # default 0.5%: vocab=168, cov=86.1%
     },
 
-    # ── rBRICS + reBRICS (filtered) ──────────────────────────────────────────
-    # rBRICS produces more/larger fragments than BPE → coverage drops faster.
-    # BBBP: minority rescue keeps vocab large; first ≥80% point is 0.003-0.004.
-    # Mutagenicity + Benzene: coverage never reaches 80% — use minimum (0.001).
+    # ── rBRICS legacy [*] keys (filtered) ────────────────────────────────────
     'rbrics_filter': {
-        'Mutagenicity':      0.001,   # ← never ≥80% at any threshold
-        'Benzene':           0.001,   # ← never ≥80% at any threshold
-        'BBBP':              0.004,   # vocab=568, cov=80.3%
-        'hERG':              0.002,
-        'Alkane_Carbonyl':   0.002,
-        'Fluoride_Carbonyl': 0.002,
-        'esol':              0.001,
-        'Lipophilicity':     0.002,
-        'freesolv':          0.002,
-        'tox21':             0.001,
-        'mutag':             0.001,
-        'ogbg-molhiv':       0.002,
-        'ogbg-molbace':      0.002,
+        'Mutagenicity':      0.002,   # vocab=157, cov=42.2% (consistent 0.2%)
+        'Benzene':           0.005,   # default 0.5%: vocab=110, cov=52.3%
+        'BBBP':              0.006,   # vocab=196, cov=47.2% (consistent 0.6%)
+        'hERG':              0.005,   # default 0.5%: vocab=160, cov=57.3%
+        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=141, cov=58.2%
+        'Fluoride_Carbonyl': 0.005,   # default 0.5%: vocab=194, cov=55.5%
+        'esol':              0.001,   # vocab=799, cov=100% (>200)
+        'Lipophilicity':     0.005,   # default 0.5%: vocab=137, cov=61.2%
+        'freesolv':          0.005,
+        'tox21':             0.005,
+        'mutag':             0.002,   # vocab=754, cov=60.5% (>200; minority rescue)
+        'ogbg-molhiv':       0.001,   # vocab=1261,cov=53.0% (>200; minority rescue)
+        'ogbg-molbace':      0.005,   # default 0.5%: vocab=149, cov=85.5%
     },
 
-    # ── rbrics_old plot path (filtered) ──────────────────────────────────────
-    # CreateMotifVocab replication path (BreakrBRICSBonds + ToSmiles keys).
-    # Thresholds come from the rbrics_old coverage elbow — NOT interchangeable
-    # with rbrics_filter (different breaker, keys, and motif support counts).
-    'rbrics_old_filter': {
-        'Mutagenicity':      0.002,   # ← never ≥80%
-        'Benzene':           0.005,   # ← never ≥80%
-        'BBBP':              0.006,   # vocab=567, cov=80.3%
+    # ── rBRICS + reBRICS + structural fallback on unfragmented mols (filtered) ─
+    # Phase-1 variant: rbrics_with_struct_fallback (method=rbrics --fallback).
+    # Thresholds copied from rbrics_filter — re-tune after phase-2 coverage plots.
+    'rbrics_with_struct_fallback_filter': {
+        'Mutagenicity':      0.002,
+        'Benzene':           0.005,
+        'BBBP':              0.006,
         'hERG':              0.005,
         'Alkane_Carbonyl':   0.005,
         'Fluoride_Carbonyl': 0.005,
-        'esol':              0.002,
+        'esol':              0.001,
         'Lipophilicity':     0.005,
         'freesolv':          0.005,
         'tox21':             0.005,
         'mutag':             0.002,
-        'ogbg-molhiv':       0.005,
+        'ogbg-molhiv':       0.001,
         'ogbg-molbace':      0.005,
+    },
+
+    # ── rbrics_old plot path (filtered) ──────────────────────────────────────
+    'rbrics_old_filter': {
+        'Mutagenicity':      0.002,   # vocab=192, cov=49.6% (consistent 0.2%)
+        'Benzene':           0.005,   # default 0.5%: vocab=118, cov=54.7%
+        'BBBP':              0.006,   # vocab=254, cov=65.7% (consistent 0.6%)
+        'hERG':              0.005,   # default 0.5%: vocab=184, cov=64.2%
+        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=148, cov=60.8%
+        'Fluoride_Carbonyl': 0.006,   # vocab=176, cov=56.8% (0.5%→211 vocab)
+        'esol':              0.003,   # vocab=129, cov=51.7% (0.5%→47% cov)
+        'Lipophilicity':     0.005,   # default 0.5%: vocab=146, cov=64.7%
+        'freesolv':          0.005,
+        'tox21':             0.005,
+        'mutag':             0.005,   # default 0.5%: vocab=134, cov=50.5%
+        'ogbg-molhiv':       0.003,   # vocab=370, cov=52.4% (>200; minority rescue)
+        'ogbg-molbace':      0.005,   # default 0.5%: vocab=164, cov=88.4%
     },
 }
 
@@ -410,6 +426,47 @@ def _rebrics_pass_tracked(
     return [(s, o) for s, o, _ in pool]
 
 
+def _apply_structural_fallback(
+    mol: Chem.Mol,
+    orig_smi: str,
+    all_pieces: List[Tuple[str, Set[int]]],
+) -> List[Tuple[str, Set[int]]]:
+    """Try ring/chain and acyclic structural cuts on a single-fragment molecule.
+
+    Fires only when the chemistry pass (rBRICS+reBRICS or BRICS) left one piece.
+    Uses the original molecule for bond discovery and atom-map tracking so cuts
+    align with the GNN atom index space.
+    """
+    if len(all_pieces) != 1:
+        return all_pieces
+
+    _, orig_set0 = all_pieces[0]
+    fm0_clean = frag.to_mol(frag.strip(orig_smi)) or mol
+    rw = Chem.RWMol(mol)
+    for atom in rw.GetAtoms():
+        atom.SetAtomMapNum(atom.GetIdx() + 1)
+    fm0_mapped = rw.GetMol()
+
+    for cut_fn in (frag.cut_ring_chain, frag.cut_acyclic_bonds):
+        bond_idx2 = _bond_indices_for(fm0_clean, cut_fn)
+        if not bond_idx2:
+            continue
+        pieces2 = _fob_tracked(fm0_mapped, bond_idx2)
+        if len(pieces2) < 2:
+            continue
+        covered: Set[int] = set()
+        ok = True
+        for _, p_orig2, _ in pieces2:
+            if p_orig2 & covered:
+                ok = False
+                break
+            covered |= p_orig2
+        if ok and covered == orig_set0:
+            return [(s, o) for s, o, _ in pieces2]
+
+    return all_pieces
+
+
 def _stamp_mol(smarts: str, idx_map: Dict[int, int]) -> Optional[Chem.Mol]:
     """Create mol from smarts and stamp atom-map numbers from idx_map.
     idx_map: {fragment_atom_idx: original_atom_idx}.
@@ -618,22 +675,61 @@ def fragment_rbrics_old_tracked(mol: Chem.Mol,
 def _rbrics_pass1_tracked(mol: Chem.Mol,
                           orig_smi: str,
                           ) -> List[Tuple[str, Set[int], Dict[int, int]]]:
-    """Pass 1 of method='rbrics': FindrBRICSBonds + FragmentOnBonds, legacy keys.
+    """Pass 1 of method='rbrics': FindrBRICSBonds + BreakrBRICSBonds, legacy keys.
 
-    Internal helper — not a CLI method. Matches molfragbpe5.cut_rbrics_only chemistry.
+    When FindrBRICSBonds returns bonds, BreakrBRICSBonds cuts them; otherwise
+    BreakrBRICSBonds falls back to Chem.FragmentOnBRICSBonds (same as rbrics_old).
+    Motif keys use canonical legacy [*] SMARTS via _canonical_legacy_smarts_from_mol.
     """
-    import brics_rbrics as BR
+    if not RBRICS_OK or BreakrBRICSBonds is None:
+        raise RuntimeError(
+            "method='rbrics' requires rBRICS_public.py "
+            "(FindrBRICSBonds + BreakrBRICSBonds)")
+
     n = mol.GetNumAtoms()
-    rw = Chem.RWMol(mol)
-    for atom in rw.GetAtoms():
+    m = Chem.Mol(mol)
+    for atom in m.GetAtoms():
         atom.SetAtomMapNum(atom.GetIdx() + 1)
-    mol_mapped = rw.GetMol()
-    mol_clean = frag.to_mol(frag.strip(orig_smi)) or mol
-    idx1 = BR.nonring_bond_indices(mol_clean, BR.rbrics_bonds(mol_clean))
-    if idx1:
-        return _fob_tracked(mol_mapped, sorted(idx1))
-    return [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
-             {i: i for i in range(n)})]
+
+    pbonds = list(FindrBRICSBonds(m))
+    try:
+        broken = BreakrBRICSBonds(m, pbonds)
+        pieces = Chem.GetMolFrags(broken, asMols=True)
+    except Exception:
+        pieces = [m]
+
+    result: List[Tuple[str, Set[int], Dict[int, int]]] = []
+    for piece in pieces:
+        p = Chem.Mol(piece)
+        orig_set: Set[int] = set()
+        idx_map: Dict[int, int] = {}
+        for atom in p.GetAtoms():
+            if atom.GetAtomicNum() != 0 and atom.GetAtomMapNum() > 0:
+                oi = atom.GetAtomMapNum() - 1
+                orig_set.add(oi)
+                idx_map[atom.GetIdx()] = oi
+        if not orig_set:
+            continue
+        rw = Chem.RWMol(p)
+        for a in rw.GetAtoms():
+            a.SetAtomMapNum(0)
+        smi = _canonical_legacy_smarts_from_mol(rw.GetMol())
+        result.append((smi, orig_set, idx_map))
+
+    covered = {a for _, os, _ in result for a in os}
+    missing = set(range(n)) - covered
+    if missing and result:
+        s, os, im = result[0]
+        result[0] = (s, os | missing, im)
+    elif missing or not result:
+        rw = Chem.RWMol(mol)
+        for atom in rw.GetAtoms():
+            atom.SetAtomMapNum(atom.GetIdx() + 1)
+        mol_mapped = rw.GetMol()
+        return [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
+                 {i: i for i in range(n)})]
+
+    return result
 
 
 def fragment_molecule_tracked(mol: Chem.Mol,
@@ -650,16 +746,15 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     sub-pass for method='rbrics':
         brics        — BRICS bonds
         rbrics_old   — CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles)
-        rbrics       — FindrBRICSBonds pass 1, then reBRICS on each fragment
-                       (matches molfragbpe5.cut_rbrics; NOT rbrics_full_bonds on parent)
-    BRICS/rBRICS bond discovery is delegated to the shared ``brics_rbrics``
-    module — single source of truth with the v4 cascade (chemfrag.py).
+        rbrics       — BreakrBRICSBonds pass 1 (rBRICS bonds, else BRICS fallback),
+                       then reBRICS on each fragment; optional structural fallback
+                       when use_fallback=True (rbrics_with_struct_fallback variant)
 
     Input:
         mol          — Chem.MolFromSmiles(orig_smi)
         orig_smi     — original CSV SMILES string (key for lookup dict)
-        use_fallback — accepted for signature compatibility; the legacy
-                       structural fallback is DISABLED (see commented block).
+        use_fallback — when True, apply cut_ring_chain / cut_acyclic_bonds to
+                       molecules that remain a single fragment after the chemistry pass
         method       — 'rbrics' | 'rbrics_old' | 'brics'
     Output:
         list of (fragment_smarts, {original_atom_indices}) covering ALL n atoms
@@ -689,37 +784,8 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     else:
         raise ValueError(f"unknown legacy method: {method!r}")
 
-    # ── Step 2 (recursive exhaustive cascade via _cascade_tracked) and Step 3
-    #    (structural fallback) are DISABLED: legacy is a single chemistry pass.
-    #    The previous behaviour is preserved, commented, below (and in the
-    #    also-commented _cascade_tracked definition) for reference.
-    #
-    # chemistry_fns = [cut_fn for _, cut_fn in frag.build_cascade(method)]
-    # FALLBACK      = [frag.cut_ring_chain, frag.cut_acyclic_bonds]
-    # cascade = chemistry_fns + (FALLBACK if use_fallback else [])
-    # all_pieces = []
-    # for p_smi, p_orig, p_map in level1:
-    #     all_pieces.extend(_cascade_tracked(p_smi, p_orig, p_map, cascade))
-    #
-    # if use_fallback and len(all_pieces) == 1:
-    #     map0 = level1[0][2]
-    #     fm0_clean  = frag.to_mol(all_pieces[0][0])
-    #     fm0_mapped = _stamp_mol(all_pieces[0][0], map0)
-    #     if fm0_clean is not None and fm0_mapped is not None:
-    #         for cut_fn in FALLBACK:
-    #             bond_idx2 = _bond_indices_for(fm0_clean, cut_fn)
-    #             if not bond_idx2:
-    #                 continue
-    #             pieces2 = _fob_tracked(fm0_mapped, bond_idx2)
-    #             if len(pieces2) >= 2:
-    #                 covered = set(); ok = True
-    #                 for _, p_orig2, _ in pieces2:
-    #                     if p_orig2 & covered:
-    #                         ok = False; break
-    #                     covered |= p_orig2
-    #                 if ok and covered == all_pieces[0][1]:
-    #                     all_pieces = [(s, o) for s, o, _ in pieces2]
-    #                     break
+    if use_fallback:
+        all_pieces = _apply_structural_fallback(mol, orig_smi, all_pieces)
 
     # Guarantee: every atom is covered exactly once.
     covered = {a for _, atoms in all_pieces for a in atoms}
@@ -1317,7 +1383,11 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     #                                       selects whether the MDL merge runs.
     #   method in {'rbrics','rbrics_old','brics'} -> LEGACY flat fragmenter (no tree,
     #                                       no merge): a one-shot/two-shot bond cut.
-    #                                         'rbrics'      = rBRICS + reBRICS  (two-shot)
+    #                                         'rbrics'      = BreakrBRICSBonds pass 1
+    #                                                       (rBRICS bonds, else BRICS
+    #                                                        fallback) + reBRICS;
+    #                                                       --fallback adds structural
+    #                                                       cuts when still one piece
     #                                         'rbrics_old'  = CreateMotifVocab plot path
     #                                                       (BreakrBRICSBonds + ToSmiles)
     #                                         'brics'       = BRICS only
@@ -1338,14 +1408,10 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         _legacy_method = method
 
     if method in _LEGACY_METHODS:
-        import brics_rbrics as _BR
-        if _legacy_method == 'rbrics_old' and (not RBRICS_OK or BreakrBRICSBonds is None):
+        if _legacy_method in ('rbrics', 'rbrics_old') and (
+                not RBRICS_OK or BreakrBRICSBonds is None):
             raise RuntimeError(
-                "rbrics_old requires rBRICS_public.py in MotifBreakdown/")
-        if method == 'rbrics' and not _BR.RBRICS_OK:
-            print("    [warn] rBRICS_public not available — rbrics leaves "
-                  "molecules unsplit on pass 1 (no reBRICS). Install rBRICS "
-                  "and re-run phase1.")
+                f"{_legacy_method} requires rBRICS_public.py in MotifBreakdown/")
         # ---- LEGACY one-shot/two-shot fragmentation (no tree, no merge) -----
         # NOTE: the legacy prevalence-BPE merge is intentionally DISABLED. The
         # plain (untracked) fragmentation that fed `frag.bpe_merge`, and the BPE

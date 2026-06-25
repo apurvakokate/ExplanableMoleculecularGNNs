@@ -56,7 +56,7 @@ cd $PROJECT/MotifSAT     && python3 tests/test_motifsat.py
 | Name | Method | Fallback | BPE | Notes |
 |---|---|---|---|---|
 | `rbrics_old` | `rbrics_old` | no | no | CreateMotifVocab plot path (BreakrBRICSBonds + ToSmiles) |
-| `rbrics` | `rbrics` | no | no | rBRICS+reBRICS, no fallback, no BPE |
+| `rbrics` | `rbrics` | no | no | BreakrBRICSBonds (rBRICS else BRICS fallback) + reBRICS |
 | `all_fallback_bpe` | `all` | yes | yes | Full cascade with fallback and BPE |
 
 ### Weights & Biases logging (optional, OFF by default)
@@ -98,7 +98,7 @@ for ds in $DATASETS; do
     --out_dir $VOCAB_ROOT \
     --method rbrics_old --variant rbrics_old --fold 0
 
-  # 1b. rbrics  (rBRICS + reBRICS, clean chemistry)
+  # 1b. rbrics  (BreakrBRICSBonds + BRICS fallback + reBRICS)
   python3 $PROJECT/MotifBreakdown/generate_vocab_rules.py \
     --datasets $ds --data_root $DATA_ROOT \
     --out_dir $VOCAB_ROOT \
@@ -230,10 +230,12 @@ controlled by `RULE_RANK` (default `balanced`):
 export RULE_RANK=balanced   # default; set to pct1 for legacy behaviour
 ```
 
-> **Variant note.** The three fragmentation variants are **`rbrics_old`** (CreateMotifVocab
-> plot replication: `BreakrBRICSBonds` + `ToSmiles` keys), **`rbrics`** (rBRICS pass 1
-> + reBRICS, legacy SMARTS keys), and **`all_fallback_bpe`** (full v4 cascade). There is
-> no separate CLI method named `rbrics_only`. `rbrics` / `rbrics_old` produce larger
+> **Variant note.** Four fragmentation variants: **`rbrics_old`** (CreateMotifVocab
+> plot replication: `BreakrBRICSBonds` + plain `*` ToSmiles keys), **`rbrics`**
+> (same BreakrBRICSBonds pass 1 including BRICS fallback, then reBRICS; legacy `[*]`
+> keys), **`rbrics_with_struct_fallback`** (adds structural cuts when still one
+> piece), and **`all_fallback_bpe`** (full v4 cascade). There is no separate CLI
+> method named `rbrics_only`. `rbrics` / `rbrics_old` produce larger
 > fragments than `all_fallback_bpe`, so rule coverage often only *just* crosses 50% —
 > that's expected from the algorithm. `balanced` degrades gracefully here (a 40% rule still
 > scores `balance=0.8` and beats a 90% rule at `0.2`). `all_fallback_bpe` reaches much

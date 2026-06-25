@@ -229,6 +229,14 @@ class TestCutRbrics(unittest.TestCase):
     def test_bare_ring_returns_empty(self):
         self.assertEqual(frag.cut_rbrics(mol('c1ccccc1')), [])
 
+    def test_brics_fallback_when_no_rbrics_bonds(self):
+        """cut_rbrics BRICS-fallbacks when FindrBRICSBonds finds nothing."""
+        import unittest.mock as mock
+        m = mol('CC(=O)Nc1ccc(O)cc1')
+        with mock.patch('molfragbpe5.FindrBRICSBonds', return_value=[]):
+            frag._CACHE.clear()
+            self.assertGreaterEqual(len(frag.cut_rbrics(m)), 2)
+
 
 class TestCutBrics(unittest.TestCase):
     def setUp(self): frag._CACHE.clear()
@@ -865,9 +873,8 @@ class TestBondIndicesFor(unittest.TestCase):
 class TestFragmentMoleculeTracked(unittest.TestCase):
     """Tests the single-pass legacy engine fragment_molecule_tracked.
 
-    Legacy methods: 'brics', 'rbrics' (pass 1 + reBRICS), 'rbrics_old' (plot path).
-    The recursive cascade and structural fallback are disabled; 'all' is handled
-    by the v4 adapter, not this function.
+    Legacy methods: 'brics', 'rbrics' (BreakrBRICSBonds + reBRICS + optional
+    BRICS fallback / structural fallback), 'rbrics_old' (plot path).
     """
 
     def test_full_coverage_rbrics_pass1(self):
@@ -920,6 +927,19 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         # No cut = single piece covering all atoms
         self.assertEqual(len(pieces), 1)
 
+    def test_rbrics_structural_fallback_splits_unfragmented(self):
+        """Structural fallback fires when BreakrBRICSBonds+reBRICS still leave one piece."""
+        smi = 'CC1CCCCC1'
+        m = Chem.MolFromSmiles(smi)
+        no_fb = gvr.fragment_molecule_tracked(m, smi, use_fallback=False, method='rbrics')
+        with_fb = gvr.fragment_molecule_tracked(m, smi, use_fallback=True, method='rbrics')
+        self.assertGreaterEqual(len(with_fb), len(no_fb))
+        if len(no_fb) == 1:
+            self.assertGreater(len(with_fb), 1)
+        for pieces in (no_fb, with_fb):
+            covered = {a for _, atoms in pieces for a in atoms}
+            self.assertEqual(covered, set(range(m.GetNumAtoms())))
+
     def test_default_method_is_rbrics(self):
         smi = 'Cc1ccccc1'
         m = Chem.MolFromSmiles(smi)
@@ -968,38 +988,57 @@ class TestFragmentMoleculeTracked(unittest.TestCase):
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
         import unittest.mock as mock
-        import brics_rbrics as BR
         smi = 'CC(=O)Nc1ccc(O)cc1'
         m = mol(smi)
-        with mock.patch.object(BR, 'rbrics_bonds', return_value=[]):
+        with mock.patch.object(gvr, 'FindrBRICSBonds', return_value=[]):
             old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
             pass1 = _tracked_rbrics_pass1(smi)
-        self.assertEqual(len(pass1), 1,
-                         "rBRICS pass 1 leaves whole mol when no rBRICS bonds")
+        self.assertGreater(len(pass1), 1,
+                           "pass 1 should BRICS-fallback when no rBRICS bonds")
         self.assertGreater(len(old), 1,
                            "rbrics_old should native-BRICS fallback when no rBRICS bonds")
+
+    def test_rbrics_native_brics_fallback_when_no_rbrics_bonds(self):
+        """rbrics uses BreakrBRICSBonds BRICS fallback when FindrBRICSBonds finds nothing."""
+        if not frag.RBRICS_OK:
+            self.skipTest("rBRICS not installed")
+        import unittest.mock as mock
+        smi = 'CC(=O)Nc1ccc(O)cc1'
+        m = mol(smi)
+        with mock.patch.object(gvr, 'FindrBRICSBonds', return_value=[]):
+            tracked = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+            old = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics_old')
+            pass1 = _tracked_rbrics_pass1(smi)
+        self.assertGreater(len(pass1), 1,
+                           "pass 1 should BRICS-fallback when no rBRICS bonds")
+        self.assertEqual(len(pass1), len(old),
+                         "pass-1 piece count should match rbrics_old")
+        self.assertGreaterEqual(len(tracked), len(pass1),
+                                "reBRICS should not reduce fragment count")
 
     def test_rbrics_tracked_matches_molfragbpe5_corpus(self):
         """Tracked rbrics pass 1 / full rbrics vs molfragbpe5 (count sanity check).
 
-        Pass 1 is aligned with cut_rbrics_only (FOB). Full rbrics is compared to
-        cut_rbrics (BreakrBRICSBonds + reBRICS) — implementations differ; counts
-        should match on this corpus but are not guaranteed byte-identical.
+        Pass 1 and cut_rbrics both use BreakrBRICSBonds (rBRICS bonds, else BRICS
+        fallback) + reBRICS. Piece counts should match; motif keys may differ.
         """
         if not frag.RBRICS_OK:
             self.skipTest("rBRICS not installed")
+        from rBRICS_public import FindrBRICSBonds, BreakrBRICSBonds
         for smi in _RBRICS_TRACKED_CORPUS:
             m = mol(smi)
             self.assertIsNotNone(m, smi)
             frag._CACHE.clear()
-            ref_only = len(frag.cut_rbrics_only(m))
+            bonds = list(FindrBRICSBonds(m))
+            broken = BreakrBRICSBonds(m, bonds)
+            ref_pass1 = len(Chem.GetMolFrags(broken, asMols=True))
             ref_full = len(frag.cut_rbrics(m))
             frag._CACHE.clear()
             tr_pass1 = _tracked_rbrics_pass1(smi)
             frag._CACHE.clear()
             tr_full = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
-            self.assertEqual(len(tr_pass1), ref_only,
-                             f"{smi}: tracked pass 1 != cut_rbrics_only")
+            self.assertEqual(len(tr_pass1), ref_pass1,
+                             f"{smi}: tracked pass 1 != BreakrBRICSBonds frags")
             self.assertEqual(len(tr_full), ref_full,
                              f"{smi}: tracked rbrics != cut_rbrics")
 
