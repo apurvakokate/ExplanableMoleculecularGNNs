@@ -79,6 +79,13 @@ export GSAT_INJ="${GSAT_INJ:---w_message}"                    # 010
 # This lets you do:  export RULE_INDEX=0 && bash run_experiments.sh phase4
 export RULE_INDEX="${RULE_INDEX:-}"          # e.g. 0
 
+# ── Phase 4/5: limit to selected fragmentation algorithms ───────────────────
+# Comma-separated short names. Unset = all four base variants.
+#   rbrics, rbrics_old, rbrics_with_struct_fallback, all_fallback_bpe
+# Aliases: old  struct|struct_fallback  all|v4
+# Example: export VOCAB_FOCUS=rbrics,all_fallback_bpe
+export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
+
 # ── W&B (optional) ────────────────────────────────────────────────────────────
 # Set WANDB_FLAGS to enable logging for phase5 training runs.
 # Example: export WANDB_FLAGS="--use_wandb --wandb_project ChemIntuit"
@@ -97,3 +104,6 @@ echo "  CONV_NORM  = $CONV_NORMALIZE"
 echo "  BACKBONES  = $BACKBONES"
 echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
 echo "  OGB_ROOT   = $OGB_DATA_ROOT"
+if [ -n "$VOCAB_FOCUS" ]; then
+    echo "  VOCAB_FOCUS= $VOCAB_FOCUS"
+fi

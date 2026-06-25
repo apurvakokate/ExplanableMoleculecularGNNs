@@ -56,6 +56,10 @@ BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
+# Optional phase4/5 subset: comma-separated short names, e.g. rbrics,all_fallback_bpe
+# Aliases: old→rbrics_old  struct|struct_fallback→rbrics_with_struct_fallback  all|v4→all_fallback_bpe
+# Unset = all four base fragmentation variants.
+VOCAB_FOCUS="${VOCAB_FOCUS:-}"
 WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProject"
 ENCODER_NORM="${ENCODER_NORM:-off}"
 # Default injection presets (3-bit: w_feat / w_message / w_readout):
@@ -109,6 +113,11 @@ _check_paths() {
     echo "  OGB_ROOT   = $OGB_DATA_ROOT"
     echo "  EPOCHS     = $EPOCHS"
     echo "  Thresholds = per-dataset dict in generate_vocab_rules.py"
+    if [ -n "$VOCAB_FOCUS" ]; then
+        echo "  VOCAB_FOCUS= $VOCAB_FOCUS  → base:$(_vocab_focus_base_variants)"
+    else
+        echo "  VOCAB_FOCUS= (all four base variants)"
+    fi
 }
 
 # ── Vocabulary variant names ───────────────────────────────────────────────────
@@ -125,8 +134,85 @@ V_RBRICS_TH="rbrics_filter"
 V_RBRICS_SF_TH="rbrics_with_struct_fallback_filter"
 V_ALL_TH="all_fallback_bpe_filter"
 
-# GT-relabelled variant (from phase4):
-V_ALL_GT="${V_ALL}_relabelled"
+# GT-relabelled out_dir suffix (from phase4): {base_variant}_relabelled
+_gt_variant_name() { echo "${1}_relabelled"; }
+
+# ── VOCAB_FOCUS — subset phase4/5 to selected fragmentation algorithms ────────
+_vocab_focus_resolve_one() {
+    local raw="${1// /}"
+    case "$raw" in
+        rbrics_old|old)              echo "$V_OLD" ;;
+        rbrics)                      echo "$V_RBRICS" ;;
+        rbrics_with_struct_fallback|struct_fallback|struct)
+                                     echo "$V_RBRICS_SF" ;;
+        all_fallback_bpe|all|v4)   echo "$V_ALL" ;;
+        *)
+            echo "  [warn] unknown VOCAB_FOCUS token: '$raw' (ignored)" >&2
+            return 1
+            ;;
+    esac
+}
+
+_vocab_focus_base_variants() {
+    if [ -z "$VOCAB_FOCUS" ]; then
+        echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL"
+        return
+    fi
+    local resolved="" token v
+    local IFS=','
+    for token in $VOCAB_FOCUS; do
+        v=$(_vocab_focus_resolve_one "$token") || continue
+        case " $resolved " in
+            *" $v "*) ;;
+            *) resolved="$resolved $v" ;;
+        esac
+    done
+    # shellcheck disable=SC2086
+    set -- $resolved
+    if [ $# -eq 0 ]; then
+        echo "ERROR: VOCAB_FOCUS='$VOCAB_FOCUS' resolved to no variants" >&2
+        exit 1
+    fi
+    echo "$resolved"
+}
+
+_vocab_focus_filtered_for() {
+    case "$1" in
+        "$V_OLD")      echo "$V_OLD_TH" ;;
+        "$V_RBRICS")   echo "$V_RBRICS_TH" ;;
+        "$V_RBRICS_SF") echo "$V_RBRICS_SF_TH" ;;
+        "$V_ALL")      echo "$V_ALL_TH" ;;
+        *)             echo "$1" ;;
+    esac
+}
+
+_vocab_focus_filtered_variants() {
+    local base filtered
+    for base in $(_vocab_focus_base_variants); do
+        filtered=$(_vocab_focus_filtered_for "$base")
+        echo "$filtered"
+    done
+}
+
+_vocab_focus_all_eval_variants() {
+    _vocab_focus_base_variants
+    _vocab_focus_filtered_variants
+}
+
+_baseline_weight_variant() {
+    case "$1" in
+        "$V_OLD_TH")       echo "$V_OLD" ;;
+        "$V_RBRICS_TH")    echo "$V_RBRICS" ;;
+        "$V_RBRICS_SF_TH") echo "$V_RBRICS_SF" ;;
+        "$V_ALL_TH")       echo "$V_ALL" ;;
+        *)                 echo "$1" ;;
+    esac
+}
+
+_gt_split_cached() {
+    local variant=$1 ds=$2 fold=$3 split=${4:-train}
+    [ -f "$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/relabel1/${split}_with_gt.pt" ]
+}
 
 # ── Dataset routing (Mutagenicity CSV ≠ mutag TUDataset; OGB uses fold 0) ─────
 _dataset_data_root() {
@@ -404,13 +490,8 @@ run_baselines() {
     # corresponding unfiltered variant (model weights are independent of
     # the vocabulary threshold — only the motif eval vocab changes).
     local eval_variant=$1
-    # Resolve which vanilla weights to load
-    local weight_variant="$eval_variant"
-    case "$eval_variant" in
-        "${V_OLD_TH}")    weight_variant="$V_OLD" ;;
-        "${V_RBRICS_TH}") weight_variant="$V_RBRICS" ;;
-        "${V_ALL_TH}")    weight_variant="$V_ALL" ;;
-    esac
+    local weight_variant
+    weight_variant=$(_baseline_weight_variant "$eval_variant")
     for backbone in $BACKBONES; do
         echo "  [Baselines eval] backbone=$backbone vocab=$eval_variant  weight_vocab=$weight_variant"
         for ds in $DATASETS; do
@@ -463,6 +544,81 @@ apply_gt() {
                 --data_root  "$DATA_ROOT" \
                 --processed_root "$PROCESSED_ROOT" \
              || { echo "  [error] apply_gt.py failed for $ds fold $fold — see output above"; exit 1; }
+        done
+    done
+}
+
+run_mose_gt() {
+    local variant=$1
+    local gt_variant
+    gt_variant=$(_gt_variant_name "$variant")
+    for backbone in $BACKBONES; do
+        echo "  [MOSE+GT] backbone=$backbone base=$variant → $gt_variant"
+        for ds in $DATASETS_CSV; do
+            if _skip_synthetic_gt_dataset "$ds"; then
+                echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
+                continue
+            fi
+            for fold in $FOLDS; do
+                if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
+                    echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
+                    continue
+                fi
+                local enc="$(_dataset_node_encoder "$ds")"
+                python3 "$PROJECT/MOSE-GNN/run.py" \
+                    --dataset      "$ds" --fold "$fold" \
+                    --backbone     "$backbone" --node_encoder "$enc" \
+                    --w_feat --w_readout \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --epochs       "$EPOCHS" \
+                    --data_root    "$DATA_ROOT" \
+                    --vocab_root   "$VOCAB_ROOT" \
+                    --vocab_variant "$variant" \
+                    --conv_normalize "$CONV_NORMALIZE" \
+                    --processed_root "$PROCESSED_ROOT" \
+                    --out_dir      "$OUT_ROOT/mose/${gt_variant}" \
+                    $(_mose_extra_flags) \
+                    $WANDB_FLAGS
+            done
+        done
+    done
+}
+
+run_motifsat_gt() {
+    local variant=$1
+    local gt_variant
+    gt_variant=$(_gt_variant_name "$variant")
+    for backbone in $BACKBONES; do
+        echo "  [MotifSAT+GT] backbone=$backbone base=$variant → $gt_variant"
+        for ds in $DATASETS_CSV; do
+            if _skip_synthetic_gt_dataset "$ds"; then
+                echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
+                continue
+            fi
+            for fold in $FOLDS; do
+                if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
+                    echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
+                    continue
+                fi
+                local enc="$(_dataset_node_encoder "$ds")"
+                python3 "$PROJECT/MotifSAT/run.py" \
+                    --dataset         "$ds" --fold "$fold" \
+                    --backbone        "$backbone" --node_encoder "$enc" \
+                    --motif_method    readout \
+                    --noise           none \
+                    --info_loss_level none \
+                    --info_loss_coef  0.0 \
+                    --w_feat --w_readout --w_message \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --epochs          "$EPOCHS" \
+                    --data_root       "$DATA_ROOT" \
+                    --vocab_root      "$VOCAB_ROOT" \
+                    --vocab_variant   "$variant" \
+                    --conv_normalize  "$CONV_NORMALIZE" \
+                    --processed_root  "$PROCESSED_ROOT" \
+                    --out_dir         "$OUT_ROOT/motifsat/${gt_variant}" \
+                    $WANDB_FLAGS
+            done
         done
     done
 }
@@ -534,15 +690,15 @@ _check_special_exports() {
 
 # =============================================================================
 # PHASE 1 — Fragmentation, no threshold
-#   Three variants: rbrics_old, rbrics, all_fallback_bpe
+#   Four variants: rbrics_old, rbrics, rbrics_with_struct_fallback, all_fallback_bpe
 # =============================================================================
 phase1() {
     _check_paths
     _check_special_exports
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 1 — Fragmentation (no threshold, 3 variants)"
-    echo "  Skips: datasets with all 3 variants done;"
+    echo " PHASE 1 — Fragmentation (no threshold, 4 variants)"
+    echo "  Skips: datasets with phase1 trio done ($V_OLD, $V_RBRICS, $V_ALL);"
     echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
@@ -639,8 +795,8 @@ phase3() {
 
 # =============================================================================
 # PHASE 4 — Synthetic GT
-#   Applied to V_ALL (no-threshold full cascade) only.
-#   Result cached in $OUT_ROOT/gt_cache; loaded at training time via --use_gt.
+#   All four unfiltered base variants (respects VOCAB_FOCUS when set).
+#   Result cached in $OUT_ROOT/gt_cache/{dataset}/fold{N}/{variant}/relabel1/
 # =============================================================================
 phase4() {
     [ -z "$RULE_INDEX" ] && \
@@ -648,21 +804,19 @@ phase4() {
 
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 4 — Synthetic GT (rule=$RULE_INDEX, vocab=$V_ALL)"
+    echo " PHASE 4 — Synthetic GT (rule=$RULE_INDEX, VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    apply_gt "$V_ALL" "$RULE_INDEX"
+    local variant
+    for variant in $(_vocab_focus_base_variants); do
+        echo ""
+        echo "  --- apply_gt: $variant ---"
+        apply_gt "$variant" "$RULE_INDEX"
+    done
 
     echo ""
     echo "Phase 4 complete.  GT cache: $OUT_ROOT/gt_cache"
-    echo "Seven configurations now available:"
-    echo "  1. $V_OLD             (no threshold)"
-    echo "  2. $V_RBRICS          (no threshold)"
-    echo "  3. $V_ALL             (no threshold)"
-    echo "  4. $V_OLD_TH          (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  5. $V_RBRICS_TH       (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  6. $V_ALL_TH          (threshold per CHOSEN_THRESHOLD dict)"
-    echo "  7. $V_ALL + GT        (relabelled, rule=$RULE_INDEX)"
+    echo "Per-variant GT training dirs (phase5): {mose,motifsat}/{variant}_relabelled"
     echo ""
     echo "Next: bash run_experiments.sh phase5_vanilla"
 }
@@ -676,67 +830,43 @@ phase5_vanilla() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5a — Vanilla GNN (3 vocab variants)"
+    echo " PHASE 5a — Vanilla GNN (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    run_vanilla "$V_OLD"
-    run_vanilla "$V_RBRICS"
-    run_vanilla "$V_ALL"
+    local variant
+    for variant in $(_vocab_focus_base_variants); do
+        run_vanilla "$variant"
+    done
 
     echo "Vanilla training complete."
 }
 
 # =============================================================================
 # PHASE 5b — MOSE-GNN
-#   Seven configurations: three filtered + three unfiltered base vocabs +
-#   all_fallback_bpe with GT relabelling (when phase4 gt_cache exists).
-#   Default injection: 101 (--w_feat --w_readout).
+#   Per VOCAB_FOCUS: filtered + unfiltered base vocabs + GT relabelled
+#   (when phase4 gt_cache exists). Default injection: 101 (--w_feat --w_readout).
 # =============================================================================
 phase5_mose() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5b — MOSE-GNN (injection 101: w_feat + w_readout)"
+    echo " PHASE 5b — MOSE-GNN (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    # Filtered variants (thresholded vocabs)
-    run_mose "$V_OLD_TH"    "$MOSE_INJ"
-    run_mose "$V_RBRICS_TH" "$MOSE_INJ"
-    run_mose "$V_ALL_TH"    "$MOSE_INJ"
+    local variant
+    for variant in $(_vocab_focus_filtered_variants); do
+        run_mose "$variant" "$MOSE_INJ"
+    done
+    for variant in $(_vocab_focus_base_variants); do
+        run_mose "$variant" "$MOSE_INJ"
+    done
 
-    # Unfiltered base vocabs (MOSE supports both filtered and unfiltered)
-    run_mose "$V_OLD"       "$MOSE_INJ"
-    run_mose "$V_RBRICS"    "$MOSE_INJ"
-    run_mose "$V_ALL"       "$MOSE_INJ"
-
-    # Synthetic GT relabelling (main novel contribution)
-    # Requires phase4 to have been run.
     if [ -d "$OUT_ROOT/gt_cache" ]; then
-        # GT-relabelled run: separate function to avoid word-splitting in inj_args
-        for backbone in $BACKBONES; do
-            echo "  [MOSE+GT] backbone=$backbone vocab=$V_ALL_GT"
-            for ds in $DATASETS_CSV; do
-                for fold in $FOLDS; do
-                    local enc="$(_dataset_node_encoder "$ds")"
-                    python3 "$PROJECT/MOSE-GNN/run.py" \
-                        --dataset      "$ds" --fold "$fold" \
-                        --backbone     "$backbone" --node_encoder "$enc" \
-                        --w_feat --w_readout \
-                        --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
-                        --epochs       "$EPOCHS" \
-                        --data_root    "$DATA_ROOT" \
-                        --vocab_root   "$VOCAB_ROOT" \
-                        --vocab_variant "$V_ALL" \
-                        --conv_normalize "$CONV_NORMALIZE" \
-                        --processed_root "$PROCESSED_ROOT" \
-                        --out_dir      "$OUT_ROOT/mose/${V_ALL_GT}" \
-                        $(_mose_extra_flags) \
-                        $WANDB_FLAGS
-                done
-            done
+        for variant in $(_vocab_focus_base_variants); do
+            run_mose_gt "$variant"
         done
     else
-        echo "  [skip] $V_ALL_GT — run phase4 first"
+        echo "  [skip] *_relabelled — run phase4 first"
     fi
 
     echo "MOSE training complete."
@@ -752,12 +882,13 @@ phase5_gsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5c — Base GSAT (injection 010: w_message, learn_edge_att=$GSAT_LEARN_EDGE_ATT)"
+    echo " PHASE 5c — Base GSAT (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    run_gsat "$V_OLD"
-    run_gsat "$V_RBRICS"
-    run_gsat "$V_ALL"
+    local variant
+    for variant in $(_vocab_focus_base_variants); do
+        run_gsat "$variant"
+    done
 
     echo "Base GSAT training complete."
 }
@@ -771,14 +902,11 @@ phase5_baselines() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5d — Post-hoc baselines on vanilla (6 eval vocabs)"
+    echo " PHASE 5d — Post-hoc baselines (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    # Evaluate each vocab variant (model weights fixed; vocab changes which
-    # motifs get mapped to nodes for scoring).
-    for eval_variant in \
-        "$V_OLD"       "$V_RBRICS"    "$V_ALL" \
-        "$V_OLD_TH"    "$V_RBRICS_TH" "$V_ALL_TH"; do
+    local eval_variant
+    for eval_variant in $(_vocab_focus_all_eval_variants); do
         run_baselines "$eval_variant"
     done
 
@@ -794,45 +922,20 @@ phase5_motifsat() {
     _check_paths
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 5e — MotifSAT readout (injection 111, unfiltered vocabs)"
+    echo " PHASE 5e — MotifSAT readout (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    run_motifsat "$V_OLD"    "$MOTIFSAT_INJ"
-    run_motifsat "$V_RBRICS" "$MOTIFSAT_INJ"
-    run_motifsat "$V_ALL"    "$MOTIFSAT_INJ"
+    local variant
+    for variant in $(_vocab_focus_base_variants); do
+        run_motifsat "$variant" "$MOTIFSAT_INJ"
+    done
 
-    # GT-relabelled run: same V_ALL vocab + fragmentation; only data.y
-    # and data.edge_label differ (set by phase4 apply_gt.py).
-    # --use_gt replaces all three loaders with GT data; the model trains on
-    # the rule-derived synthetic label and is evaluated against it.
     if [ -d "$OUT_ROOT/gt_cache" ]; then
-        for backbone in $BACKBONES; do
-            echo "  [MotifSAT+GT] backbone=$backbone vocab=$V_ALL_GT"
-            for ds in $DATASETS_CSV; do
-                for fold in $FOLDS; do
-                    local enc="$(_dataset_node_encoder "$ds")"
-                    python3 "$PROJECT/MotifSAT/run.py" \
-                        --dataset         "$ds" --fold "$fold" \
-                        --backbone        "$backbone" --node_encoder "$enc" \
-                        --motif_method    readout \
-                        --noise           none \
-                        --info_loss_level none \
-                        --info_loss_coef  0.0 \
-                        --w_feat --w_readout --w_message \
-                        --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
-                        --epochs          "$EPOCHS" \
-                        --data_root       "$DATA_ROOT" \
-                        --vocab_root      "$VOCAB_ROOT" \
-                        --vocab_variant   "$V_ALL" \
-                        --conv_normalize  "$CONV_NORMALIZE" \
-                        --processed_root  "$PROCESSED_ROOT" \
-                        --out_dir         "$OUT_ROOT/motifsat/${V_ALL_GT}" \
-                        $WANDB_FLAGS
-                done
-            done
+        for variant in $(_vocab_focus_base_variants); do
+            run_motifsat_gt "$variant"
         done
     else
-        echo "  [skip] $V_ALL_GT — run phase4 first"
+        echo "  [skip] *_relabelled — run phase4 first"
     fi
 
     echo "MotifSAT training complete."
@@ -926,15 +1029,15 @@ case "$PHASE" in
         echo ""
         echo "Phases:"
         echo "  phase0            export mutag/OGB CSV bridges (DATASETS_SPECIAL)"
-        echo "  phase1            fragment all 3 variants (rbrics_old, rbrics, all_fallback_bpe)"
+        echo "  phase1            fragment all 4 variants (rbrics_old, rbrics, struct_fallback, all_fallback_bpe)"
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
-        echo "  phase3            threshold all 3 variants  (reads CHOSEN_THRESHOLD)"
-        echo "  phase4            synthetic GT               (requires RULE_INDEX)"
-        echo "  phase5_vanilla    vanilla GNN (3 variants)"
-        echo "  phase5_mose       MOSE-GNN (7 configs: 3 filtered + 3 unfiltered + GT)"
-        echo "  phase5_gsat       base GSAT (3 variants, injection 010)"
-        echo "  phase5_baselines  post-hoc on vanilla (6 eval vocabs)"
-        echo "  phase5_motifsat   MotifSAT (3 unfiltered variants + GT)"
+        echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
+        echo "  phase4            synthetic GT (all 4 base variants; VOCAB_FOCUS)"
+        echo "  phase5_vanilla    vanilla GNN (VOCAB_FOCUS base variants)"
+        echo "  phase5_mose       MOSE-GNN (filtered + base + GT per VOCAB_FOCUS)"
+        echo "  phase5_gsat       base GSAT (VOCAB_FOCUS base variants)"
+        echo "  phase5_baselines  post-hoc on vanilla (VOCAB_FOCUS eval variants)"
+        echo "  phase5_motifsat   MotifSAT (VOCAB_FOCUS base + GT variants)"
         echo "  multi_explanation post-hoc H0/H1/H2 on MOSE/MotifSAT/GSAT"
         echo "  probe_masked_nodes post-hoc masked-node feature probe"
         echo "  collect           print results table"
@@ -943,6 +1046,7 @@ case "$PHASE" in
         echo "Required env (set in experiment_config.sh):"
         echo "  PROJECT  DATA_ROOT  VOCAB_ROOT  OUT_ROOT"
         echo "  RULE_INDEX (phase4)   Thresholds: edit CHOSEN_THRESHOLD in generate_vocab_rules.py"
+        echo "  VOCAB_FOCUS (phase4/5) e.g. rbrics,all_fallback_bpe  (default: all four)"
         ;;
     *)
         echo "Unknown phase: $PHASE"; exit 1 ;;
