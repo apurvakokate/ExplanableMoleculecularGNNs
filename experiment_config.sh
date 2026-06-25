@@ -41,7 +41,7 @@ export DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 # phases 1–3 still build vocabs and coverage plots; phase 5 trains on real labels.
 
 # ── Cross-validation folds ────────────────────────────────────────────────────
-export FOLDS="0 1 2 3 4"
+export FOLDS="${FOLDS:-0 1 2 3 4}"
 
 # ── Model architecture ────────────────────────────────────────────────────────
 # All backbone architectures to train.  Add or remove as needed.
@@ -50,7 +50,7 @@ export BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 
 # Legacy single-backbone variable — unused (all loops use BACKBONES).
 # export BACKBONE="${BACKBONE:-GIN}"
-export NODE_ENCODER="onehot"                  # onehot | linear | atom_encoder (OGB only)
+export NODE_ENCODER="${NODE_ENCODER:-onehot}"  # onehot | linear | atom_encoder (OGB only)
 export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
 export EPOCHS="${EPOCHS:-100}"
 # Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)

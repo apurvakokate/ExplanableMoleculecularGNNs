@@ -53,6 +53,7 @@ DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP hERG Benzene Alkane_Carbonyl Flu
 DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
+EPOCHS="${EPOCHS:-100}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
@@ -279,21 +280,23 @@ _mutag_train_flags() {
 
 # Config slug matching run_experiments.py _cfg_slug (vanilla/baselines omit inj/ep).
 _vanilla_cfg_slug() {
-    local syn="${1:-real}" bb="${2:?backbone required}"
+    local syn="${1:-real}" bb="${2:?backbone required}" enc="${3:-$NODE_ENCODER}"
     local nrm="norm-${CONV_NORMALIZE}"
     [ "${ENCODER_NORM:-off}" = "on" ] && nrm="${nrm}+encLN"
-    echo "bb-${bb}_enc-${NODE_ENCODER}_${nrm}_${syn}"
+    echo "bb-${bb}_enc-${enc}_${nrm}_${syn}"
 }
 
 # Canonical run dirs (same layout as run_experiments.py config_tag + --final_out_dir).
 _vanilla_run_dir() {
     local ds=$1 fold=$2 variant=$3 bb=$4 syn=${5:-real}
-    echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn" "$bb")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
 }
 
 _baseline_run_dir() {
     local ds=$1 fold=$2 eval_variant=$3 bb=$4 syn=${5:-real}
-    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb")"
+    local enc="$(_dataset_node_encoder "$ds")"
+    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
 }
 
 # ── Helper: fragment one variant ──────────────────────────────────────────────
@@ -355,6 +358,10 @@ run_frag_thresh() {
 # ── Helper: training runners ───────────────────────────────────────────────────
 run_vanilla() {
     local variant=$1
+    local skip_explainers=${2:-0}
+    local expl_flags=""
+    [ "$skip_explainers" = "1" ] && \
+        expl_flags="--no_gnnexplainer --no_pgexplainer --no_mage"
     for backbone in $BACKBONES; do
         echo "  [Vanilla] backbone=$backbone encoder=$NODE_ENCODER vocab=$variant"
         for ds in $DATASETS; do
@@ -376,6 +383,7 @@ run_vanilla() {
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
+                    $expl_flags \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -503,6 +511,10 @@ run_baselines() {
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$weight_variant" "$backbone")"
                 local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$eval_variant" "$backbone")"
+                if [ ! -f "$wdir/best_model.pt" ]; then
+                    echo "  [skip] $ds fold$eff_fold — no vanilla checkpoint: $wdir/best_model.pt"
+                    continue
+                fi
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -835,7 +847,7 @@ phase5_vanilla() {
 
     local variant
     for variant in $(_vocab_focus_base_variants); do
-        run_vanilla "$variant"
+        run_vanilla "$variant" 1
     done
 
     echo "Vanilla training complete."
