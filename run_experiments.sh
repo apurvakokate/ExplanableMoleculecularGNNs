@@ -61,6 +61,7 @@ RULE_INDEX="${RULE_INDEX:-}"
 # Aliases: old→rbrics_old  struct|struct_fallback→rbrics_with_struct_fallback  all|v4→all_fallback_bpe
 # Unset = all four base fragmentation variants.
 VOCAB_FOCUS="${VOCAB_FOCUS:-}"
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
 WANDB_FLAGS="${WANDB_FLAGS:-}"      # e.g. "--use_wandb --wandb_project MyProject"
 ENCODER_NORM="${ENCODER_NORM:-off}"
 # Default injection presets (3-bit: w_feat / w_message / w_readout):
@@ -119,6 +120,7 @@ _check_paths() {
     else
         echo "  VOCAB_FOCUS= (all four base variants)"
     fi
+    echo "  SKIP_EXISTING= ${SKIP_EXISTING:-1}  (FORCE_RERUN=1 to redo all)"
 }
 
 # ── Vocabulary variant names ───────────────────────────────────────────────────
@@ -299,6 +301,18 @@ _baseline_run_dir() {
     echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
 }
 
+# Phase 5 resume: skip runs whose out_dir already has training artifacts.
+# Set SKIP_EXISTING=0 to rerun all; FORCE_RERUN=1 overrides skip.
+_run_dir_complete() {
+    local d=$1
+    [ -f "$d/summary.json" ] && [ -f "$d/best_model.pt" ]
+}
+
+_should_skip_existing() {
+    [ "${FORCE_RERUN:-0}" = "1" ] && return 1
+    [ "${SKIP_EXISTING:-1}" = "1" ]
+}
+
 # ── Helper: fragment one variant ──────────────────────────────────────────────
 # Usage: run_frag <method> <fallback:0|1> <bpe:0|1> <out_variant> [shatter:0|1]
 run_frag() {
@@ -360,6 +374,7 @@ run_vanilla() {
     local variant=$1
     local skip_explainers=${2:-0}
     local expl_flags=""
+    local n_skip=0 n_run=0
     [ "$skip_explainers" = "1" ] && \
         expl_flags="--no_gnnexplainer --no_pgexplainer --no_mage"
     for backbone in $BACKBONES; do
@@ -372,6 +387,12 @@ run_vanilla() {
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
                 local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone")"
+                if _should_skip_existing && _run_dir_complete "$out_dir"; then
+                    echo "  [skip existing] $ds fold$eff_fold $backbone → $out_dir"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -390,6 +411,7 @@ run_vanilla() {
             done
         done
     done
+    echo "  [Vanilla/$variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_mose() {
@@ -1045,7 +1067,7 @@ case "$PHASE" in
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
         echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT (all 4 base variants; VOCAB_FOCUS)"
-        echo "  phase5_vanilla    vanilla GNN (VOCAB_FOCUS base variants)"
+        echo "  phase5_vanilla    vanilla GNN (VOCAB_FOCUS; skips completed by default)"
         echo "  phase5_mose       MOSE-GNN (filtered + base + GT per VOCAB_FOCUS)"
         echo "  phase5_gsat       base GSAT (VOCAB_FOCUS base variants)"
         echo "  phase5_baselines  post-hoc on vanilla (VOCAB_FOCUS eval variants)"

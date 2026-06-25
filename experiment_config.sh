@@ -86,7 +86,11 @@ export RULE_INDEX="${RULE_INDEX:-}"          # e.g. 0
 # Example: export VOCAB_FOCUS=rbrics,all_fallback_bpe
 export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
 
-# ── W&B (optional) ────────────────────────────────────────────────────────────
+# ── Phase 5 resume ────────────────────────────────────────────────────────────
+# Skip runs whose out_dir already has summary.json + best_model.pt (default on).
+# export SKIP_EXISTING=0   — rerun every vanilla job
+# export FORCE_RERUN=1     — same as SKIP_EXISTING=0 for training phases
+export SKIP_EXISTING="${SKIP_EXISTING:-1}"
 # Set WANDB_FLAGS to enable logging for phase5 training runs.
 # Example: export WANDB_FLAGS="--use_wandb --wandb_project ChemIntuit"
 export WANDB_FLAGS="${WANDB_FLAGS:-}"
