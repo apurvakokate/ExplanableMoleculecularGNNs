@@ -529,7 +529,7 @@ apply_gt() {
     local variant=$1 rule_idx=$2
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
     for ds in $DATASETS_CSV; do
-        if _skip_synthetic_gt_dataset "$ds"; then
+        if ! _skip_synthetic_gt_dataset "$ds"; then
             echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
             continue
         fi
@@ -555,7 +555,7 @@ run_mose_gt() {
     for backbone in $BACKBONES; do
         echo "  [MOSE+GT] backbone=$backbone base=$variant → $gt_variant"
         for ds in $DATASETS_CSV; do
-            if _skip_synthetic_gt_dataset "$ds"; then
+            if ! _skip_synthetic_gt_dataset "$ds"; then
                 echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
                 continue
             fi
@@ -591,7 +591,7 @@ run_motifsat_gt() {
     for backbone in $BACKBONES; do
         echo "  [MotifSAT+GT] backbone=$backbone base=$variant → $gt_variant"
         for ds in $DATASETS_CSV; do
-            if _skip_synthetic_gt_dataset "$ds"; then
+            if ! _skip_synthetic_gt_dataset "$ds"; then
                 echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
                 continue
             fi
