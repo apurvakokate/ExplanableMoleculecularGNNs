@@ -154,15 +154,16 @@ _skip_redundant_fold() {
 # still fragment, threshold, and plot node coverage.
 # Synthetic GT (phase 4) only applies to GT_SUPPORTED_DATASETS CSV benchmarks.
 _skip_synthetic_gt_dataset() {
+    # Return 0 = apply GT; return 1 = skip (regression, mutag, OGB, etc.).
     PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
 from SharedModules.data.ground_truth import GT_SUPPORTED_DATASETS
 import sys
-sys.exit(0 if sys.argv[1] not in GT_SUPPORTED_DATASETS else 1)
+sys.exit(0 if sys.argv[1] in GT_SUPPORTED_DATASETS else 1)
 " "$1" 2>/dev/null || {
         case "$1" in Mutagenicity|Benzene|BBBP|hERG|Alkane_Carbonyl|Fluoride_Carbonyl)
-            return 1 ;;
+            return 0 ;;
         esac
-        return 0
+        return 1
     }
 }
 
