@@ -54,6 +54,10 @@ RDLogger.DisableLog('rdApp.*')
 # Mutagenicity_node_labels.txt integer → atomic number.
 # Must match data/mutag/raw/Mutagenicity_label_readme.txt (14 types, 0–13).
 # The 14-dim node features are one-hot over these indices — NOT a separate 9-type scheme.
+# Explicit H nodes (readme type 3) are separate graph vertices in Mutagenicity.
+# RDKit drops them when building canonical SMILES — verify skips them.
+MUTAG_H_NODE_TYPE = 3
+
 MUTAG_ATOM_TYPE_MAP: Dict[int, int] = {
     0:  6,   # C
     1:  8,   # O
@@ -248,13 +252,20 @@ def verify_mutag_index_alignment(
         Pre-built node feature matrix from the mutag dataset.
         For TUDataset mutag, x = original_features (pre-baked float matrix).
     node_types : list[int]
-        Original integer node-type labels (0–8).
+        Original integer node-type labels (0–13, Mutagenicity_label_readme.txt).
     graph_to_smiles_idx : dict[int, int]
         Output of graph_to_mapped_smiles().
 
     Returns
     -------
     dict with ok, n_nodes, mismatches list
+
+    Notes
+    -----
+    Mutagenicity graphs store explicit H as type ``MUTAG_H_NODE_TYPE`` (3).
+    ``graph_to_mapped_smiles`` may omit those nodes from the RDKit SMILES after
+    sanitisation; they are skipped here.  Only heavy atoms present in ``g2s`` are
+    checked — that is what motif index translation relies on.
     """
     mol = Chem.MolFromSmiles(mapped_smiles)
     if mol is None:
@@ -266,14 +277,16 @@ def verify_mutag_index_alignment(
     mismatches = []
 
     for graph_idx in range(n_nodes):
-        # Expected element from node_type
-        atomic_num = MUTAG_ATOM_TYPE_MAP.get(int(node_types[graph_idx]))
+        type_int = int(node_types[graph_idx])
+        if type_int == MUTAG_H_NODE_TYPE:
+            continue
+
+        atomic_num = MUTAG_ATOM_TYPE_MAP.get(type_int)
         if atomic_num is None:
             mismatches.append((graph_idx, '?', '?', 'unknown_node_type'))
             continue
         expected_sym = pt.GetElementSymbol(atomic_num)
 
-        # Symbol from SMILES (via atom-map alignment)
         smiles_idx = graph_to_smiles_idx.get(graph_idx)
         if smiles_idx is None:
             mismatches.append((graph_idx, expected_sym, '?', 'no_smiles_mapping'))

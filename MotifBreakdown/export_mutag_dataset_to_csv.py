@@ -120,8 +120,8 @@ def main():
     print(f"  wrote {pkl_path}  ({len(index_maps)} index maps)")
     print(f"  wrote {splits_path}")
     if n_verify_fail:
-        print(f"  [warn] {n_verify_fail} graphs failed index-alignment verification; "
-              f"inspect before trusting their motif annotations.")
+        print(f"  [warn] {n_verify_fail} graphs failed heavy-atom alignment verification "
+              f"(explicit-H graph nodes are expected to be absent from RDKit SMILES).")
 
 
 if __name__ == '__main__':
