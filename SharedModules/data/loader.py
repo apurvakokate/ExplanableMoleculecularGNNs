@@ -455,8 +455,14 @@ def _get_mutag_loaders(
         df_smi = pd.read_csv(smiles_csv_path)
         for _, row in df_smi.iterrows():
             gid = int(row['graph_id'])
-            smiles_by_graph[gid] = str(row['smiles'])
-            split_by_graph[gid]  = str(row.get('group', 'training'))
+            split_by_graph[gid] = str(row.get('group', 'training'))
+            smi = row.get('smiles')
+            if smi is None or (isinstance(smi, float) and pd.isna(smi)):
+                continue
+            smi = str(smi).strip()
+            if not smi or smi.lower() == 'nan':
+                continue
+            smiles_by_graph[gid] = smi
 
     # Resolve train/valid/test indices (splits pickle preferred)
     train_items: List[int] = []
@@ -500,9 +506,8 @@ def _get_mutag_loaders(
             n_missing = sum(1 for s in smiles_list if not s)
             if n_missing:
                 print(f"  [warn] mutag {split_name}: {n_missing}/{len(smiles_list)} "
-                      f"graphs missing mapped SMILES in "
-                      f"{smiles_csv_path or _art['mutag_smiles_csv_path']} "
-                      f"(nodes_to_motifs=-1). Re-run phase0 export if unexpected.")
+                      f"graphs without mapped SMILES "
+                      f"(nodes_to_motifs=-1; failed conversion or re-run phase0 export).")
         return MutagTUDataset(
             data_list, vocab, index_maps, smiles_list, split=split_name)
 

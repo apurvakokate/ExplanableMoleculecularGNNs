@@ -41,8 +41,9 @@ from SharedModules.data.graph_to_smiles import (
 def _nitrobenzene_graph():
     """Return (node_types, edge_src, edge_dst) for nitrobenzene.
     Atom order: C(0)C(1)C(2)C(3)C(4)C(5)N(6)O(7)O(8)  — NOT canonical.
+    Node types use Mutagenicity_label_readme.txt encoding (see MUTAG_ATOM_TYPE_MAP).
     """
-    node_types = [0, 0, 0, 0, 0, 0, 1, 2, 2]   # C×6, N, O, O
+    node_types = [0, 0, 0, 0, 0, 0, 4, 1, 1]   # C×6, N, O, O
     edges = [(0,1),(1,2),(2,3),(3,4),(4,5),(5,0),(5,6),(6,7),(6,8)]
     src = [s for s,d in edges] + [d for s,d in edges]
     dst = [d for s,d in edges] + [s for s,d in edges]
@@ -50,8 +51,8 @@ def _nitrobenzene_graph():
 
 
 def _ethanol_graph():
-    """O(0)-C(1)-C(2) in non-canonical order."""
-    node_types = [2, 0, 0]          # O, C, C
+    """O(0)-C(1)-C(2) in non-canonical order (readme types: 1=O, 0=C)."""
+    node_types = [1, 0, 0]          # O, C, C
     src = [0, 1, 1, 2]
     dst = [1, 0, 2, 1]
     return node_types, src, dst
@@ -411,7 +412,7 @@ class TestEndToEndIndexConsistency(unittest.TestCase):
         # Nitrobenzene v1: C(0-5), N(6), O(7), O(8)
         nt1, src1, dst1 = _nitrobenzene_graph()
         # Nitrobenzene v2: N(0), C(1-6) ring, O(7), O(8) — N comes first
-        nt2  = [1, 0, 0, 0, 0, 0, 0, 2, 2]
+        nt2  = [4, 0, 0, 0, 0, 0, 0, 1, 1]
         edges2 = [(0,1),(1,2),(2,3),(3,4),(4,5),(5,6),(6,1),(0,7),(0,8)]
         src2 = [s for s,d in edges2] + [d for s,d in edges2]
         dst2 = [d for s,d in edges2] + [s for s,d in edges2]

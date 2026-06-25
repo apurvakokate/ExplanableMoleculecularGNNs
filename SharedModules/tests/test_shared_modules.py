@@ -488,6 +488,15 @@ class TestVanillaGNN(unittest.TestCase):
         self.assertEqual(out.shape, (4, 1))
         self.assertIsNone(att)
 
+    def test_compute_loss_out_2d_y_1d(self):
+        """Batched PyG labels are often [B]; model logits are [B, 1]."""
+        from SharedModules.baselines.vanilla_gnn import _compute_loss
+        import torch.nn as nn
+        out = torch.randn(128, 1)
+        y = torch.randint(0, 2, (128,)).float()
+        loss = _compute_loss(nn.BCEWithLogitsLoss(), out, y, 'BinaryClass')
+        self.assertTrue(torch.isfinite(loss))
+
     def test_forward_shape_multilabel(self):
         model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=32,
                            num_layers=2, num_classes=12)

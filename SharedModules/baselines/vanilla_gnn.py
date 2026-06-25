@@ -212,8 +212,8 @@ def _compute_loss(criterion, out, y, task_type):
             reduction='none')
         per = per[valid]
         return per.mean() if per.numel() > 0 else (out.sum() * 0.0)
-    out = out.view_as(y) if out.shape == y.shape else out.view(-1)
-    y = y.view(-1)
+    out = out.reshape(-1)
+    y = y.reshape(-1)
     valid = ~torch.isnan(y)
     return criterion(out[valid], y[valid].float())
 

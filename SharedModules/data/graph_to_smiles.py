@@ -51,16 +51,24 @@ RDLogger.DisableLog('rdApp.*')
 # Mutag TUDataset atom-type map
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Mutagenicity_node_labels.txt integer → atomic number.
+# Must match data/mutag/raw/Mutagenicity_label_readme.txt (14 types, 0–13).
+# The 14-dim node features are one-hot over these indices — NOT a separate 9-type scheme.
 MUTAG_ATOM_TYPE_MAP: Dict[int, int] = {
-    0: 6,    # C
-    1: 7,    # N
-    2: 8,    # O
-    3: 9,    # F
-    4: 15,   # P
-    5: 16,   # S
-    6: 17,   # Cl
-    7: 35,   # Br
-    8: 53,   # I
+    0:  6,   # C
+    1:  8,   # O
+    2:  17,  # Cl
+    3:  1,   # H  (explicit hydrogens in mutag graphs)
+    4:  7,   # N
+    5:  9,   # F
+    6:  35,  # Br
+    7:  16,  # S
+    8:  15,  # P
+    9:  53,  # I
+    10: 11,  # Na
+    11: 19,  # K
+    12: 3,   # Li
+    13: 20,  # Ca
 }
 
 # Reverse: symbol → our ATOMS dict index (for verifying feature matrices)

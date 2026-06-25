@@ -106,15 +106,17 @@ def main():
     n_before = len(df)
     df_ok = df[df['conversion_ok']].copy()
     if len(df_ok) < n_before:
-        print(f"  dropped {n_before - len(df_ok)} graphs that failed conversion")
+        print(f"  {n_before - len(df_ok)} graphs failed SMILES conversion "
+              f"(kept in CSV with empty smiles; motif_id=-1 at train time)")
 
-    df_ok.to_csv(csv_path, index=False)
+    # Write ALL graph_ids so mutag splits.pkl indices always resolve in the CSV.
+    df.to_csv(csv_path, index=False)
     with open(pkl_path, 'wb') as f:
         pickle.dump(index_maps, f)
     save_mutag_splits(splits_path, split_idx, seed=split_seed)
 
     n_verify_fail = int((~df_ok['verify_ok']).sum()) if 'verify_ok' in df_ok else 0
-    print(f"  wrote {csv_path}  ({len(df_ok)} molecules)")
+    print(f"  wrote {csv_path}  ({len(df)} molecules, {len(df_ok)} with mapped SMILES)")
     print(f"  wrote {pkl_path}  ({len(index_maps)} index maps)")
     print(f"  wrote {splits_path}")
     if n_verify_fail:
