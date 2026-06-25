@@ -118,92 +118,39 @@ from data.dataset_schema import DATASET_COLUMN, TASK_TYPE   # type: ignore
 # CHOSEN THRESHOLD — per variant × dataset
 #
 # Key = variant name (= output directory, e.g. "all_fallback_bpe_filter").
-# These are the thresholds applied when --apply_threshold is set without
-# --threshold_pct.  Edit this dict directly; no shell variable needed.
+# Applied when --apply_threshold is set without --threshold_pct.
 #
-# Threshold semantics: percentage of N_trainval.
-#   0.002 → motif must appear in ≥ 0.2% of train+val molecules
+# Threshold semantics: fraction of N_trainval (0.002 → ≥ 0.2% of train+val mols).
 #
-# Derived from phase-2 coverage CSVs (June 2026).  Selection policy:
-#   1. Default 0.005 (0.5%) when cov ≥ 50% and vocab ≤ 200 at that point.
-#   2. Otherwise pick the *lowest* threshold (highest coverage) that still
-#      meets both constraints — e.g. BBBP/all_fallback_bpe → 0.006 not 0.009
-#      because vocab is already low at 0.6% and 0.7–0.9% only shaves a few
-#      motifs while coverage falls sharply.
-#   3. If still impossible (minority rescue / rbrics fragmentation), use the
-#      lowest-vocab point with cov ≥ 50%, or best available coverage.
+# Unified table (June 2026 manual review) — identical across all filter variants
+# for cross-algorithm comparability.  Cov/vocab at these points vary by variant;
+# see phase-2 coverage CSVs.  Known tradeoffs at this table:
+#   • Mutagenicity 0.2%: plain rbrics/rbrics_old ~50% cov (all_fallback 52%)
+#   • hERG 0.5%: all_fallback_bpe ~48% cov (legacy rbrics ~64%)
+#   • ogbg-molhiv 0.4%: legacy rbrics ~49% cov; all_fallback not yet phase-2'd
+#   • freesolv/tox21: no phase-2 CSV yet — 0.5% assumed (same class as peers)
 # ─────────────────────────────────────────────────────────────────────────────
+_UNIFIED_FILTER_THRESHOLDS: dict = {
+    'Mutagenicity':      0.002,
+    'Benzene':           0.005,
+    'BBBP':              0.006,
+    'hERG':              0.005,
+    'Alkane_Carbonyl':   0.005,
+    'Fluoride_Carbonyl': 0.005,
+    'esol':              0.002,
+    'Lipophilicity':     0.005,
+    'freesolv':          0.005,
+    'tox21':             0.005,
+    'mutag':             0.005,
+    'ogbg-molhiv':       0.004,
+    'ogbg-molbace':      0.005,
+}
+
 CHOSEN_THRESHOLD: dict = {
-
-    # ── all + fallback + BPE (filtered) ──────────────────────────────────────
-    'all_fallback_bpe_filter': {
-        'Mutagenicity':      0.002,   # vocab=176, cov=51.9% (consistent 0.2%)
-        'Benzene':           0.005,   # default 0.5%: vocab=105, cov=56.3%
-        'BBBP':              0.006,   # vocab=176, cov=54.9% (consistent 0.6%)
-        'hERG':              0.004,   # vocab=169, cov=51.5% (0.5%→48% cov)
-        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=132, cov=64.2%
-        'Fluoride_Carbonyl': 0.005,   # default 0.5%: vocab=185, cov=62.6%
-        'esol':              0.005,   # default 0.5%: vocab=81,  cov=53.9%
-        'Lipophilicity':     0.005,   # default 0.5%: vocab=132, cov=58.8%
-        'freesolv':          0.005,   # (no phase-2 CSV — same class as esol)
-        'tox21':             0.005,
-        'mutag':             0.005,   # default 0.5%: vocab=97,  cov=66.8%
-        'ogbg-molhiv':       0.005,   # ← UPDATE after all_fallback_bpe phase-2
-        'ogbg-molbace':      0.005,   # default 0.5%: vocab=168, cov=86.1%
-    },
-
-    # ── rBRICS legacy [*] keys (filtered) ────────────────────────────────────
-    'rbrics_filter': {
-        'Mutagenicity':      0.002,   # vocab=157, cov=42.2% (consistent 0.2%)
-        'Benzene':           0.005,   # default 0.5%: vocab=110, cov=52.3%
-        'BBBP':              0.006,   # vocab=196, cov=47.2% (consistent 0.6%)
-        'hERG':              0.005,   # default 0.5%: vocab=160, cov=57.3%
-        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=141, cov=58.2%
-        'Fluoride_Carbonyl': 0.005,   # default 0.5%: vocab=194, cov=55.5%
-        'esol':              0.001,   # vocab=799, cov=100% (>200)
-        'Lipophilicity':     0.005,   # default 0.5%: vocab=137, cov=61.2%
-        'freesolv':          0.005,
-        'tox21':             0.005,
-        'mutag':             0.002,   # vocab=754, cov=60.5% (>200; minority rescue)
-        'ogbg-molhiv':       0.001,   # vocab=1261,cov=53.0% (>200; minority rescue)
-        'ogbg-molbace':      0.005,   # default 0.5%: vocab=149, cov=85.5%
-    },
-
-    # ── rBRICS + reBRICS + structural fallback on unfragmented mols (filtered) ─
-    # Phase-1 variant: rbrics_with_struct_fallback (method=rbrics --fallback).
-    # Thresholds copied from rbrics_filter — re-tune after phase-2 coverage plots.
-    'rbrics_with_struct_fallback_filter': {
-        'Mutagenicity':      0.002,
-        'Benzene':           0.005,
-        'BBBP':              0.006,
-        'hERG':              0.005,
-        'Alkane_Carbonyl':   0.005,
-        'Fluoride_Carbonyl': 0.005,
-        'esol':              0.001,
-        'Lipophilicity':     0.005,
-        'freesolv':          0.005,
-        'tox21':             0.005,
-        'mutag':             0.002,
-        'ogbg-molhiv':       0.001,
-        'ogbg-molbace':      0.005,
-    },
-
-    # ── rbrics_old plot path (filtered) ──────────────────────────────────────
-    'rbrics_old_filter': {
-        'Mutagenicity':      0.002,   # vocab=192, cov=49.6% (consistent 0.2%)
-        'Benzene':           0.005,   # default 0.5%: vocab=118, cov=54.7%
-        'BBBP':              0.006,   # vocab=254, cov=65.7% (consistent 0.6%)
-        'hERG':              0.005,   # default 0.5%: vocab=184, cov=64.2%
-        'Alkane_Carbonyl':   0.005,   # default 0.5%: vocab=148, cov=60.8%
-        'Fluoride_Carbonyl': 0.006,   # vocab=176, cov=56.8% (0.5%→211 vocab)
-        'esol':              0.003,   # vocab=129, cov=51.7% (0.5%→47% cov)
-        'Lipophilicity':     0.005,   # default 0.5%: vocab=146, cov=64.7%
-        'freesolv':          0.005,
-        'tox21':             0.005,
-        'mutag':             0.005,   # default 0.5%: vocab=134, cov=50.5%
-        'ogbg-molhiv':       0.003,   # vocab=370, cov=52.4% (>200; minority rescue)
-        'ogbg-molbace':      0.005,   # default 0.5%: vocab=164, cov=88.4%
-    },
+    'all_fallback_bpe_filter':              {**_UNIFIED_FILTER_THRESHOLDS},
+    'rbrics_filter':                        {**_UNIFIED_FILTER_THRESHOLDS},
+    'rbrics_with_struct_fallback_filter':   {**_UNIFIED_FILTER_THRESHOLDS},
+    'rbrics_old_filter':                    {**_UNIFIED_FILTER_THRESHOLDS},
 }
 
 # Helper: look up the threshold for a given variant + dataset combination.
