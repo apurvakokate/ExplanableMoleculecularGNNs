@@ -245,15 +245,17 @@ class MutagTUDataset(torch.utils.data.Dataset):
         # canonical node_label / edge_label the eval pipeline reads.
         _normalize_source_gt_labels(data)
 
-        if self._vocab is None or not self._smiles[idx]:
-            data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
-            return data
+        mapped_smi = self._smiles[idx] if idx < len(self._smiles) else None
+        # PyG DataLoader collation requires every graph in a batch to expose the
+        # same attribute keys; always attach smiles (empty when unmapped).
+        data.smiles = mapped_smi if mapped_smi else ''
 
-        mapped_smi = self._smiles[idx]
-        data.smiles = mapped_smi
-        data.nodes_to_motifs = apply_motif_lookup_with_index_map(
-            n, mapped_smi, self._lookup, self._index_maps
-        )
+        if self._vocab is not None and mapped_smi and self._lookup:
+            data.nodes_to_motifs = apply_motif_lookup_with_index_map(
+                n, mapped_smi, self._lookup, self._index_maps
+            )
+        else:
+            data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
         return data
 
 
@@ -308,8 +310,9 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         if self._require_smiles and self._lookup and not smiles:
             raise ValueError(
                 f"OGB graph index {i} has no SMILES; cannot attach motif annotations.")
+        # Keep smiles on every graph so PyG batch collation keys are uniform.
+        data.smiles = smiles if smiles else ''
         if self._lookup and smiles:
-            data.smiles = smiles
             data.nodes_to_motifs = apply_motif_lookup_canonical(
                 n, smiles, self._lookup)
         else:
@@ -493,6 +496,13 @@ def _get_mutag_loaders(
     def _build_ds(indices, split_name):
         data_list   = [dataset[i] for i in indices]
         smiles_list = [smiles_by_graph.get(i) for i in indices]
+        if vocab is not None:
+            n_missing = sum(1 for s in smiles_list if not s)
+            if n_missing:
+                print(f"  [warn] mutag {split_name}: {n_missing}/{len(smiles_list)} "
+                      f"graphs missing mapped SMILES in "
+                      f"{smiles_csv_path or _art['mutag_smiles_csv_path']} "
+                      f"(nodes_to_motifs=-1). Re-run phase0 export if unexpected.")
         return MutagTUDataset(
             data_list, vocab, index_maps, smiles_list, split=split_name)
 

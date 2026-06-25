@@ -910,6 +910,32 @@ class TestMutagTUDataset(unittest.TestCase):
         ds = MutagTUDataset(items)
         self.assertEqual(len(ds), 5)
 
+    def test_smiles_key_uniform_for_pyg_batch(self):
+        """Mixed mapped/unmapped SMILES must still collate (same attr keys)."""
+        from torch_geometric.loader import DataLoader
+        from SharedModules.data.loader import MutagTUDataset
+        from SharedModules.data.vocab import VocabData
+
+        items = [self._make_data() for _ in range(4)]
+        vocab = VocabData(
+            motif_list=['a'],
+            motif_counts=[1],
+            motif_lengths=[1],
+            motif_class={0: {0: 1, 1: 0}},
+            lookup_train={},
+            lookup_valid={},
+            lookup_test={},
+            gmi_train={},
+            gmi_test={},
+        )
+        ds = MutagTUDataset(
+            items, vocab=vocab,
+            index_maps={}, smiles_list=['CC', None, 'CCO', ''],
+        )
+        batch = DataLoader(ds, batch_size=4, shuffle=False).__iter__().__next__()
+        self.assertTrue(hasattr(batch, 'smiles'))
+        self.assertEqual(batch.num_graphs, 4)
+
     def test_with_vocab_and_index_map(self):
         """When a valid vocab + index_map are provided, known nodes get motif_id >= 0."""
         from SharedModules.data.loader import MutagTUDataset
