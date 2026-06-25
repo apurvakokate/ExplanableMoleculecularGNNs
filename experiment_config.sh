@@ -34,7 +34,7 @@ export DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP hERG Benzene Alkane_Carbo
 #   mutag          — source GT; no --use_gt; fold 0 only
 #   ogbg-molhiv    — atom_encoder forced at train; fold 0 only
 #   ogbg-molbace   — same as molhiv
-export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
+export DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molbace ogbg-molhiv}"
 # Union used by all phases. Override entirely: export DATASETS="BBBP Benzene"
 export DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 # Lipophilicity / esol (regression) skip rule mining and phase-4 GT only;
