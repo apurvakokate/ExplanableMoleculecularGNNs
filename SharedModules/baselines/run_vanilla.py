@@ -25,6 +25,10 @@ import torch
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
+from SharedModules.data.dataset_routing import (
+    default_processed_base,
+    variant_processed_root,
+)
 from SharedModules.data.vocab import load_vocab
 from SharedModules.data.loader import (
     get_loaders, compute_pos_weights, apply_gt_loaders, TASK_TYPE

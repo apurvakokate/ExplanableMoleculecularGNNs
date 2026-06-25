@@ -52,7 +52,7 @@ export BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 # export BACKBONE="${BACKBONE:-GIN}"
 export NODE_ENCODER="onehot"                  # onehot | linear | atom_encoder (OGB only)
 export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
-export EPOCHS="100"
+export EPOCHS="${EPOCHS:-100}"
 # Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
 export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
 # MOSE multi-explanation (H0/H1/H2) runs post-hoc — see phase multi_explanation.
