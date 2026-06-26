@@ -26,7 +26,7 @@ class MotifSATConfig:
     apply_layer_norm: bool = False
     conv_normalize: str = 'l2'      # l2 | layernorm | none (per-conv norm)
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
-    dropout: float = 0.5
+    dropout: float = 0.3
 
     # Motif method (orthogonal to noise and info loss)
     motif_method: str = 'none'         # none | loss | readout (motif_emb -> NotImplemented)
@@ -56,7 +56,7 @@ class MotifSATConfig:
     final_r: Optional[float] = None
     decay_interval: Optional[int] = None
     decay_r: Optional[float] = None
-    logit_clamp: float = 3.0        # |ℓ| ≤ clamp before sigmoid; 3.0 = original paper
+    logit_clamp: Optional[float] = None  # |ℓ| cap before sigmoid; None = off (GSAT parity)
 
     # Training
     epochs: int = 100

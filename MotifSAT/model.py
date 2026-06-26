@@ -38,39 +38,65 @@ from losses import info_loss, motif_consistency_loss, motif_size_weights
 # Sampling helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-LOGIT_CLAMP = 3.0   # clamp |ℓ| ≤ 3 before sigmoid; att ∈ [0.047, 0.953]
-                    # Prevents saturation that kills IB gradient and Concrete sampler.
 CONCRETE_TEMP = 1.0  # official GSAT: fixed temp=1 for Concrete sampling (r is IB-only)
+
+
+def _clamp_logits(log_logits: Tensor, logit_clamp: Optional[float]) -> Tensor:
+    """Optional |ℓ| clamp before sigmoid / Concrete (off when logit_clamp is None/≤0)."""
+    if logit_clamp is not None and logit_clamp > 0:
+        return log_logits.clamp(-logit_clamp, logit_clamp)
+    return log_logits
 
 
 def _concrete_sample(
     log_logits: Tensor,
     training: bool,
     temp: float = CONCRETE_TEMP,
+    logit_clamp: Optional[float] = None,
 ) -> Tensor:
-    """Concrete / soft-sigmoid sampling with logit clamping.
+    """Concrete / soft-sigmoid sampling (official GSAT temp=1).
 
-    Clamps |log_logits| to [-LOGIT_CLAMP, LOGIT_CLAMP] before sampling.
-    Without clamping, MLP outputs can saturate to ±inf, collapsing
-    sigmoid to 0/1 and killing IB gradient flow.
-
-    `temp` is the Concrete temperature (official GSAT uses fixed temp=1).
-    IB prior retention `r` is applied separately in info_loss, not here.
+    Optional ``logit_clamp`` caps |ℓ| before sampling (MotifSAT extension;
+    disabled by default for GSAT parity). IB prior ``r`` is applied only in
+    info_loss, not here.
 
     During training: Concrete (Gumbel-sigmoid) sample.
-    During eval: the deterministic soft sigmoid sigma(logits) — NOT a hard
-    0/1 threshold. This matches reference GSAT (Miao et al., 2022): the
-    attention is always a continuous gate in (0, 1). A hard threshold would
-    discard the magnitude information that downstream ranking metrics
-    (GT ROC, per-motif aggregation) and the readout injection rely on.
+    During eval: deterministic soft sigmoid — not a hard 0/1 threshold.
     """
-    log_logits = log_logits.clamp(-LOGIT_CLAMP, LOGIT_CLAMP)
+    log_logits = _clamp_logits(log_logits, logit_clamp)
     if training:
         u = torch.empty_like(log_logits).uniform_().clamp(1e-6, 1 - 1e-6)
         log_u = u.log() - (1 - u).log()
         return torch.sigmoid((log_logits + log_u) / temp)
     else:
         return log_logits.sigmoid()
+
+
+def _reorder_like(from_edge_index: Tensor, to_edge_index: Tensor,
+                  values: Tensor) -> Tensor:
+    """Align edge values from one edge_index ordering to another (GSAT util)."""
+    from torch_geometric.utils import sort_edge_index
+    from_edge_index, values = sort_edge_index(from_edge_index, values)
+    ranking_score = to_edge_index[0] * (to_edge_index.max() + 1) + to_edge_index[1]
+    ranking = ranking_score.argsort().argsort()
+    if not (from_edge_index[:, ranking] == to_edge_index).all():
+        raise ValueError("Edge index mismatch in _reorder_like.")
+    return values[ranking]
+
+
+def _symmetrize_edge_att(edge_index: Tensor, edge_att: Tensor) -> Tensor:
+    """Average (u,v) and (v,u) edge attention on undirected graphs (official GSAT)."""
+    from torch_geometric.utils import is_undirected
+    if not is_undirected(edge_index):
+        return edge_att
+    att = edge_att.view(-1)
+    try:
+        from torch_sparse import transpose
+    except ImportError:
+        return edge_att
+    trans_idx, trans_val = transpose(edge_index, att, None, None, coalesced=False)
+    trans_val_perm = _reorder_like(trans_idx, edge_index, trans_val)
+    return ((att + trans_val_perm) / 2).view_as(edge_att)
 
 
 def _add_logistic_noise(log_logits: Tensor) -> Tuple[Tensor, Tensor]:
@@ -168,6 +194,7 @@ class GSAT(nn.Module):
         motif_loss_coef: float = 0.0,
         between_motif_coef: float = 0.0,
         within_node_coef: float = 0.0,
+        logit_clamp: Optional[float] = None,
     ):
         super().__init__()
 
@@ -209,6 +236,7 @@ class GSAT(nn.Module):
         self.motif_loss_coef = motif_loss_coef
         self.between_motif_coef = between_motif_coef
         self.within_node_coef = within_node_coef
+        self.logit_clamp = logit_clamp
         self.task_type = task_type
         self.num_classes = num_classes
 
@@ -251,7 +279,10 @@ class GSAT(nn.Module):
     # ── IB prior annealing ───────────────────────────────────────────────────
 
     def anneal_r(self, epoch: int) -> None:
-        """Update IB prior retention r based on decay schedule."""
+        """Update IB prior retention r based on decay schedule.
+
+        ``epoch`` is 0-indexed (matches official GSAT ``get_r(current_epoch)``).
+        """
         if self.decay_interval is not None and self.decay_r is not None:
             new_r = max(
                 self.final_r,
@@ -295,13 +326,11 @@ class GSAT(nn.Module):
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Add Logistic noise at node or motif level.
 
-        Logits are clamped to [-LOGIT_CLAMP, LOGIT_CLAMP] before noise
-        so that noise is added on a controlled scale rather than on top
-        of already-saturated values.
+        Optional logit_clamp is applied before noise when enabled.
         """
-        node_logits = node_logits.clamp(-LOGIT_CLAMP, LOGIT_CLAMP)
+        node_logits = _clamp_logits(node_logits, self.logit_clamp)
         if motif_logits is not None:
-            motif_logits = motif_logits.clamp(-LOGIT_CLAMP, LOGIT_CLAMP)
+            motif_logits = _clamp_logits(motif_logits, self.logit_clamp)
         if self.noise == 'node':
             node_logits, _ = _add_logistic_noise(node_logits)
         elif self.noise == 'motif' and motif_logits is not None:
@@ -350,8 +379,9 @@ class GSAT(nn.Module):
                 node_logits, motif_logits, inv_idx
             )
 
-        # Step 4: Edge attention (learn_edge_att path)
+        # Step 4: Sample attention (Concrete / soft sigmoid)
         edge_att = None
+        edge_att_mp = None   # symmetrized edge att for message passing (official GSAT)
         # node_att / edge_att are soft gates in (0,1): at eval the deterministic
         # sigmoid, at train the Concrete (Gumbel-sigmoid) sample. We ALSO keep
         # the clean (noise-free) sigmoid as *_soft for ranking metrics, since at
@@ -359,19 +389,21 @@ class GSAT(nn.Module):
         # add variance to ROC / motif-aggregation scores.
         node_att_soft = None
         edge_att_soft = None
+        lc = self.logit_clamp
         if self.learn_edge_att:
             src, dst = edge_index
             edge_logits = self.edge_extractor(
                 torch.cat([node_emb[src], node_emb[dst]], dim=-1)
             )
-            edge_logits = edge_logits.clamp(-LOGIT_CLAMP, LOGIT_CLAMP)
+            edge_logits = _clamp_logits(edge_logits, lc)
             if self.training:
                 edge_logits, _ = _add_logistic_noise(edge_logits)
-            edge_att = _concrete_sample(edge_logits, self.training)
+            edge_att = _concrete_sample(edge_logits, self.training, logit_clamp=lc)
+            edge_att_mp = _symmetrize_edge_att(edge_index, edge_att)
             edge_att_soft = edge_logits.sigmoid()
             node_att = None
         else:
-            node_att = _concrete_sample(node_logits, self.training)
+            node_att = _concrete_sample(node_logits, self.training, logit_clamp=lc)
             node_att_soft = node_logits.sigmoid()
 
         # Step 5: Re-run backbone with attention injection
@@ -379,7 +411,7 @@ class GSAT(nn.Module):
             x, edge_index,
             edge_attr=edge_attr,
             node_att=node_att,
-            edge_atten=edge_att,
+            edge_atten=edge_att_mp if edge_att_mp is not None else edge_att,
             w_feat=self.w_feat,
             w_message=self.w_message,
             w_readout=self.w_readout,

@@ -132,7 +132,7 @@ def train_gsat(
 
     for epoch in range(1, epochs + 1):
         # Anneal IB prior retention (info_loss only; Concrete temp stays fixed)
-        model.anneal_r(epoch)
+        model.anneal_r(epoch - 1)  # 0-indexed, matches official GSAT get_r(epoch)
 
         ep_losses = train_one_epoch(
             model, criterion, optimizer, loaders['train'], device,

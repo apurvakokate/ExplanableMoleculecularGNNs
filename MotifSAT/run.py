@@ -68,6 +68,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         motif_loss_coef=cfg.motif_loss_coef,
         between_motif_coef=cfg.between_motif_coef,
         within_node_coef=cfg.within_node_coef,
+        logit_clamp=getattr(cfg, 'logit_clamp', None),
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
         conv_normalize=getattr(cfg, 'conv_normalize', 'l2'),
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
@@ -558,6 +559,16 @@ def main():
     parser.add_argument("--learn_edge_att",  action="store_true")
     parser.add_argument("--hidden_dim",      type=int, default=64)
     parser.add_argument("--num_layers",      type=int, default=3)
+    parser.add_argument("--dropout",         type=float, default=0.3,
+                        help="GNN backbone dropout (official GSAT mol configs use 0.3).")
+    parser.add_argument("--extractor_dropout_p", type=float, default=0.5)
+    parser.add_argument("--pool_mode",       default="max_mean",
+                        choices=["mean", "max", "max_mean", "multi"])
+    parser.add_argument("--motif_info_size_normalize", action="store_true",
+                        help="Divide motif-level info_loss by motif length.")
+    parser.add_argument("--logit_clamp",     type=float, default=None,
+                        help="Optional |logit| cap before sigmoid/Concrete "
+                             "(default off; pass 3.0 to enable MotifSAT stabilizer).")
     parser.add_argument("--info_loss_coef",  type=float, default=1.0)
     parser.add_argument("--init_r",          type=float, default=None,
                         help="IB prior retention at start (default 0.9).")
@@ -650,6 +661,11 @@ def main():
             w_feat=args.w_feat, w_message=args.w_message,
             w_readout=args.w_readout, learn_edge_att=args.learn_edge_att,
             hidden_dim=args.hidden_dim, num_layers=args.num_layers,
+            dropout=args.dropout,
+            pool_mode=args.pool_mode,
+            extractor_dropout_p=args.extractor_dropout_p,
+            motif_info_size_normalize=args.motif_info_size_normalize,
+            logit_clamp=args.logit_clamp,
             info_loss_coef=args.info_loss_coef,
             init_r=args.init_r,
             final_r=args.final_r,

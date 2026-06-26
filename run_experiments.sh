@@ -463,7 +463,7 @@ run_gsat() {
                     --motif_method    none \
                     $inj_args \
                     $(_gsat_learn_edge_att_flag) \
-                    --noise           node \
+                    --noise           none \
                     --info_loss_level node \
                     --info_loss_coef  1.0 \
                     --epochs          "$EPOCHS" \

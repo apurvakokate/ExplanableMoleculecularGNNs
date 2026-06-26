@@ -367,7 +367,7 @@ def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn, backbone):
     elif exp == 'gsat':
         cmd += ['--epochs', str(epochs), '--lr', str(args.lr),
                 '--motif_method', 'none',
-                '--noise', 'node',
+                '--noise', 'none',
                 '--info_loss_level', 'node', '--info_loss_coef', '1.0']
         if w_feat: cmd += ['--w_feat']
         if w_msg:  cmd += ['--w_message']

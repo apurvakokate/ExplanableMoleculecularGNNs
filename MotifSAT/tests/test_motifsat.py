@@ -304,12 +304,19 @@ class TestConcreteSample(unittest.TestCase):
         # Eval returns the soft sigmoid of the logits, NOT a hard 0/1 threshold.
         logits = torch.tensor([[5.0], [-5.0], [0.0]])
         att = _concrete_sample(logits, training=False)
-        # Clamped at |3|, so sigmoid(3)=0.9526, sigmoid(-3)=0.0474, sigmoid(0)=0.5
-        self.assertAlmostEqual(float(att[0]), 0.9526, places=3)
-        self.assertAlmostEqual(float(att[1]), 0.0474, places=3)
+        import torch.nn.functional as F
+        self.assertAlmostEqual(float(att[0]), float(F.sigmoid(logits[0])), places=4)
+        self.assertAlmostEqual(float(att[1]), float(F.sigmoid(logits[1])), places=4)
         self.assertAlmostEqual(float(att[2]), 0.5, places=4)
         # Crucially: values are continuous, not collapsed to {0,1}
         self.assertNotIn(float(att[0]), (0.0, 1.0))
+
+    def test_logit_clamp_optional(self):
+        logits = torch.tensor([[5.0], [-5.0]])
+        att_off = _concrete_sample(logits, training=False)
+        att_on = _concrete_sample(logits, training=False, logit_clamp=3.0)
+        self.assertAlmostEqual(float(att_off[0]), 0.9933, places=3)
+        self.assertAlmostEqual(float(att_on[0]), 0.9526, places=3)
 
     def test_shape_preserved(self):
         logits = torch.randn(10, 1)
