@@ -8,7 +8,10 @@ from typing import Dict, List, Optional, Set, Union
 
 import pandas as pd
 
-from .mutag_splits import load_mutag_splits
+try:
+    from .mutag_splits import load_mutag_splits
+except ImportError:  # standalone / test isolation
+    from SharedModules.data.mutag_splits import load_mutag_splits
 
 
 class MutagArtifactError(ValueError):

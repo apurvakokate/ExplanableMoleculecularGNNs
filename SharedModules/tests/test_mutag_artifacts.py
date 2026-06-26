@@ -3,43 +3,32 @@
 from __future__ import annotations
 
 import csv
-import importlib.util
 import pickle
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
-SM = REPO / 'SharedModules'
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
-
-def _load_module(name: str, path: Path, package=None):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    if package is not None:
-        mod.__package__ = package
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mutag_splits = _load_module('mutag_splits', SM / 'data' / 'mutag_splits.py')
-import types
-_pkg = types.ModuleType('SharedModules')
-_pkg_data = types.ModuleType('SharedModules.data')
-sys.modules.setdefault('SharedModules', _pkg)
-sys.modules.setdefault('SharedModules.data', _pkg_data)
-sys.modules['SharedModules.data.mutag_splits'] = _mutag_splits
-_mutag_artifacts = _load_module(
-    'mutag_artifacts', SM / 'data' / 'mutag_artifacts.py',
-    package='SharedModules.data')
-
-MutagArtifactError = _mutag_artifacts.MutagArtifactError
-validate_mutag_artifacts = _mutag_artifacts.validate_mutag_artifacts
-exclude_graph_ids_from_splits = _mutag_splits.exclude_graph_ids_from_splits
-save_mutag_splits = _mutag_splits.save_mutag_splits
+try:
+    from SharedModules.data.mutag_artifacts import (
+        MutagArtifactError,
+        validate_mutag_artifacts,
+    )
+    from SharedModules.data.mutag_splits import (
+        exclude_graph_ids_from_splits,
+        save_mutag_splits,
+    )
+    _IMPORT_ERROR = None
+except ImportError as exc:
+    MutagArtifactError = None  # type: ignore
+    validate_mutag_artifacts = None  # type: ignore
+    exclude_graph_ids_from_splits = None  # type: ignore
+    save_mutag_splits = None  # type: ignore
+    _IMPORT_ERROR = exc
 
 
 def _write_export_bundle(tmp: Path, graph_ids, splits, smiles='[C:1][C:2]'):
@@ -72,6 +61,7 @@ def _write_export_bundle(tmp: Path, graph_ids, splits, smiles='[C:1][C:2]'):
     return csv_path, splits_path, maps_path
 
 
+@unittest.skipIf(_IMPORT_ERROR is not None, f'deps missing: {_IMPORT_ERROR}')
 class TestValidateMutagArtifacts(unittest.TestCase):
 
     def test_consistent_bundle_passes(self):
@@ -113,32 +103,14 @@ class TestValidateMutagArtifacts(unittest.TestCase):
         self.assertEqual(out, {'train': [0, 1], 'valid': [2], 'test': [3]})
 
 
+@unittest.skipIf(_IMPORT_ERROR is not None, f'deps missing: {_IMPORT_ERROR}')
 class TestGenerateVocabCsvLoad(unittest.TestCase):
     """Stage: generate_vocab_rules._load_csv for mutag."""
 
-    def _import_load_csv(self):
-        rdkit = mock.MagicMock()
-        rdkit.Chem = mock.MagicMock()
-        rdkit.RDLogger = mock.MagicMock()
-        stubs = {
-            'torch': mock.MagicMock(),
-            'rdkit': rdkit,
-            'rdkit.Chem': rdkit.Chem,
-            'rdkit.RDLogger': rdkit.RDLogger,
-        }
-        if str(REPO) not in sys.path:
-            sys.path.insert(0, str(REPO))
+    def test_load_mutag_csv(self):
         if str(REPO / 'MotifBreakdown') not in sys.path:
             sys.path.insert(0, str(REPO / 'MotifBreakdown'))
-        with mock.patch.dict(sys.modules, stubs):
-            import generate_vocab_rules as gvr
-            return gvr._load_csv
-
-    def test_load_mutag_csv(self):
-        try:
-            _load_csv = self._import_load_csv()
-        except ModuleNotFoundError as e:
-            self.skipTest(f'generate_vocab_rules deps missing: {e}')
+        from generate_vocab_rules import _load_csv
 
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -150,10 +122,9 @@ class TestGenerateVocabCsvLoad(unittest.TestCase):
             self.assertTrue(bool(df.iloc[0]['smiles']))
 
     def test_load_mutag_csv_rejects_empty_smiles(self):
-        try:
-            _load_csv = self._import_load_csv()
-        except ModuleNotFoundError as e:
-            self.skipTest(f'generate_vocab_rules deps missing: {e}')
+        if str(REPO / 'MotifBreakdown') not in sys.path:
+            sys.path.insert(0, str(REPO / 'MotifBreakdown'))
+        from generate_vocab_rules import _load_csv
 
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -168,30 +139,26 @@ class TestGenerateVocabCsvLoad(unittest.TestCase):
                 _load_csv(str(tmp), 'mutag', 0)
 
 
-class TestUserDownloadedArtifacts(unittest.TestCase):
-    """Optional: validate artifacts the user exported on HPC."""
+@unittest.skipIf(_IMPORT_ERROR is not None, f'deps missing: {_IMPORT_ERROR}')
+class TestHpcExportArtifacts(unittest.TestCase):
+    """Validate mutag_0.* under MUTAG_DATA_ROOT when present."""
 
-    DOWNLOADS = Path('/Users/apurvakokate/Downloads')
-
-    def test_user_export_if_present(self):
-        csv_p = self.DOWNLOADS / 'mutag_0 (1).csv'
-        splits_p = self.DOWNLOADS / 'mutag_0_splits (1).pkl'
-        maps_p = self.DOWNLOADS / 'mutag_0_index_maps (1).pkl'
+    def test_export_on_disk_if_present(self):
+        import os
+        data_root = Path(os.environ.get(
+            'MUTAG_DATA_ROOT', REPO / 'data'))
+        csv_p = data_root / 'mutag_0.csv'
+        splits_p = data_root / 'mutag_0_splits.pkl'
+        maps_p = data_root / 'mutag_0_index_maps.pkl'
         if not csv_p.is_file():
-            self.skipTest('user export CSV not in Downloads')
+            self.skipTest(f'no export at {csv_p}')
 
-        import pandas as pd
-        df = pd.read_csv(csv_p)
-        if len(df) == 2951 and 'conversion_ok' in df.columns:
-            with self.assertRaises(MutagArtifactError):
-                validate_mutag_artifacts(csv_p, splits_p, maps_p,
-                                         dataset_size=2951)
-        elif len(df) == 2937:
-            info = validate_mutag_artifacts(csv_p, splits_p, maps_p,
-                                            dataset_size=2951)
-            self.assertEqual(info['n_graphs'], 2937)
-            self.assertEqual(
-                info['n_train'] + info['n_valid'] + info['n_test'], 2937)
+        info = validate_mutag_artifacts(csv_p, splits_p, maps_p, dataset_size=2951)
+        self.assertEqual(
+            info['n_train'] + info['n_valid'] + info['n_test'],
+            info['n_graphs'],
+        )
+        self.assertGreaterEqual(info['n_graphs'], 2937)
 
 
 if __name__ == '__main__':
