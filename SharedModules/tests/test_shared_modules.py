@@ -1773,6 +1773,12 @@ class TestMutagSplits(unittest.TestCase):
         self.assertEqual(group_for_graph(2, split_idx), 'valid')
         self.assertEqual(group_for_graph(3, split_idx), 'test')
 
+    def test_exclude_graph_ids_from_splits(self):
+        from SharedModules.data.mutag_splits import exclude_graph_ids_from_splits
+        split_idx = {'train': [0, 1, 2], 'valid': [3], 'test': [4, 5]}
+        out = exclude_graph_ids_from_splits(split_idx, [2, 4])
+        self.assertEqual(out, {'train': [0, 1], 'valid': [3], 'test': [5]})
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

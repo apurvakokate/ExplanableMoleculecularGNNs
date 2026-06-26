@@ -9,6 +9,8 @@ its TUDataset/PyG form into:
     {out_dir}/mutag_{fold}_splits.pkl      (disjoint train/valid/test indices)
 
 Split logic: random disjoint 80% train / 10% valid / 10% test (seed + fold).
+Graphs that fail SMILES reconstruction are dropped from the CSV, splits, and
+index maps (they are never loaded for vocab mining or training).
 GT-ROC at train time uses test mutagens only (see ``mutag_gt_eval_graphs``).
 
 Usage:
@@ -75,7 +77,7 @@ def main():
     from SharedModules.data.graph_to_smiles import build_mutag_smiles_df
     from SharedModules.data.mutag_splits import (
         get_mutag_split_idx, group_for_graph, save_mutag_splits,
-        mutag_gt_eval_graphs,
+        exclude_graph_ids_from_splits, mutag_gt_eval_graphs,
     )
 
     dataset = _load_mutag(args.data_root)
@@ -105,18 +107,36 @@ def main():
 
     n_before = len(df)
     df_ok = df[df['conversion_ok']].copy()
-    if len(df_ok) < n_before:
-        print(f"  {n_before - len(df_ok)} graphs failed SMILES conversion "
-              f"(kept in CSV with empty smiles; motif_id=-1 at train time)")
+    n_drop = n_before - len(df_ok)
+    if n_drop:
+        failed_ids = df.loc[~df['conversion_ok'], 'graph_id'].astype(int).tolist()
+        print(f"  {n_drop} graphs failed SMILES conversion — excluding from dataset:")
+        print(f"    graph_ids={failed_ids}")
+        split_before = {k: len(v) for k, v in split_idx.items()}
+        split_idx = exclude_graph_ids_from_splits(split_idx, failed_ids)
+        for k in ('train', 'valid', 'test'):
+            dropped = split_before[k] - len(split_idx[k])
+            if dropped:
+                print(f"    removed from {k}: {dropped}")
+        _test_graphs = [dataset[i] for i in split_idx['test']]
+        print(f"  after exclusion: train={len(split_idx['train'])}  "
+              f"valid={len(split_idx['valid'])}  test={len(split_idx['test'])}")
+        print(f"  test mutagens w/ source GT: "
+              f"{len(mutag_gt_eval_graphs(_test_graphs))}")
 
-    # Write ALL graph_ids so mutag splits.pkl indices always resolve in the CSV.
-    df.to_csv(csv_path, index=False)
+    df_ok.to_csv(csv_path, index=False)
     with open(pkl_path, 'wb') as f:
         pickle.dump(index_maps, f)
     save_mutag_splits(splits_path, split_idx, seed=split_seed)
 
+    from SharedModules.data.mutag_artifacts import validate_mutag_artifacts
+    info = validate_mutag_artifacts(csv_path, splits_path, pkl_path,
+                                    dataset_size=len(dataset))
+    print(f"  artifact check OK: {info['n_graphs']} graphs "
+          f"(train={info['n_train']} valid={info['n_valid']} test={info['n_test']})")
+
     n_verify_fail = int((~df_ok['verify_ok']).sum()) if 'verify_ok' in df_ok else 0
-    print(f"  wrote {csv_path}  ({len(df)} molecules, {len(df_ok)} with mapped SMILES)")
+    print(f"  wrote {csv_path}  ({len(df_ok)} molecules)")
     print(f"  wrote {pkl_path}  ({len(index_maps)} index maps)")
     print(f"  wrote {splits_path}")
     if n_verify_fail:

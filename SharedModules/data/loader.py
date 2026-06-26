@@ -464,12 +464,20 @@ def _get_mutag_loaders(
                 continue
             smiles_by_graph[gid] = smi
 
+    _splits_file = splits_path or _art['mutag_splits_path']
+    _csv_file = smiles_csv_path or _art['mutag_smiles_csv_path']
+    _maps_file = index_maps_path or _art['mutag_index_maps_path']
+    if (Path(_csv_file).exists() and Path(_splits_file).exists()
+            and Path(_maps_file).exists()):
+        from .mutag_artifacts import validate_mutag_artifacts
+        validate_mutag_artifacts(
+            _csv_file, _splits_file, _maps_file, dataset_size=len(dataset))
+
     # Resolve train/valid/test indices (splits pickle preferred)
     train_items: List[int] = []
     val_items:   List[int] = []
     test_items:  List[int] = []
 
-    _splits_file = splits_path or _art['mutag_splits_path']
     if Path(_splits_file).exists():
         from .mutag_splits import load_mutag_splits
         split_idx = load_mutag_splits(_splits_file)
@@ -505,9 +513,11 @@ def _get_mutag_loaders(
         if vocab is not None:
             n_missing = sum(1 for s in smiles_list if not s)
             if n_missing:
-                print(f"  [warn] mutag {split_name}: {n_missing}/{len(smiles_list)} "
-                      f"graphs without mapped SMILES "
-                      f"(nodes_to_motifs=-1; failed conversion or re-run phase0 export).")
+                missing_ids = [i for i, s in zip(indices, smiles_list) if not s]
+                raise ValueError(
+                    f"mutag {split_name}: {n_missing}/{len(smiles_list)} graphs "
+                    f"in splits lack mapped SMILES (graph_ids={missing_ids[:10]}…). "
+                    f"Re-run export_mutag_dataset_to_csv.py or refresh artifacts.")
         return MutagTUDataset(
             data_list, vocab, index_maps, smiles_list, split=split_name)
 

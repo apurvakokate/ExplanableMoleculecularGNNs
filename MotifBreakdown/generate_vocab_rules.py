@@ -1164,6 +1164,13 @@ def _load_csv(data_root: str, dataset: str, fold: int) -> pd.DataFrame:
     df = df.rename(columns={label_col: 'label'})
     if 'group' not in df.columns:
         df['group'] = 'training'
+    if dataset == 'mutag':
+        bad = df['smiles'].isna() | (df['smiles'].astype(str).str.strip() == '') \
+            | (df['smiles'].astype(str).str.lower() == 'nan')
+        if bad.any():
+            raise ValueError(
+                f"mutag CSV {path} has {int(bad.sum())} row(s) with empty smiles. "
+                f"Re-run export_mutag_dataset_to_csv.py (failed graphs are excluded).")
     return df
 
 def compute_stats(dataset: str, variant: str, fold: int,

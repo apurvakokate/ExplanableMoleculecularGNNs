@@ -53,6 +53,15 @@ def get_mutag_split_idx(
     return {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 
 
+def exclude_graph_ids_from_splits(
+    split_idx: Dict[str, List[int]],
+    exclude: Sequence[int],
+) -> Dict[str, List[int]]:
+    """Remove graph indices from every split (e.g. SMILES conversion failures)."""
+    bad = {int(x) for x in exclude}
+    return {k: [i for i in v if i not in bad] for k, v in split_idx.items()}
+
+
 def group_for_graph(
     graph_id: int,
     split_idx: Dict[str, Sequence[int]],
