@@ -1,28 +1,18 @@
-"""Pytest setup: MOSE-GNN top-level modules must win over MotifSAT when collected."""
+"""MOSE-GNN test collection: pin flat imports before test module import."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-_PKG_DIR = Path(__file__).resolve().parent.parent
-_ROOT = _PKG_DIR.parent
+import pytest
 
-_TOPLEVEL = ('model', 'train', 'reg_config', 'config', 'run')
+_REPO = Path(__file__).resolve().parent.parent.parent
+_PKG = _REPO / 'MOSE-GNN'
 
-
-def _ensure_mose_path() -> None:
-    pkg = str(_PKG_DIR)
-    for name in _TOPLEVEL:
-        mod = sys.modules.get(name)
-        mod_file = getattr(mod, '__file__', None) or ''
-        if mod is not None and not mod_file.startswith(pkg):
-            del sys.modules[name]
-    while pkg in sys.path:
-        sys.path.remove(pkg)
-    sys.path.insert(0, pkg)
-    root = str(_ROOT)
-    if root not in sys.path:
-        sys.path.insert(1, root)
+from SharedModules.tests.pin_pkg_imports import MOSE_TOPLEVEL, pin_trainer_imports  # noqa: E402
 
 
-_ensure_mose_path()
+@pytest.hookimpl(tryfirst=True)
+def pytest_collectstart(collector) -> None:
+    fspath = str(getattr(collector, 'fspath', '') or '').replace('\\', '/')
+    if '/MOSE-GNN/tests/' in fspath:
+        pin_trainer_imports(_PKG, _REPO, MOSE_TOPLEVEL)

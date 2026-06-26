@@ -15,13 +15,16 @@ Run:
 import sys, os, unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+from SharedModules.tests.pin_pkg_imports import MOSE_TOPLEVEL, pin_trainer_imports
+
+pin_trainer_imports(ROOT / 'MOSE-GNN', ROOT, MOSE_TOPLEVEL)
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data, Batch
-
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'MOSE-GNN'))
 
 from SharedModules.data.dataset import NUM_ATOM_TYPES, EDGE_FEAT_DIM
 

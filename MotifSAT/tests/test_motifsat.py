@@ -17,13 +17,16 @@ Run:
 import sys, os, unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+from SharedModules.tests.pin_pkg_imports import MOTIFSAT_TOPLEVEL, pin_trainer_imports
+
+pin_trainer_imports(ROOT / 'MotifSAT', ROOT, MOTIFSAT_TOPLEVEL)
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data, Batch
-
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'MotifSAT'))
 
 from SharedModules.data.dataset import NUM_ATOM_TYPES, EDGE_FEAT_DIM
 
@@ -33,6 +36,7 @@ from motif_modules import (
     MotifPooling, ExtractorMLP, MotifReadoutScorer,
 )
 from model import GSAT, _concrete_sample
+from reg_config import resolve_gsat_r
 
 DEVICE = torch.device('cpu')
 
@@ -556,14 +560,12 @@ class TestConfigValidation(unittest.TestCase):
 
 class TestRegConfig(unittest.TestCase):
     def test_mutag_final_r(self):
-        from reg_config import resolve_gsat_r
         _, final_r, dec_int, _, from_tbl = resolve_gsat_r('mutag')
         self.assertAlmostEqual(final_r, 0.5)
         self.assertEqual(dec_int, 10)
         self.assertTrue(from_tbl)
 
     def test_csv_dataset_final_r(self):
-        from reg_config import resolve_gsat_r
         for ds in ('BBBP', 'hERG', 'Benzene', 'esol'):
             _, final_r, dec_int, _, from_tbl = resolve_gsat_r(ds)
             self.assertAlmostEqual(final_r, 0.5, msg=ds)
@@ -571,13 +573,11 @@ class TestRegConfig(unittest.TestCase):
             self.assertTrue(from_tbl, msg=ds)
 
     def test_ogb_final_r(self):
-        from reg_config import resolve_gsat_r
         _, final_r, dec_int, _, _ = resolve_gsat_r('ogbg-molhiv')
         self.assertAlmostEqual(final_r, 0.7)
         self.assertEqual(dec_int, 20)
 
     def test_explicit_override(self):
-        from reg_config import resolve_gsat_r
         _, final_r, dec_int, _, from_tbl = resolve_gsat_r(
             'mutag', final_r=0.3, decay_interval=5,
         )
