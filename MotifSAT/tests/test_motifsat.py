@@ -10,7 +10,8 @@ Tests:
   - _concrete_sample
 
 Run:
-    python test_motifsat.py -v
+    cd MotifSAT && python3 tests/test_motifsat.py -v
+    pytest MotifSAT/tests/test_motifsat.py -v   # from repo root (uses tests/conftest.py)
 """
 
 import sys, os, unittest
