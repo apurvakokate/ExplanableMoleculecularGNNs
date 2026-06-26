@@ -53,7 +53,7 @@ def _get_probs(
     from .metrics import _model_forward
     probs = {}
     for d in data_list:
-        out = _model_forward(model, d.to(device))
+        out = _model_forward(model, d.clone().to(device))
         if task_type == 'BinaryClass':
             probs[d.smiles] = float(torch.sigmoid(out.view(-1)[0]))
         else:
@@ -64,7 +64,7 @@ def _get_probs(
 @torch.no_grad()
 def _single_prob(model, data: Data, device: torch.device, task_type: str) -> float:
     from .metrics import _model_forward
-    out = _model_forward(model, data.to(device))
+    out = _model_forward(model, data.clone().to(device))
     if task_type == 'BinaryClass':
         return float(torch.sigmoid(out.view(-1)[0]))
     return float(out.view(-1)[0])
@@ -732,7 +732,7 @@ def model_node_att_fn(model: torch.nn.Module, device: torch.device):
     """
     @torch.no_grad()
     def _fn(data: Data):
-        data_dev = data.to(device)
+        data_dev = data.clone().to(device)
         batch = getattr(data_dev, 'batch', None)
         if batch is None:
             batch = torch.zeros(data_dev.x.size(0), dtype=torch.long, device=device)
@@ -855,7 +855,7 @@ def compute_gt_roc(
             n_skipped += 1
             continue
 
-        data_dev = data.to(device)
+        data_dev = data.clone().to(device)
 
         # Get node attention
         _is_edge_score = False

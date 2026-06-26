@@ -115,7 +115,7 @@ def _aggregate_att_to_motif(
 
     with torch.no_grad():
         for data in data_list[:max_graphs]:
-            data  = data.to(device)
+            data  = data.clone().to(device)
             n     = data.x.size(0)
             n2m   = getattr(data, "nodes_to_motifs", None)
             if n2m is None:
