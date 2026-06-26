@@ -238,6 +238,13 @@ def training_summary_extras(cfg) -> Dict:
         'use_gt': bool(getattr(cfg, 'use_gt', False)),
         'gt_cache': getattr(cfg, 'gt_cache', None),
         'run_multi_explanation': bool(getattr(cfg, 'run_multi_explanation', False)),
+        'pool_mode': getattr(cfg, 'pool_mode', None),
+        'deterministic_att': bool(getattr(cfg, 'deterministic_att', False)),
+        'weight_decay': getattr(cfg, 'weight_decay', None),
+        'init_r': getattr(cfg, 'init_r', None),
+        'final_r': getattr(cfg, 'final_r', None),
+        'decay_interval': getattr(cfg, 'decay_interval', None),
+        'decay_r': getattr(cfg, 'decay_r', None),
     }
     wvv = getattr(cfg, 'weight_vocab_variant', None)
     if wvv not in (None, ''):

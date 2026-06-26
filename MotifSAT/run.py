@@ -76,6 +76,38 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
     )
 
 
+def _requires_nodes_to_motifs(cfg: MotifSATConfig) -> bool:
+    """True when motif annotations must be present on every graph."""
+    return (
+        cfg.motif_method == 'readout'
+        or cfg.noise in ('node', 'motif')
+    )
+
+
+def _validate_motif_annotations(cfg: MotifSATConfig, loaders) -> None:
+    """Fail fast when readout / motif-noise needs nodes_to_motifs but data lacks them."""
+    if not _requires_nodes_to_motifs(cfg):
+        return
+    ds = loaders['train'].dataset
+    if len(ds) == 0:
+        raise ValueError('train dataset is empty; cannot validate nodes_to_motifs')
+    g0 = ds[0]
+    n2m = getattr(g0, 'nodes_to_motifs', None)
+    if n2m is None:
+        raise ValueError(
+            f"motif_method={cfg.motif_method!r} noise={cfg.noise!r} requires "
+            f"nodes_to_motifs on each graph, but the train loader does not "
+            f"provide it. Check vocab_root/vocab_variant and mutag export "
+            f"artifacts (mutag_<fold>.csv + index maps)."
+        )
+    if (n2m >= 0).sum().item() == 0:
+        raise ValueError(
+            f"motif_method={cfg.motif_method!r} noise={cfg.noise!r} requires "
+            f"annotated motifs (nodes_to_motifs >= 0), but the first train "
+            f"graph has none. Check vocab lookup / index maps."
+        )
+
+
 def _aggregate_att_to_motif(
     model: torch.nn.Module,
     data_list: list,
@@ -208,6 +240,8 @@ def run(cfg: MotifSATConfig) -> dict:
           f"train={len(loaders['train'].dataset)}  "
           f"val={len(loaders['valid'].dataset)}  "
           f"test={len(loaders['test'].dataset)}")
+
+    _validate_motif_annotations(cfg, loaders)
 
     # Honor --node_encoder for CSV (force atom_encoder for OGB); store on cfg so
     # model build and variant_tag agree. tag computed AFTER this resolution.
@@ -604,6 +638,8 @@ def main():
                              "Gated by --motif_loss_coef.")
     parser.add_argument("--epochs",          type=int, default=100)
     parser.add_argument("--lr",              type=float, default=1e-3)
+    parser.add_argument("--weight_decay",    type=float, default=1e-5,
+                        help="Adam weight decay (official GSAT mol configs use 1e-5).")
     parser.add_argument("--data_root",       default="./datasets/FOLDS")
     parser.add_argument("--vocab_root",      default="./motifsat_output")
     parser.add_argument("--vocab_variant",   default="all_fallback_bpe")
@@ -684,6 +720,7 @@ def main():
             within_node_coef=args.within_node_coef,
             between_motif_coef=args.between_motif_coef,
             epochs=args.epochs, lr=args.lr,
+            weight_decay=args.weight_decay,
             data_root=args.data_root, vocab_root=args.vocab_root,
             vocab_variant=args.vocab_variant, out_dir=args.out_dir,
             node_encoder=args.node_encoder,

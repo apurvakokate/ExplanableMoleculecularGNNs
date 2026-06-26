@@ -532,6 +532,27 @@ class TestGSAT(unittest.TestCase):
                              f'NaN in logits for method={method}')
 
 
+class TestConfigValidation(unittest.TestCase):
+    def test_learn_edge_att_incompatible_with_motif_noise(self):
+        with self.assertRaises(ValueError):
+            _make_gsat(learn_edge_att=True, noise='node')
+        with self.assertRaises(ValueError):
+            _make_gsat(learn_edge_att=True, noise='motif')
+
+    def test_readout_requires_nodes_to_motifs(self):
+        m = _make_gsat(motif_method='readout')
+        b = _batch(2, 6, 3)
+        b.nodes_to_motifs = None
+        with self.assertRaises(ValueError):
+            m(b.x, b.edge_index, b.batch, None)
+
+    def test_motif_noise_requires_nodes_to_motifs(self):
+        m = _make_gsat(motif_method='none', noise='node')
+        b = _batch(2, 6, 3)
+        with self.assertRaises(ValueError):
+            m(b.x, b.edge_index, b.batch, None)
+
+
 class TestRegConfig(unittest.TestCase):
     def test_mutag_final_r(self):
         from reg_config import resolve_gsat_r

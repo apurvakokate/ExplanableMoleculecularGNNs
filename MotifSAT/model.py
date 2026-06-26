@@ -216,6 +216,11 @@ class GSAT(nn.Module):
                 f"unknown info_loss_level={info_loss_level!r}; "
                 f"expected none | node | motif"
             )
+        if learn_edge_att and noise != 'none':
+            raise ValueError(
+                f"learn_edge_att=True is incompatible with noise={noise!r}; "
+                f"use noise='none' for the edge-attention GSAT path."
+            )
 
         self.motif_method = motif_method
         self.noise = noise
@@ -363,6 +368,12 @@ class GSAT(nn.Module):
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
+        if self.motif_method == 'readout' and nodes_to_motifs is None:
+            raise ValueError(
+                "motif_method='readout' requires nodes_to_motifs on each graph "
+                "(motif vocabulary annotations from the data loader)."
+            )
+
         r = float(self.r.item())
 
         # Step 1: Backbone embedding (no attention injection yet)
@@ -380,8 +391,6 @@ class GSAT(nn.Module):
                 f"noise={self.noise!r} requires nodes_to_motifs (motif vocabulary "
                 f"annotations on each graph)."
             )
-
-        # Step 3: Sample attention (Concrete / soft sigmoid)
         edge_att = None
         edge_att_mp = None
         node_att_soft = None
