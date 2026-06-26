@@ -1,13 +1,13 @@
 """model.py — MotifSAT GSAT model.
 
-Implements the motif_method choices × three noise levels ×
-three info loss levels × three attention injection points.
-
-motif_method  : none | loss | readout   (motif_emb -> NotImplementedError)
-noise         : none | node | motif
+motif_method  : none | loss | readout
+noise         : none | node | motif  (where Concrete stochasticity is applied)
+    none  — per-node extractor logits; sample independently per node (base GSAT).
+    node  — motif_emb → MLP → motif logits broadcast to nodes; sample per node.
+    motif — motif_emb → MLP → sample once per motif; broadcast att to nodes.
 info_loss_level: none | node | motif
-w_feat / w_message / w_readout : bool flags (orthogonal to method)
-learn_edge_att : bool (base GSAT path — edge attention instead of node)
+w_feat / w_message / w_readout : attention injection flags
+learn_edge_att : bool (edge-level GSAT extractor)
 """
 
 from __future__ import annotations
@@ -53,18 +53,15 @@ def _concrete_sample(
     training: bool,
     temp: float = CONCRETE_TEMP,
     logit_clamp: Optional[float] = None,
+    deterministic: bool = False,
 ) -> Tensor:
     """Concrete / soft-sigmoid sampling (official GSAT temp=1).
 
-    Optional ``logit_clamp`` caps |ℓ| before sampling (MotifSAT extension;
-    disabled by default for GSAT parity). IB prior ``r`` is applied only in
-    info_loss, not here.
-
-    During training: Concrete (Gumbel-sigmoid) sample.
-    During eval: deterministic soft sigmoid — not a hard 0/1 threshold.
+    When ``deterministic=True``, always use soft sigmoid (no Gumbel draw), even
+    during training. Default ``deterministic=False`` matches official GSAT.
     """
     log_logits = _clamp_logits(log_logits, logit_clamp)
-    if training:
+    if training and not deterministic:
         u = torch.empty_like(log_logits).uniform_().clamp(1e-6, 1 - 1e-6)
         log_u = u.log() - (1 - u).log()
         return torch.sigmoid((log_logits + log_u) / temp)
@@ -99,11 +96,8 @@ def _symmetrize_edge_att(edge_index: Tensor, edge_att: Tensor) -> Tensor:
     return ((att + trans_val_perm) / 2).view_as(edge_att)
 
 
-def _add_logistic_noise(log_logits: Tensor) -> Tuple[Tensor, Tensor]:
-    """Add logistic noise ε ~ Logistic(0,1) and return (noisy_logits, noise)."""
-    u = torch.empty_like(log_logits).uniform_().clamp(1e-6, 1 - 1e-6)
-    noise = u.log() - (1 - u).log()
-    return log_logits + noise, noise
+def _uses_motif_scorer(motif_method: str, noise: str) -> bool:
+    return motif_method == 'readout' or noise in ('node', 'motif')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +126,9 @@ class GSAT(nn.Module):
         'motif_emb' — NOT IMPLEMENTED; raises NotImplementedError.
 
     noise : str
-        'none' | 'node' | 'motif'
+        'none'  — node-level extractor; independent Concrete sample per node.
+        'node'  — motif pool → MLP → broadcast logits → sample per node.
+        'motif' — motif pool → MLP → Concrete sample per motif → broadcast att.
 
     info_loss_level : str
         'none' | 'node' | 'motif'
@@ -195,6 +191,7 @@ class GSAT(nn.Module):
         between_motif_coef: float = 0.0,
         within_node_coef: float = 0.0,
         logit_clamp: Optional[float] = None,
+        deterministic_att: bool = False,
     ):
         super().__init__()
 
@@ -237,6 +234,7 @@ class GSAT(nn.Module):
         self.between_motif_coef = between_motif_coef
         self.within_node_coef = within_node_coef
         self.logit_clamp = logit_clamp
+        self.deterministic_att = deterministic_att
         self.task_type = task_type
         self.num_classes = num_classes
 
@@ -250,16 +248,14 @@ class GSAT(nn.Module):
         )
         self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
 
-        # Extractor (node-level)
-        self.extractor = ExtractorMLP(hidden_dim, extractor_hidden_mult,
-                                      extractor_dropout_p)
+        # Node-level extractor (base GSAT path when noise='none')
+        self.extractor = ExtractorMLP(hidden_dim, dropout_p=extractor_dropout_p)
 
-        # Motif-level modules
-        if motif_method == 'readout':
+        # Motif pool → MLP scorer (readout method or noise=node|motif)
+        if _uses_motif_scorer(motif_method, noise):
             self.motif_scorer = MotifReadoutScorer(
                 in_dim=hidden_dim,
                 pool_mode=pool_mode,
-                hidden_mult=extractor_hidden_mult,
                 dropout_p=extractor_dropout_p,
             )
         else:
@@ -268,7 +264,7 @@ class GSAT(nn.Module):
         # Edge attention extractor (learn_edge_att=True path)
         if learn_edge_att:
             self.edge_extractor = ExtractorMLP(
-                hidden_dim * 2, extractor_hidden_mult, extractor_dropout_p
+                hidden_dim * 2, dropout_p=extractor_dropout_p, edge_mode=True,
             )
         else:
             self.edge_extractor = None
@@ -299,45 +295,51 @@ class GSAT(nn.Module):
         node_emb: Tensor,
         nodes_to_motifs: Optional[Tensor],
         batch: Optional[Tensor],
-    ) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor]]:
-        """Compute node-level attention log-logits.
+    ) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+        """Compute attention log-logits.
 
-        Returns (node_log_logits [N,1], motif_log_logits [M,1] or None,
-                 inverse_indices [N] or None).
+        Returns (node_logits [N,1], motif_logits [M,1]|None,
+                 inverse_indices [N]|None, motif_batch [M]|None).
         """
         if self.learn_edge_att:
-            # Edge attention: will be computed in forward; return stub
-            return self.extractor(node_emb), None, None
+            return self.extractor(node_emb, batch), None, None, None
 
-        if self.motif_method == 'readout' and nodes_to_motifs is not None:
+        if (_uses_motif_scorer(self.motif_method, self.noise)
+                and nodes_to_motifs is not None
+                and self.motif_scorer is not None):
             inv_idx, motif_batch, _ = compute_inverse_idx(
                 nodes_to_motifs, batch)
-            motif_logits, node_logits = self.motif_scorer(node_emb, inv_idx)
-            return node_logits, motif_logits, inv_idx
+            motif_logits, node_logits = self.motif_scorer(
+                node_emb, inv_idx, motif_batch)
+            return node_logits, motif_logits, inv_idx, motif_batch
 
-        else:
-            return self.extractor(node_emb), None, None
+        return self.extractor(node_emb, batch), None, None, None
 
-    def _apply_noise(
+    def _sample_node_attention(
         self,
         node_logits: Tensor,
         motif_logits: Optional[Tensor],
         inv_idx: Optional[Tensor],
-    ) -> Tuple[Tensor, Optional[Tensor]]:
-        """Add Logistic noise at node or motif level.
-
-        Optional logit_clamp is applied before noise when enabled.
-        """
-        node_logits = _clamp_logits(node_logits, self.logit_clamp)
+        training: bool,
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        """Concrete / soft-sigmoid sampling at node or motif granularity."""
+        lc = self.logit_clamp
+        det = self.deterministic_att
+        node_logits = _clamp_logits(node_logits, lc)
         if motif_logits is not None:
-            motif_logits = _clamp_logits(motif_logits, self.logit_clamp)
-        if self.noise == 'node':
-            node_logits, _ = _add_logistic_noise(node_logits)
-        elif self.noise == 'motif' and motif_logits is not None:
-            motif_logits, noise = _add_logistic_noise(motif_logits)
-            # Broadcast motif noise to nodes
-            node_logits = node_logits + lift_motif_to_node(noise, inv_idx)
-        return node_logits, motif_logits
+            motif_logits = _clamp_logits(motif_logits, lc)
+
+        if (motif_logits is not None and inv_idx is not None
+                and self.noise == 'motif'):
+            motif_att = _concrete_sample(
+                motif_logits, training, logit_clamp=lc, deterministic=det)
+            node_att = lift_motif_to_node(motif_att, inv_idx)
+            node_att_soft = lift_motif_to_node(motif_logits.sigmoid(), inv_idx)
+            return node_att, node_att_soft, motif_att
+
+        node_att = _concrete_sample(
+            node_logits, training, logit_clamp=lc, deterministic=det)
+        return node_att, node_logits.sigmoid(), None
 
     # ── Forward pass ─────────────────────────────────────────────────────────
 
@@ -369,44 +371,42 @@ class GSAT(nn.Module):
         )
 
         # Step 2: Extractor → log-logits
-        node_logits, motif_logits, inv_idx = self._get_node_logits(
+        node_logits, motif_logits, inv_idx, _motif_batch = self._get_node_logits(
             node_emb, nodes_to_motifs, batch
         )
 
-        # Step 3: Noise injection
-        if self.training:
-            node_logits, motif_logits = self._apply_noise(
-                node_logits, motif_logits, inv_idx
+        if self.noise in ('node', 'motif') and motif_logits is None:
+            raise ValueError(
+                f"noise={self.noise!r} requires nodes_to_motifs (motif vocabulary "
+                f"annotations on each graph)."
             )
 
-        # Step 4: Sample attention (Concrete / soft sigmoid)
+        # Step 3: Sample attention (Concrete / soft sigmoid)
         edge_att = None
-        edge_att_mp = None   # symmetrized edge att for message passing (official GSAT)
-        # node_att / edge_att are soft gates in (0,1): at eval the deterministic
-        # sigmoid, at train the Concrete (Gumbel-sigmoid) sample. We ALSO keep
-        # the clean (noise-free) sigmoid as *_soft for ranking metrics, since at
-        # train time the sampled att carries injected logistic noise that would
-        # add variance to ROC / motif-aggregation scores.
+        edge_att_mp = None
         node_att_soft = None
         edge_att_soft = None
+        motif_att = None
         lc = self.logit_clamp
         if self.learn_edge_att:
             src, dst = edge_index
             edge_logits = self.edge_extractor(
-                torch.cat([node_emb[src], node_emb[dst]], dim=-1)
+                torch.cat([node_emb[src], node_emb[dst]], dim=-1),
+                batch[src],
             )
             edge_logits = _clamp_logits(edge_logits, lc)
-            if self.training:
-                edge_logits, _ = _add_logistic_noise(edge_logits)
-            edge_att = _concrete_sample(edge_logits, self.training, logit_clamp=lc)
+            edge_att = _concrete_sample(
+                edge_logits, self.training, logit_clamp=lc,
+                deterministic=self.deterministic_att)
             edge_att_mp = _symmetrize_edge_att(edge_index, edge_att)
             edge_att_soft = edge_logits.sigmoid()
             node_att = None
         else:
-            node_att = _concrete_sample(node_logits, self.training, logit_clamp=lc)
-            node_att_soft = node_logits.sigmoid()
+            node_att, node_att_soft, motif_att = self._sample_node_attention(
+                node_logits, motif_logits, inv_idx, self.training,
+            )
 
-        # Step 5: Re-run backbone with attention injection
+        # Step 4: Re-run backbone with attention injection
         graph_emb, node_emb_final = self.clf.get_embedding(
             x, edge_index,
             edge_attr=edge_attr,
@@ -423,7 +423,8 @@ class GSAT(nn.Module):
         aux = {
             'node_att':      node_att,
             'edge_att':      edge_att,
-            'node_att_soft': node_att_soft,   # continuous probs for ranking/ROC
+            'motif_att':     motif_att,
+            'node_att_soft': node_att_soft,
             'edge_att_soft': edge_att_soft,
             'node_logits':   node_logits,
             'motif_logits':  motif_logits,
@@ -456,7 +457,10 @@ class GSAT(nn.Module):
             if self.learn_edge_att and aux['edge_att'] is not None:
                 ib = info_loss(aux['edge_att'].view(-1), r)
             elif self.info_loss_level == 'motif' and aux['motif_logits'] is not None:
-                motif_att = aux['motif_logits'].sigmoid().view(-1)
+                if aux.get('motif_att') is not None:
+                    motif_att = aux['motif_att'].view(-1)
+                else:
+                    motif_att = aux['motif_logits'].sigmoid().view(-1)
                 sw = None
                 if self.motif_info_size_normalize and motif_lengths is not None \
                         and aux['inv_idx'] is not None:

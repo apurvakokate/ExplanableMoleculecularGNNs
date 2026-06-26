@@ -34,7 +34,10 @@ class MotifSATConfig:
     extractor_hidden_mult: int = 2
     extractor_dropout_p: float = 0.5
 
-    # Noise
+    # Stochasticity granularity for motif-scored paths (NOT extra logit noise).
+    # none  = per-node extractor (base GSAT)
+    # node  = motif MLP → broadcast logits → sample per node
+    # motif = motif MLP → sample per motif → broadcast att
     noise: str = 'none'                # none | node | motif
 
     # IB info loss
@@ -57,6 +60,7 @@ class MotifSATConfig:
     decay_interval: Optional[int] = None
     decay_r: Optional[float] = None
     logit_clamp: Optional[float] = None  # |ℓ| cap before sigmoid; None = off (GSAT parity)
+    deterministic_att: bool = False      # True → sigmoid gates during train (no Gumbel)
 
     # Training
     epochs: int = 100
@@ -144,4 +148,6 @@ class MotifSATConfig:
         except Exception:
             hp = ''
         base = f'{self.backbone}_{self.motif_method}_{enc}_{ln}_{inj}_{noise_str}_{il_str}_{gt}_{ep}_{frag}'
+        if getattr(self, 'deterministic_att', False):
+            base = f'{base}_det'
         return f'{base}_{hp}' if hp else base

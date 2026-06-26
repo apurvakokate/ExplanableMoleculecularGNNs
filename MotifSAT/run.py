@@ -69,6 +69,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         between_motif_coef=cfg.between_motif_coef,
         within_node_coef=cfg.within_node_coef,
         logit_clamp=getattr(cfg, 'logit_clamp', None),
+        deterministic_att=getattr(cfg, 'deterministic_att', False),
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
         conv_normalize=getattr(cfg, 'conv_normalize', 'l2'),
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
@@ -550,7 +551,11 @@ def main():
     parser.add_argument("--motif_method",    default="none",
                         choices=["none","loss","readout","motif_emb"])
     parser.add_argument("--noise",           default="none",
-                        choices=["none","node","motif"])
+                        choices=["none","node","motif"],
+                        help="Where Concrete sampling applies: none=per-node "
+                             "extractor (GSAT); node=motif MLP logits broadcast "
+                             "then sampled per node; motif=one sample per motif "
+                             "instance then broadcast to nodes.")
     parser.add_argument("--info_loss_level", default="node",
                         choices=["none","node","motif"])
     parser.add_argument("--w_feat",          action="store_true")
@@ -569,6 +574,9 @@ def main():
     parser.add_argument("--logit_clamp",     type=float, default=None,
                         help="Optional |logit| cap before sigmoid/Concrete "
                              "(default off; pass 3.0 to enable MotifSAT stabilizer).")
+    parser.add_argument("--deterministic_att", action="store_true",
+                        help="Use soft sigmoid attention during training (no Gumbel "
+                             "draw). Default off = official GSAT Concrete sampling.")
     parser.add_argument("--info_loss_coef",  type=float, default=1.0)
     parser.add_argument("--init_r",          type=float, default=None,
                         help="IB prior retention at start (default 0.9).")
@@ -666,6 +674,7 @@ def main():
             extractor_dropout_p=args.extractor_dropout_p,
             motif_info_size_normalize=args.motif_info_size_normalize,
             logit_clamp=args.logit_clamp,
+            deterministic_att=args.deterministic_att,
             info_loss_coef=args.info_loss_coef,
             init_r=args.init_r,
             final_r=args.final_r,

@@ -7,7 +7,7 @@ Tests:
                    ExtractorMLP, MotifReadoutScorer
   - model.GSAT: all motif_method × noise × info_loss_level combinations
     forward shape, loss keys, gradient flow
-  - _concrete_sample / _add_logistic_noise
+  - _concrete_sample
 
 Run:
     python test_motifsat.py -v
@@ -31,7 +31,7 @@ from motif_modules import (
     compute_inverse_idx, lift_motif_to_node,
     MotifPooling, ExtractorMLP, MotifReadoutScorer,
 )
-from model import GSAT, _concrete_sample, _add_logistic_noise
+from model import GSAT, _concrete_sample
 
 DEVICE = torch.device('cpu')
 
@@ -261,15 +261,17 @@ class TestMotifPooling(unittest.TestCase):
 
 class TestExtractorMLP(unittest.TestCase):
     def test_output_shape(self):
-        mlp = ExtractorMLP(in_dim=32, hidden_mult=2)
+        mlp = ExtractorMLP(in_dim=32)
         x = torch.randn(15, 32)
-        out = mlp(x)
+        batch = torch.zeros(15, dtype=torch.long)
+        out = mlp(x, batch)
         self.assertEqual(out.shape, (15, 1))
 
     def test_gradient_flows(self):
         mlp = ExtractorMLP(in_dim=16)
         x = torch.randn(5, 16, requires_grad=True)
-        out = mlp(x)
+        batch = torch.zeros(5, dtype=torch.long)
+        out = mlp(x, batch)
         out.sum().backward()
         self.assertIsNotNone(x.grad)
 
@@ -279,7 +281,8 @@ class TestMotifReadoutScorer(unittest.TestCase):
         scorer = MotifReadoutScorer(in_dim=32, pool_mode='mean')
         emb = torch.randn(12, 32)
         inv = torch.tensor([0,0,0,1,1,1,2,2,2,3,3,3])
-        m_logits, n_logits = scorer(emb, inv, num_motifs=4)
+        motif_batch = torch.zeros(4, dtype=torch.long)
+        m_logits, n_logits = scorer(emb, inv, motif_batch, num_motifs=4)
         self.assertEqual(m_logits.shape, (4, 1))
         self.assertEqual(n_logits.shape, (12, 1))
 
@@ -287,8 +290,8 @@ class TestMotifReadoutScorer(unittest.TestCase):
         scorer = MotifReadoutScorer(in_dim=16, pool_mode='mean')
         emb = torch.randn(6, 16)
         inv = torch.tensor([0, 0, 1, 1, 2, 2])
-        _, n_logits = scorer(emb, inv, num_motifs=3)
-        # Nodes 0,1 same motif → same logit
+        motif_batch = torch.zeros(3, dtype=torch.long)
+        _, n_logits = scorer(emb, inv, motif_batch, num_motifs=3)
         self.assertAlmostEqual(float(n_logits[0]), float(n_logits[1]), places=5)
 
 
@@ -332,22 +335,40 @@ class TestConcreteSample(unittest.TestCase):
         att_explicit = _concrete_sample(logits, training=True, temp=1.0)
         self.assertTrue(torch.allclose(att_default, att_explicit))
 
-
-class TestAddLogisticNoise(unittest.TestCase):
-    def test_output_shapes(self):
-        logits = torch.randn(8, 1)
-        noisy, noise = _add_logistic_noise(logits)
-        self.assertEqual(noisy.shape, logits.shape)
-        self.assertEqual(noise.shape, logits.shape)
-
-    def test_noise_is_not_zero(self):
-        logits = torch.zeros(100, 1)
-        _, noise = _add_logistic_noise(logits)
-        # Extremely unlikely all noise samples are zero
-        self.assertGreater(float(noise.abs().sum()), 0.01)
+    def test_deterministic_skips_gumbel(self):
+        logits = torch.randn(10, 1)
+        att = _concrete_sample(logits, training=True, deterministic=True)
+        self.assertTrue(torch.allclose(att, logits.sigmoid()))
 
 
-# ── GSAT model ────────────────────────────────────────────────────────────────
+class TestMotifNoiseGranularity(unittest.TestCase):
+    def test_motif_noise_shares_att_within_motif(self):
+        """noise=motif: one Concrete sample per motif, broadcast to all atoms."""
+        m = _make_gsat(motif_method='readout', noise='motif', w_message=True)
+        m.train()
+        b = _batch(2, 6, 3)
+        _, att, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
+        n2m = b.nodes_to_motifs
+        for g in range(2):
+            mask = b.batch == g
+            ids = n2m[mask].unique()
+            for mid in ids.tolist():
+                node_mask = mask & (n2m == mid)
+                vals = att.view(-1)[node_mask]
+                self.assertTrue(torch.allclose(vals, vals[0:1].expand_as(vals)))
+
+    def test_node_noise_can_differ_within_motif(self):
+        """noise=node: broadcast logits but independent Gumbel draw per node."""
+        torch.manual_seed(0)
+        m = _make_gsat(motif_method='readout', noise='node', w_message=True)
+        m.train()
+        b = _batch(1, 6, 2)
+        _, att, _ = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
+        same_motif = b.nodes_to_motifs == b.nodes_to_motifs[0]
+        vals = att.view(-1)[same_motif]
+        if vals.numel() >= 2:
+            self.assertFalse(torch.allclose(vals[0], vals[1]))
+
 
 class TestGSAT(unittest.TestCase):
     def _fwd(self, **kwargs):
@@ -413,18 +434,23 @@ class TestGSAT(unittest.TestCase):
                          msg='eval node_att collapsed to a hard mask')
 
     def test_train_soft_att_differs_from_sampled(self):
-        """At train time the sampled att carries logistic noise, so the clean
-        node_att_soft differs from the sampled node_att. (At eval they coincide
-        — both are the soft sigmoid.)"""
-        m = _make_gsat(motif_method='none', w_message=True, noise='node')
+        """At train time Gumbel noise makes sampled att differ from sigmoid(logits)."""
+        m = _make_gsat(motif_method='none', w_message=True, noise='none')
         m.train()
         b = _batch(4, 6, 3)
         _, att, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
         self.assertIn('node_att_soft', aux)
         soft = aux['node_att_soft'].view(-1)
         self.assertTrue((soft > 0).all() and (soft < 1).all())
-        # Sampled (noisy) att should not exactly equal the clean sigmoid
         self.assertFalse(torch.equal(soft, att.view(-1)))
+
+    def test_deterministic_att_training(self):
+        """--deterministic_att: train-time att equals soft sigmoid (no Gumbel)."""
+        m = _make_gsat(motif_method='none', w_message=True, deterministic_att=True)
+        m.train()
+        b = _batch(2, 6, 3)
+        _, att, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
+        self.assertTrue(torch.allclose(att.view(-1), aux['node_att_soft'].view(-1)))
 
     def test_eval_soft_att_matches_node_att(self):
         """At eval, node_att and node_att_soft are both the soft sigmoid."""
