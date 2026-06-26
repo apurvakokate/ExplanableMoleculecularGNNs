@@ -297,13 +297,13 @@ class TestMotifReadoutScorer(unittest.TestCase):
 class TestConcreteSample(unittest.TestCase):
     def test_train_output_in_01(self):
         logits = torch.randn(20, 1)
-        att = _concrete_sample(logits, r=0.5, training=True)
+        att = _concrete_sample(logits, training=True)
         self.assertTrue((att >= 0).all() and (att <= 1).all())
 
     def test_eval_soft_sigmoid(self):
         # Eval returns the soft sigmoid of the logits, NOT a hard 0/1 threshold.
         logits = torch.tensor([[5.0], [-5.0], [0.0]])
-        att = _concrete_sample(logits, r=0.5, training=False)
+        att = _concrete_sample(logits, training=False)
         # Clamped at |3|, so sigmoid(3)=0.9526, sigmoid(-3)=0.0474, sigmoid(0)=0.5
         self.assertAlmostEqual(float(att[0]), 0.9526, places=3)
         self.assertAlmostEqual(float(att[1]), 0.0474, places=3)
@@ -313,8 +313,17 @@ class TestConcreteSample(unittest.TestCase):
 
     def test_shape_preserved(self):
         logits = torch.randn(10, 1)
-        att = _concrete_sample(logits, r=0.3, training=True)
+        att = _concrete_sample(logits, training=True)
         self.assertEqual(att.shape, (10, 1))
+
+    def test_concrete_temp_independent_of_r(self):
+        """Concrete sampling uses fixed temp=1 (official GSAT), not IB r."""
+        torch.manual_seed(0)
+        logits = torch.randn(5, 1)
+        att_default = _concrete_sample(logits, training=True)
+        torch.manual_seed(0)
+        att_explicit = _concrete_sample(logits, training=True, temp=1.0)
+        self.assertTrue(torch.allclose(att_default, att_explicit))
 
 
 class TestAddLogisticNoise(unittest.TestCase):
@@ -488,6 +497,38 @@ class TestGSAT(unittest.TestCase):
             logits, att, _ = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)
             self.assertFalse(torch.isnan(logits).any(),
                              f'NaN in logits for method={method}')
+
+
+class TestRegConfig(unittest.TestCase):
+    def test_mutag_final_r(self):
+        from reg_config import resolve_gsat_r
+        _, final_r, dec_int, _, from_tbl = resolve_gsat_r('mutag')
+        self.assertAlmostEqual(final_r, 0.5)
+        self.assertEqual(dec_int, 10)
+        self.assertTrue(from_tbl)
+
+    def test_csv_dataset_final_r(self):
+        from reg_config import resolve_gsat_r
+        for ds in ('BBBP', 'hERG', 'Benzene', 'esol'):
+            _, final_r, dec_int, _, from_tbl = resolve_gsat_r(ds)
+            self.assertAlmostEqual(final_r, 0.5, msg=ds)
+            self.assertEqual(dec_int, 10, msg=ds)
+            self.assertTrue(from_tbl, msg=ds)
+
+    def test_ogb_final_r(self):
+        from reg_config import resolve_gsat_r
+        _, final_r, dec_int, _, _ = resolve_gsat_r('ogbg-molhiv')
+        self.assertAlmostEqual(final_r, 0.7)
+        self.assertEqual(dec_int, 20)
+
+    def test_explicit_override(self):
+        from reg_config import resolve_gsat_r
+        _, final_r, dec_int, _, from_tbl = resolve_gsat_r(
+            'mutag', final_r=0.3, decay_interval=5,
+        )
+        self.assertAlmostEqual(final_r, 0.3)
+        self.assertEqual(dec_int, 5)
+        self.assertFalse(from_tbl)
 
 
 if __name__ == '__main__':

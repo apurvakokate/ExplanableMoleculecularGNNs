@@ -51,11 +51,11 @@ class MotifSATConfig:
     w_readout: bool = False
     learn_edge_att: bool = False       # True = base GSAT (edge attention)
 
-    # Temperature schedule
-    init_r: float = 0.9
-    final_r: float = 0.1
-    decay_interval: Optional[int] = 10
-    decay_r: Optional[float] = 0.1
+    # IB prior retention schedule (info_loss; Concrete temp is fixed at 1.0)
+    init_r: Optional[float] = None
+    final_r: Optional[float] = None
+    decay_interval: Optional[int] = None
+    decay_r: Optional[float] = None
     logit_clamp: float = 3.0        # |ℓ| ≤ clamp before sigmoid; 3.0 = original paper
 
     # Training

@@ -161,8 +161,20 @@ def _aggregate_att_to_motif(
 
 def run(cfg: MotifSATConfig) -> dict:
     from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
+    from reg_config import resolve_gsat_r
 
     validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
+    _init, _final, _dec_int, _dec_r, _from_tbl = resolve_gsat_r(
+        cfg.dataset, cfg.init_r, cfg.final_r, cfg.decay_interval, cfg.decay_r,
+    )
+    if _from_tbl:
+        print(f'  [reg_config] {cfg.dataset}: init_r={_init} final_r={_final} '
+              f'decay_interval={_dec_int} decay_r={_dec_r}')
+    cfg.init_r = _init
+    cfg.final_r = _final
+    cfg.decay_interval = _dec_int
+    cfg.decay_r = _dec_r
+
     set_seed(cfg.seed)
     device = get_device()
 
@@ -547,6 +559,15 @@ def main():
     parser.add_argument("--hidden_dim",      type=int, default=64)
     parser.add_argument("--num_layers",      type=int, default=3)
     parser.add_argument("--info_loss_coef",  type=float, default=1.0)
+    parser.add_argument("--init_r",          type=float, default=None,
+                        help="IB prior retention at start (default 0.9).")
+    parser.add_argument("--final_r",         type=float, default=None,
+                        help="IB prior floor; resolved from reg_config when omitted "
+                             "(mutag/Mutagenicity=0.5, OGB=0.7).")
+    parser.add_argument("--decay_interval",  type=int, default=None,
+                        help="Anneal r every N epochs (default 10; OGB=20).")
+    parser.add_argument("--decay_r",         type=float, default=None,
+                        help="Subtract this from r each decay step (default 0.1).")
     parser.add_argument("--motif_loss_coef", type=float, default=0.0,
                         help="Outer multiplier on the motif consistency loss. "
                              "The consistency term is "
@@ -630,6 +651,10 @@ def main():
             w_readout=args.w_readout, learn_edge_att=args.learn_edge_att,
             hidden_dim=args.hidden_dim, num_layers=args.num_layers,
             info_loss_coef=args.info_loss_coef,
+            init_r=args.init_r,
+            final_r=args.final_r,
+            decay_interval=args.decay_interval,
+            decay_r=args.decay_r,
             motif_loss_coef=args.motif_loss_coef,
             within_node_coef=args.within_node_coef,
             between_motif_coef=args.between_motif_coef,

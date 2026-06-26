@@ -131,7 +131,7 @@ def train_gsat(
     history: Dict = {}
 
     for epoch in range(1, epochs + 1):
-        # Anneal temperature
+        # Anneal IB prior retention (info_loss only; Concrete temp stays fixed)
         model.anneal_r(epoch)
 
         ep_losses = train_one_epoch(

@@ -40,14 +40,22 @@ from losses import info_loss, motif_consistency_loss, motif_size_weights
 
 LOGIT_CLAMP = 3.0   # clamp |ℓ| ≤ 3 before sigmoid; att ∈ [0.047, 0.953]
                     # Prevents saturation that kills IB gradient and Concrete sampler.
+CONCRETE_TEMP = 1.0  # official GSAT: fixed temp=1 for Concrete sampling (r is IB-only)
 
 
-def _concrete_sample(log_logits: Tensor, r: float, training: bool) -> Tensor:
+def _concrete_sample(
+    log_logits: Tensor,
+    training: bool,
+    temp: float = CONCRETE_TEMP,
+) -> Tensor:
     """Concrete / soft-sigmoid sampling with logit clamping.
 
     Clamps |log_logits| to [-LOGIT_CLAMP, LOGIT_CLAMP] before sampling.
     Without clamping, MLP outputs can saturate to ±inf, collapsing
     sigmoid to 0/1 and killing IB gradient flow.
+
+    `temp` is the Concrete temperature (official GSAT uses fixed temp=1).
+    IB prior retention `r` is applied separately in info_loss, not here.
 
     During training: Concrete (Gumbel-sigmoid) sample.
     During eval: the deterministic soft sigmoid sigma(logits) — NOT a hard
@@ -60,7 +68,7 @@ def _concrete_sample(log_logits: Tensor, r: float, training: bool) -> Tensor:
     if training:
         u = torch.empty_like(log_logits).uniform_().clamp(1e-6, 1 - 1e-6)
         log_u = u.log() - (1 - u).log()
-        return torch.sigmoid((log_logits + log_u) / r)
+        return torch.sigmoid((log_logits + log_u) / temp)
     else:
         return log_logits.sigmoid()
 
@@ -114,7 +122,8 @@ class GSAT(nn.Module):
         Divide info loss by motif length when info_loss_level='motif'.
 
     init_r, final_r, decay_interval, decay_r : float / int
-        Temperature schedule for Concrete sampling.
+        IB prior-retention schedule for info_loss (official GSAT annealing).
+        Concrete sampling uses fixed temp=CONCRETE_TEMP (1.0), not r.
 
     info_loss_coef, motif_loss_coef : float
     between_motif_coef, within_node_coef : float  (consistency loss coefficients)
@@ -149,9 +158,9 @@ class GSAT(nn.Module):
         w_message: bool = True,
         w_readout: bool = False,
         learn_edge_att: bool = False,
-        # ── Temperature ──
+        # ── IB prior retention (info_loss only) ──
         init_r: float = 0.9,
-        final_r: float = 0.1,
+        final_r: float = 0.5,
         decay_interval: Optional[int] = None,
         decay_r: Optional[float] = None,
         # ── Loss coefficients ──
@@ -236,13 +245,13 @@ class GSAT(nn.Module):
         else:
             self.edge_extractor = None
 
-        # Current temperature (updated by anneal_r)
+        # Current IB prior retention (updated by anneal_r; used in info_loss)
         self.register_buffer('r', torch.tensor(float(init_r)))
 
-    # ── Temperature annealing ────────────────────────────────────────────────
+    # ── IB prior annealing ───────────────────────────────────────────────────
 
     def anneal_r(self, epoch: int) -> None:
-        """Update temperature r based on decay schedule."""
+        """Update IB prior retention r based on decay schedule."""
         if self.decay_interval is not None and self.decay_r is not None:
             new_r = max(
                 self.final_r,
@@ -358,11 +367,11 @@ class GSAT(nn.Module):
             edge_logits = edge_logits.clamp(-LOGIT_CLAMP, LOGIT_CLAMP)
             if self.training:
                 edge_logits, _ = _add_logistic_noise(edge_logits)
-            edge_att = _concrete_sample(edge_logits, r, self.training)
+            edge_att = _concrete_sample(edge_logits, self.training)
             edge_att_soft = edge_logits.sigmoid()
             node_att = None
         else:
-            node_att = _concrete_sample(node_logits, r, self.training)
+            node_att = _concrete_sample(node_logits, self.training)
             node_att_soft = node_logits.sigmoid()
 
         # Step 5: Re-run backbone with attention injection
