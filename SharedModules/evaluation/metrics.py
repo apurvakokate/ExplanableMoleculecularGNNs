@@ -150,13 +150,14 @@ def _model_forward(model, data) -> torch.Tensor:
     work without raising ValueError.
     """
     edge_attr = getattr(data, 'edge_attr', None)
+    nodes_to_motifs = getattr(data, 'nodes_to_motifs', None)
     errors: list = []
 
     attempts = (
         dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
-             nodes_to_motifs=data.nodes_to_motifs, edge_attr=edge_attr),
+             nodes_to_motifs=nodes_to_motifs, edge_attr=edge_attr),
         dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
-             nodes_to_motifs=data.nodes_to_motifs),
+             nodes_to_motifs=nodes_to_motifs),
     )
     for i, kwargs in enumerate(attempts, start=1):
         try:

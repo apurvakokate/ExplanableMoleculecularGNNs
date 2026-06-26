@@ -317,9 +317,6 @@ class TestMultiChannelGNN(unittest.TestCase):
 
     def test_w_message_edge_atten_shape(self):
         """Edge attention derived from att_c[src]*att_c[dst] must be [E,1]."""
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from model import _motif_to_node_weights
         n, n_edges = 8, 12
         ntm = torch.randint(0, 5, (n,))
         params = torch.nn.Parameter(torch.zeros(5, 3))
@@ -497,6 +494,7 @@ class TestRegConfig(unittest.TestCase):
     """Per (architecture × dataset) regularization lookup."""
 
     def setUp(self):
+        pin_trainer_imports(ROOT / 'MOSE-GNN', ROOT, MOSE_TOPLEVEL)
         from reg_config import resolve_reg, REG_CONFIG
         self.resolve = resolve_reg
         self.cfg = REG_CONFIG

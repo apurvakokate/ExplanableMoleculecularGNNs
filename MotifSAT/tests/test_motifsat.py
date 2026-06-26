@@ -333,11 +333,14 @@ class TestConcreteSample(unittest.TestCase):
 
     def test_concrete_temp_independent_of_r(self):
         """Concrete sampling uses fixed temp=1 (official GSAT), not IB r."""
+        from model import CONCRETE_TEMP
+        self.assertAlmostEqual(CONCRETE_TEMP, 1.0)
         torch.manual_seed(0)
-        logits = torch.randn(5, 1)
-        att_default = _concrete_sample(logits, training=True)
+        logits_a = torch.randn(5, 1)
+        att_default = _concrete_sample(logits_a, training=True)
         torch.manual_seed(0)
-        att_explicit = _concrete_sample(logits, training=True, temp=1.0)
+        logits_b = torch.randn(5, 1)
+        att_explicit = _concrete_sample(logits_b, training=True, temp=1.0)
         self.assertTrue(torch.allclose(att_default, att_explicit))
 
     def test_deterministic_skips_gumbel(self):
