@@ -80,6 +80,7 @@ class EvalPipeline:
         gt_level: str = 'node',
         denorm: Optional[tuple] = None,
         gt_eval_list: Optional[List] = None,
+        index_maps: Optional[Dict[str, Dict[int, int]]] = None,
     ):
         self.model = model
         self.vocab = vocab
@@ -94,6 +95,7 @@ class EvalPipeline:
         self.node_att_fn = node_att_fn
         self.gt_level = gt_level
         self.denorm = denorm
+        self.index_maps = index_maps
 
     def _gt_graphs(self) -> List:
         """Graphs used for GT-ROC (defaults to full test set)."""
@@ -187,6 +189,7 @@ class EvalPipeline:
                 self.model, self.test_list, self.vocab, self.device,
                 split='test', task_type=self.task_type,
                 max_motifs=self.max_motifs_eval,
+                index_maps=self.index_maps,
             )
 
         has_scores  = motif_scores is not None

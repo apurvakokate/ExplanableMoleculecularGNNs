@@ -123,6 +123,31 @@ def _injection_modes(model) -> Tuple[bool, bool]:
     return (w_feat or w_readout), w_message
 
 
+def _remap_smiles_mask_to_graph(
+    bool_mask: torch.Tensor,
+    num_graph_nodes: int,
+    graph_to_smiles: Optional[Dict[int, int]],
+) -> Optional[torch.Tensor]:
+    """Convert a SMILES-space bool mask to graph-node indices.
+
+    MotifBreakdown mask caches index atoms in the fragmented SMILES (H omitted
+    for mutag).  TUDataset graphs retain explicit H nodes, so ``bool_mask`` is
+    often shorter than ``data.num_nodes``.  ``graph_to_smiles`` maps
+    graph_node_idx → smiles_atom_idx (from ``mutag_*_index_maps.pkl``).
+    """
+    nm = bool_mask.view(-1)
+    if nm.numel() == num_graph_nodes:
+        return nm
+    if not graph_to_smiles:
+        return None
+    graph_mask = torch.zeros(num_graph_nodes, dtype=torch.bool)
+    for gidx, sidx in graph_to_smiles.items():
+        gi, si = int(gidx), int(sidx)
+        if 0 <= gi < num_graph_nodes and 0 <= si < nm.numel() and bool(nm[si]):
+            graph_mask[gi] = True
+    return graph_mask
+
+
 def _ablate_motif(
     data: Data,
     bool_mask: torch.Tensor,
@@ -176,6 +201,7 @@ def compute_motif_impact(
     split: str = 'test',
     task_type: str = 'BinaryClass',
     max_motifs: Optional[int] = None,
+    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
 ) -> Dict[int, Dict[str, float]]:
     """Per-motif marginal impact via node-feature zeroing.
 
@@ -209,7 +235,11 @@ def compute_motif_impact(
             orig_p = orig_probs.get(smi)
             if d is None or orig_p is None:
                 continue
-            masked_d = _ablate_motif(d, bool_mask, mask_nodes, mask_edges)
+            graph_mask = _remap_smiles_mask_to_graph(
+                bool_mask, d.num_nodes, (index_maps or {}).get(smi))
+            if graph_mask is None:
+                continue
+            masked_d = _ablate_motif(d, graph_mask, mask_nodes, mask_edges)
             if masked_d is None:
                 continue
             impacts.append(abs(orig_p - _single_prob(model, masked_d, device, task_type)))

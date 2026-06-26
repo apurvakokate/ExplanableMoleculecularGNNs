@@ -134,3 +134,12 @@ def validate_mutag_artifacts(
         'n_test': len(test),
         'graph_ids': graph_ids,
     }
+
+
+def load_mutag_index_maps(path: Union[str, Path]) -> Dict[str, Dict[int, int]]:
+    """Load ``mutag_<fold>_index_maps.pkl`` for eval-time SMILES→graph remap."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"mutag index_maps not found: {path}")
+    with open(path, 'rb') as f:
+        return pickle.load(f)

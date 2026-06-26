@@ -452,6 +452,43 @@ class TestMotifEval(unittest.TestCase):
             self.assertIn('n_graphs', info)
             self.assertGreaterEqual(info['impact'], 0.0)
 
+    def test_compute_motif_impact_mutag_index_remap(self):
+        """SMILES-space masks must remap to graph nodes when H adds extra nodes."""
+        from torch_geometric.data import Data
+        from SharedModules.evaluation.motif_eval import _remap_smiles_mask_to_graph
+
+        smi = 'C[N:2]O'
+        g2s = {0: 0, 1: 1, 2: 2, 3: 2}  # graph node 3 = H, maps to same heavy atom
+        smiles_mask = torch.tensor([True, False, False])
+        graph_mask = _remap_smiles_mask_to_graph(smiles_mask, 4, g2s)
+        self.assertIsNotNone(graph_mask)
+        self.assertEqual(int(graph_mask.sum()), 1)
+        self.assertTrue(graph_mask[0])
+        self.assertFalse(graph_mask[3])
+
+        vocab = _make_fake_vocab()
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
+        model.eval()
+        d = Data(
+            x=torch.randn(4, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
+            y=torch.tensor([0.0]),
+            smiles=smi,
+        )
+        vocab.lookup_test = {smi: {0: ('[*]C', 0), 1: ('[*]N', 1), 2: ('[*]O', 2)}}
+        vocab.mask_cache['test'] = {
+            0: {smi: smiles_mask},
+            1: {smi: torch.tensor([False, True, False])},
+        }
+        results = compute_motif_impact(
+            model, [d], vocab, DEVICE,
+            split='test', task_type='BinaryClass',
+            index_maps={smi: g2s},
+        )
+        self.assertGreaterEqual(len(results), 2)
+        for info in results.values():
+            self.assertGreaterEqual(info['n_graphs'], 1)
+
     def test_score_impact_correlation_shape(self):
         scores = {0: 0.8, 1: 0.3, 2: 0.1}
         impacts = {0: {'impact': 0.5}, 1: {'impact': 0.2}, 2: {'impact': 0.05}}
