@@ -192,9 +192,10 @@ def build_arg_parser():
     # extra passthrough + control
     p.add_argument('--extra', default='', help='extra flags appended verbatim to every trainer call')
     p.add_argument('--dry_run', action='store_true', help='print commands, do not execute')
-    p.add_argument('--skip_existing', action='store_true',
-                   help='skip any run whose out_dir already has a summary.json '
-                        '(resume a partially-completed sweep without redoing work)')
+    p.add_argument('--skip_existing', action='store_true', default=True,
+                   help='skip runs with summary.json + best_model.pt (default: on)')
+    p.add_argument('--no_skip_existing', dest='skip_existing', action='store_false',
+                   help='always rerun even when artifacts exist')
     p.add_argument('--continue_on_error', action='store_true')
     return p
 
@@ -462,7 +463,8 @@ def main():
     skipped_existing = dry_run_only = attempted = failed = 0
     for (exp, ds, fold, variant, cfg, inj, epochs, syn, backbone,
          cmd, out_dir, config) in planned:
-        if args.skip_existing and (out_dir / 'summary.json').exists():
+        if args.skip_existing and (out_dir / 'summary.json').exists() \
+                and (out_dir / 'best_model.pt').exists():
             print(f"## [skip existing] {out_dir}\n")
             skipped_existing += 1
             continue

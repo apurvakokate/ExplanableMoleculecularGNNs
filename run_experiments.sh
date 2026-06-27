@@ -302,7 +302,8 @@ _baseline_run_dir() {
 }
 
 # Phase 5 resume: skip runs whose out_dir already has training artifacts.
-# Set SKIP_EXISTING=0 to rerun all; FORCE_RERUN=1 overrides skip.
+# SKIP_EXISTING=1 (default): skip when summary.json + best_model.pt exist.
+# FORCE_RERUN=1 or SKIP_EXISTING=0: always train.
 _run_dir_complete() {
     local d=$1
     [ -f "$d/summary.json" ] && [ -f "$d/best_model.pt" ]
@@ -311,6 +312,46 @@ _run_dir_complete() {
 _should_skip_existing() {
     [ "${FORCE_RERUN:-0}" = "1" ] && return 1
     [ "${SKIP_EXISTING:-1}" = "1" ]
+}
+
+# MOSE / GSAT / MotifSAT nest runs as {out_base}/{ds}/fold{k}/{backbone}_…/tag/
+_nested_trainer_run_complete() {
+    local base=$1 ds=$2 fold=$3 backbone=$4
+    local parent="$base/$ds/fold$fold"
+    local d
+    [ -d "$parent" ] || return 1
+    for d in "$parent"/"${backbone}"_*; do
+        [ -d "$d" ] || continue
+        _run_dir_complete "$d" && return 0
+    done
+    return 1
+}
+
+# Phase 5 is designed for one dataset per invocation (resume-friendly sweeps).
+_check_phase5_single_dataset() {
+    local n=0 d
+    for d in $DATASETS; do
+        n=$((n + 1))
+    done
+    if [ "$n" -eq 0 ]; then
+        echo "ERROR: DATASETS is empty.  export DATASETS=mutag  (or one CSV name)" >&2
+        exit 1
+    fi
+    if [ "$n" -gt 1 ]; then
+        echo "ERROR: phase 5 runs one dataset at a time; DATASETS has $n entries:" >&2
+        echo "  $DATASETS" >&2
+        echo "  export DATASETS=mutag   # then re-run phase5_*" >&2
+        exit 1
+    fi
+    echo "  [phase5] dataset=$DATASETS  SKIP_EXISTING=${SKIP_EXISTING:-1}  FORCE_RERUN=${FORCE_RERUN:-0}"
+}
+
+# GT relabelled training: honour DATASETS (single-dataset phase5), not all of DATASETS_CSV.
+_phase5_gt_datasets() {
+    local ds
+    for ds in $DATASETS; do
+        _skip_synthetic_gt_dataset "$ds" && echo "$ds"
+    done
 }
 
 # ── Helper: fragment one variant ──────────────────────────────────────────────
@@ -416,6 +457,7 @@ run_vanilla() {
 
 run_mose() {
     local variant=$1 inj_args=$2
+    local n_skip=0 n_run=0
     # Nested out_dir (mose/<variant>/<ds>/fold<N>/<tag>/): trainers append ds/fold/tag.
     # Differs from vanilla/baselines canonical layout; regenerate_eval + collect handle both.
     for backbone in $BACKBONES; do
@@ -427,6 +469,13 @@ run_mose() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local mose_base="$OUT_ROOT/mose/${variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$mose_base" "$ds" "$eff_fold" "$backbone"; then
+                    echo "  [skip existing] MOSE $ds fold$eff_fold $backbone → $mose_base/$ds/fold$eff_fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/MOSE-GNN/run.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -444,10 +493,12 @@ run_mose() {
             done
         done
     done
+    echo "  [MOSE/$variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_gsat() {
     local variant=$1 inj_args=${2:-$GSAT_INJ}
+    local n_skip=0 n_run=0
     for backbone in $BACKBONES; do
         echo "  [BaseGSAT] backbone=$backbone vocab=$variant inj=$inj_args learn_edge_att=$GSAT_LEARN_EDGE_ATT"
         for ds in $DATASETS; do
@@ -457,6 +508,13 @@ run_gsat() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local gsat_base="$OUT_ROOT/base_gsat/${variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$gsat_base" "$ds" "$eff_fold" "$backbone"; then
+                    echo "  [skip existing] GSAT $ds fold$eff_fold $backbone → $gsat_base/$ds/fold$eff_fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/MotifSAT/run.py" \
                     --dataset         "$ds" --fold "$eff_fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
@@ -478,10 +536,12 @@ run_gsat() {
             done
         done
     done
+    echo "  [BaseGSAT/$variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_motifsat() {
     local variant=$1 inj_args=${2:-$MOTIFSAT_INJ}
+    local n_skip=0 n_run=0
     for backbone in $BACKBONES; do
         echo "  [MotifSAT readout] backbone=$backbone vocab=$variant inj=$inj_args"
         for ds in $DATASETS; do
@@ -491,6 +551,13 @@ run_motifsat() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local ms_base="$OUT_ROOT/motifsat/${variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$ms_base" "$ds" "$eff_fold" "$backbone"; then
+                    echo "  [skip existing] MotifSAT $ds fold$eff_fold $backbone → $ms_base/$ds/fold$eff_fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/MotifSAT/run.py" \
                     --dataset         "$ds" --fold "$eff_fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
@@ -511,6 +578,7 @@ run_motifsat() {
             done
         done
     done
+    echo "  [MotifSAT/$variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_baselines() {
@@ -521,6 +589,7 @@ run_baselines() {
     # the vocabulary threshold — only the motif eval vocab changes).
     local eval_variant=$1
     local weight_variant
+    local n_skip=0 n_run=0
     weight_variant=$(_baseline_weight_variant "$eval_variant")
     for backbone in $BACKBONES; do
         echo "  [Baselines eval] backbone=$backbone vocab=$eval_variant  weight_vocab=$weight_variant"
@@ -537,6 +606,12 @@ run_baselines() {
                     echo "  [skip] $ds fold$eff_fold — no vanilla checkpoint: $wdir/best_model.pt"
                     continue
                 fi
+                if _should_skip_existing && _run_dir_complete "$out_dir"; then
+                    echo "  [skip existing] baselines $ds fold$eff_fold $backbone → $out_dir"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/SharedModules/baselines/run_vanilla.py" \
                     --dataset      "$ds" --fold "$eff_fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -556,6 +631,7 @@ run_baselines() {
             done
         done
     done
+    echo "  [Baselines/$eval_variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 apply_gt() {
@@ -585,20 +661,24 @@ apply_gt() {
 run_mose_gt() {
     local variant=$1
     local gt_variant
+    local n_skip=0 n_run=0
     gt_variant=$(_gt_variant_name "$variant")
     for backbone in $BACKBONES; do
         echo "  [MOSE+GT] backbone=$backbone base=$variant → $gt_variant"
-        for ds in $DATASETS_CSV; do
-            if ! _skip_synthetic_gt_dataset "$ds"; then
-                echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
-                continue
-            fi
+        for ds in $(_phase5_gt_datasets); do
             for fold in $FOLDS; do
                 if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
                     echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
                     continue
                 fi
                 local enc="$(_dataset_node_encoder "$ds")"
+                local mose_gt_base="$OUT_ROOT/mose/${gt_variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$mose_gt_base" "$ds" "$fold" "$backbone"; then
+                    echo "  [skip existing] MOSE+GT $ds fold$fold $backbone → $mose_gt_base/$ds/fold$fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/MOSE-GNN/run.py" \
                     --dataset      "$ds" --fold "$fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
@@ -616,25 +696,30 @@ run_mose_gt() {
             done
         done
     done
+    echo "  [MOSE+GT/$gt_variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_motifsat_gt() {
     local variant=$1
     local gt_variant
+    local n_skip=0 n_run=0
     gt_variant=$(_gt_variant_name "$variant")
     for backbone in $BACKBONES; do
         echo "  [MotifSAT+GT] backbone=$backbone base=$variant → $gt_variant"
-        for ds in $DATASETS_CSV; do
-            if ! _skip_synthetic_gt_dataset "$ds"; then
-                echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
-                continue
-            fi
+        for ds in $(_phase5_gt_datasets); do
             for fold in $FOLDS; do
                 if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
                     echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
                     continue
                 fi
                 local enc="$(_dataset_node_encoder "$ds")"
+                local ms_gt_base="$OUT_ROOT/motifsat/${gt_variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$ms_gt_base" "$ds" "$fold" "$backbone"; then
+                    echo "  [skip existing] MotifSAT+GT $ds fold$fold $backbone → $ms_gt_base/$ds/fold$fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
                 python3 "$PROJECT/MotifSAT/run.py" \
                     --dataset         "$ds" --fold "$fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
@@ -655,6 +740,7 @@ run_motifsat_gt() {
             done
         done
     done
+    echo "  [MotifSAT+GT/$gt_variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 # =============================================================================
@@ -862,6 +948,7 @@ phase4() {
 # =============================================================================
 phase5_vanilla() {
     _check_paths
+    _check_phase5_single_dataset
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5a — Vanilla GNN (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
@@ -882,6 +969,7 @@ phase5_vanilla() {
 # =============================================================================
 phase5_mose() {
     _check_paths
+    _check_phase5_single_dataset
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5b — MOSE-GNN (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
@@ -914,6 +1002,7 @@ phase5_mose() {
 # =============================================================================
 phase5_gsat() {
     _check_paths
+    _check_phase5_single_dataset
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5c — Base GSAT (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
@@ -934,6 +1023,7 @@ phase5_gsat() {
 # =============================================================================
 phase5_baselines() {
     _check_paths
+    _check_phase5_single_dataset
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5d — Post-hoc baselines (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
@@ -954,6 +1044,7 @@ phase5_baselines() {
 # =============================================================================
 phase5_motifsat() {
     _check_paths
+    _check_phase5_single_dataset
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5e — MotifSAT readout (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
@@ -1067,11 +1158,11 @@ case "$PHASE" in
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
         echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT (all 4 base variants; VOCAB_FOCUS)"
-        echo "  phase5_vanilla    vanilla GNN (VOCAB_FOCUS; skips completed by default)"
-        echo "  phase5_mose       MOSE-GNN (filtered + base + GT per VOCAB_FOCUS)"
-        echo "  phase5_gsat       base GSAT (VOCAB_FOCUS base variants)"
-        echo "  phase5_baselines  post-hoc on vanilla (VOCAB_FOCUS eval variants)"
-        echo "  phase5_motifsat   MotifSAT (VOCAB_FOCUS base + GT variants)"
+        echo "  phase5_vanilla    vanilla GNN (exactly one DATASET; SKIP_EXISTING on by default)"
+        echo "  phase5_mose       MOSE-GNN (one DATASET; filtered + base + GT per VOCAB_FOCUS)"
+        echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base variants)"
+        echo "  phase5_baselines  post-hoc on vanilla (one DATASET; VOCAB_FOCUS eval variants)"
+        echo "  phase5_motifsat   MotifSAT (one DATASET; VOCAB_FOCUS base + GT variants)"
         echo "  multi_explanation post-hoc H0/H1/H2 on MOSE/MotifSAT/GSAT"
         echo "  probe_masked_nodes post-hoc masked-node feature probe"
         echo "  collect           print results table"

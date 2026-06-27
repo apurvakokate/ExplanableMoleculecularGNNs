@@ -88,8 +88,14 @@ export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
 
 # ── Phase 5 resume ────────────────────────────────────────────────────────────
 # Skip runs whose out_dir already has summary.json + best_model.pt (default on).
-# export SKIP_EXISTING=0   — rerun every vanilla job
-# export FORCE_RERUN=1     — same as SKIP_EXISTING=0 for training phases
+# phase5_* enforces exactly ONE dataset in DATASETS per invocation.
+#
+#   export DATASETS=mutag
+#   export FOLDS=0
+#   export VOCAB_FOCUS=rbrics,all_fallback_bpe
+#   export SKIP_EXISTING=1          # default — skip completed runs
+#   export FORCE_RERUN=1            # redo everything (overrides SKIP_EXISTING)
+#   bash run_experiments.sh phase5_vanilla
 export SKIP_EXISTING="${SKIP_EXISTING:-1}"
 # Set WANDB_FLAGS to enable logging for phase5 training runs.
 # Example: export WANDB_FLAGS="--use_wandb --wandb_project ChemIntuit"
