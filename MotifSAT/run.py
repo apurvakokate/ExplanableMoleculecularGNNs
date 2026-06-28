@@ -490,6 +490,7 @@ def run(cfg: MotifSATConfig) -> dict:
             learn_edge_att=cfg.learn_edge_att,
             att_aggregate_fn=agg_fn,
             max_motifs=cfg.max_motifs_eval,
+            index_maps=_mutag_maps,
         )
 
     # Save

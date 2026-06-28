@@ -220,6 +220,7 @@ class EvalPipeline:
                 split='test',
                 task_type=self.task_type,
                 threshold=self.correct_pred_threshold,
+                index_maps=self.index_maps,
             )
 
         # 7. Class-discriminativeness of motifs (label-aware, model-free).

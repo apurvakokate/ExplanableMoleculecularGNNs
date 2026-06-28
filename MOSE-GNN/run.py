@@ -296,6 +296,7 @@ def run(cfg: MOSEConfig) -> dict:
             model, vocab, test_list, device, task_type, out_dir,
             motif_scores=flat_scores,
             max_motifs=cfg.max_motifs_eval,
+            index_maps=_mutag_maps,
         )
 
     # Save results

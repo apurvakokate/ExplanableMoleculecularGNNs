@@ -280,6 +280,19 @@ class MolDataset(InMemoryDataset):
         self._smiles = df['smiles'].values
         self._labels = df[label_col].values
 
+        # MolDataset reads a single label column and ``process`` builds one
+        # scalar target per graph. A multi-label dataset (num_classes > 1) cannot
+        # be represented this way without silently truncating to one task, so
+        # fail loud rather than train/evaluate on a wrong target. Multi-label
+        # datasets must go through the OGB loader path instead.
+        if num_classes is not None and num_classes > 1:
+            raise NotImplementedError(
+                f"MolDataset reads a single label column ({label_col!r}) and "
+                f"cannot represent a multi-label target (num_classes={num_classes}). "
+                f"Use the OGB loader path for multi-label datasets, or export one "
+                f"task per CSV."
+            )
+
         if normalize:
             raw = self._labels.astype(float)
             if mean is None:

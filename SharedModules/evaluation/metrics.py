@@ -143,36 +143,39 @@ def evaluate_predictions(
 
 
 def _model_forward(model, data) -> torch.Tensor:
-    """Try several calling conventions; return raw logit tensor.
+    """Dispatch to the model's forward and return the raw logit tensor.
 
-    Uses out[0] pattern (not `out, _ = ...`) so that models returning
-    2-tuples (MOSE-GNN, VanillaGNN) and 3-tuples (GSAT/MotifSAT) both
-    work without raising ValueError.
+    Selects the calling convention from the forward *signature* (rather than
+    catching TypeError and retrying), so a genuine bug inside the model's
+    forward propagates instead of being masked as a "could not call" error.
+
+    Uses out[0] (not `out, _ = ...`) so models returning 2-tuples (MOSE-GNN,
+    VanillaGNN) and 3-tuples (GSAT/MotifSAT) both work without raising.
     """
-    edge_attr = getattr(data, 'edge_attr', None)
-    nodes_to_motifs = getattr(data, 'nodes_to_motifs', None)
-    errors: list = []
+    import inspect
 
-    attempts = (
-        dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
-             nodes_to_motifs=nodes_to_motifs, edge_attr=edge_attr),
-        dict(x=data.x, edge_index=data.edge_index, batch=data.batch,
-             nodes_to_motifs=nodes_to_motifs),
+    candidate = dict(
+        x=data.x,
+        edge_index=data.edge_index,
+        batch=getattr(data, 'batch', None),
+        nodes_to_motifs=getattr(data, 'nodes_to_motifs', None),
+        edge_attr=getattr(data, 'edge_attr', None),
     )
-    for i, kwargs in enumerate(attempts, start=1):
-        try:
-            out = model(**{k: v for k, v in kwargs.items() if v is not None})
-            return out[0] if isinstance(out, (tuple, list)) else out
-        except TypeError as e:
-            errors.append(f"attempt {i}: {e}")
 
     try:
-        out = model(data)
-        return out[0] if isinstance(out, (tuple, list)) else out
-    except TypeError as e:
-        errors.append(f"data object: {e}")
+        params = inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        params = None
 
-    raise TypeError(
-        f"Could not call {model.__class__.__name__} forward. Tried:\n  "
-        + "\n  ".join(errors)
-    )
+    if params is not None and 'x' in params:
+        has_var_kw = any(p.kind == p.VAR_KEYWORD for p in params.values())
+        kwargs = {
+            k: v for k, v in candidate.items()
+            if v is not None and (has_var_kw or k in params)
+        }
+        out = model(**kwargs)
+    else:
+        # Forward takes a Data object (or its signature is unavailable).
+        out = model(data)
+
+    return out[0] if isinstance(out, (tuple, list)) else out

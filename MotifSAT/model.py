@@ -221,6 +221,14 @@ class GSAT(nn.Module):
                 f"learn_edge_att=True is incompatible with noise={noise!r}; "
                 f"use noise='none' for the edge-attention GSAT path."
             )
+        if learn_edge_att and not w_message:
+            raise ValueError(
+                "learn_edge_att=True requires w_message=True: the learned edge "
+                "attention is injected only through the message-passing channel "
+                "(BaseGNN builds edge_atten only when w_message is set). With "
+                "w_message=False the edge extractor would train but never affect "
+                "the prediction (silent no-op)."
+            )
 
         self.motif_method = motif_method
         self.noise = noise
@@ -473,11 +481,8 @@ class GSAT(nn.Module):
                 sw = None
                 if self.motif_info_size_normalize and motif_lengths is not None \
                         and aux['inv_idx'] is not None:
-                    # motif-level size weights: use motif vocab ids
-                    from motif_modules import compute_inverse_idx
-                    # Use motif_lengths at motif-instance level
-                    # Approximate: size_weight for motif instance = weight of vocab motif
-                    # inv_idx maps nodes → motif rows; motif vocab ids from compute_inverse_idx
+                    # Motif-instance size weights: take the per-node 1/len weight
+                    # and average it onto each motif row via inv_idx (nodes→motif).
                     n = nodes_to_motifs.size(0) if nodes_to_motifs is not None else 0
                     node_sw = motif_size_weights(
                         nodes_to_motifs if nodes_to_motifs is not None

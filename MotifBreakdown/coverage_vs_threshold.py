@@ -47,7 +47,13 @@ import pandas as pd
 import pickle
 
 
-IMBALANCE_MARGIN = 0.6
+# Single source of truth: the same margin used by mining and per-fold re-apply
+# (SharedModules/data/threshold_config.py). Imported rather than redefined so the
+# phase-2 coverage plots can never drift from the actual threshold policy.
+try:
+    from SharedModules.data.threshold_config import IMBALANCE_MARGIN
+except Exception:  # script run without repo root on sys.path — keep in sync
+    IMBALANCE_MARGIN = 0.6
 
 def _lp(path):
     with open(path, 'rb') as f:

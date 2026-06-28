@@ -526,6 +526,7 @@ def gt_vs_outside_gt_eval(
     split: str = 'test',
     task_type: str = 'BinaryClass',
     threshold: float = 0.5,
+    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """Compare GT vs non-GT motifs across three example subsets.
 
@@ -591,7 +592,16 @@ def gt_vs_outside_gt_eval(
             orig_p = probs_orig.get(smi)
             if data is None or orig_p is None:
                 continue
-            masked = _ablate_motif(data, bool_mask, mask_nodes, mask_edges)
+            # Remap SMILES-space masks to graph-node indices (mirrors
+            # compute_motif_impact). Without this, a mask shorter than the graph
+            # (e.g. mutag with explicit-H atoms, or vocab-derived SMILES masks)
+            # makes _ablate_motif return None and silently NaN out every GT
+            # impact instead of ablating the motif.
+            graph_mask = _remap_smiles_mask_to_graph(
+                bool_mask, data.num_nodes, (index_maps or {}).get(smi))
+            if graph_mask is None:
+                continue
+            masked = _ablate_motif(data, graph_mask, mask_nodes, mask_edges)
             if masked is None:
                 continue
             impacts.append(abs(orig_p - _single_prob(model, masked, device, task_type)))

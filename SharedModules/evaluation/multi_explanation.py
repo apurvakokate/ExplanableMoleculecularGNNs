@@ -161,25 +161,36 @@ def build_per_graph_impact_df_from_masks(
     split: str = "test",
     task_type: str = "BinaryClass",
     max_motifs: Optional[int] = None,
+    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
 ) -> pd.DataFrame:
     """Build a per-graph, per-motif impact DataFrame with true per-graph impacts.
 
     This is the correct input for H1/H2 analysis. For each (graph, motif) pair,
     the impact is |p(graph) - p(graph with motif masked)|, computed fresh.
 
-    Internally calls compute_motif_impact() logic but returns per-graph rows.
+    Uses the SAME ablation path as ``compute_motif_impact``: SMILES-space masks
+    are remapped to graph-node indices (``index_maps``, required for mutag's
+    explicit-H atoms) and the ablation mirrors the model's injection point
+    (node features and/or incident edges via ``_injection_modes``). Without this
+    the impacts here would disagree with the EvalPipeline impacts, and on mutag
+    a length-mismatched mask could broadcast-crash instead of being skipped.
     """
-    from .motif_eval import _resolve_mask_cache, _get_probs, _single_prob
+    from .motif_eval import (
+        _resolve_mask_cache, _get_probs, _single_prob,
+        _injection_modes, _remap_smiles_mask_to_graph, _ablate_motif,
+    )
 
     model.eval()
     mask_cache = _resolve_mask_cache(vocab, data_list, split)
     smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
+    mask_nodes, mask_edges = _injection_modes(model)
     motif_ids = sorted(mask_cache.keys())
     if max_motifs is not None:
         motif_ids = motif_ids[:max_motifs]
 
     rows = []
+    n_skipped = 0
     for mid in motif_ids:
         score = motif_scores.get(mid, float("nan"))
         smarts = (vocab.motif_list[mid]
@@ -189,8 +200,15 @@ def build_per_graph_impact_df_from_masks(
             orig_p = orig_probs.get(smi)
             if d is None or orig_p is None:
                 continue
-            masked = d.clone()
-            masked.x = masked.x * (~bool_mask.to(device)).float().unsqueeze(-1)
+            graph_mask = _remap_smiles_mask_to_graph(
+                bool_mask, d.num_nodes, (index_maps or {}).get(smi))
+            if graph_mask is None:
+                n_skipped += 1
+                continue
+            masked = _ablate_motif(d, graph_mask, mask_nodes, mask_edges)
+            if masked is None:
+                n_skipped += 1
+                continue
             masked_p = _single_prob(model, masked.to(device), device, task_type)
             label = float(d.y.view(-1)[0].item()) if d.y is not None else float("nan")
             rows.append({
@@ -205,6 +223,10 @@ def build_per_graph_impact_df_from_masks(
                 "class_label":        label,
             })
 
+    if n_skipped:
+        print(f"  [multi_explanation] skipped {n_skipped} (graph, motif) "
+              f"ablations with unmappable masks "
+              f"(missing index_maps or mask/graph length mismatch).")
     return pd.DataFrame(rows)
 
 
@@ -550,6 +572,7 @@ class MultiExplanationAnalysis:
         task_type: str = "BinaryClass",
         max_motifs: Optional[int] = None,
         min_graphs: int = 5,
+        index_maps: Optional[Dict[str, Dict[int, int]]] = None,
     ):
         self.model        = model
         self.vocab        = vocab
@@ -560,6 +583,7 @@ class MultiExplanationAnalysis:
         self.task_type    = task_type
         self.max_motifs   = max_motifs
         self.min_graphs   = min_graphs
+        self.index_maps   = index_maps
 
         self._raw_df:     Optional[pd.DataFrame] = None
         self.ratios_df:   Optional[pd.DataFrame] = None
@@ -586,6 +610,7 @@ class MultiExplanationAnalysis:
             split=self.split,
             task_type=self.task_type,
             max_motifs=self.max_motifs,
+            index_maps=self.index_maps,
         )
         n = len(self._raw_df)
         print(f"  {n} (graph, motif) rows for "

@@ -80,7 +80,10 @@ def _task_loss(
         # entries, and average over the valid count only.
         valid = ~torch.isnan(y)
         if not valid.any():
-            return torch.tensor(0.0, device=out.device, requires_grad=True)
+            # Keep the loss connected to the graph (out.sum()*0) so backward is a
+            # no-op gradient rather than a disconnected leaf, which would have no
+            # grad_fn and silently propagate nothing.
+            return out.sum() * 0.0
         pw = getattr(criterion, 'pos_weight', None)
         per_elem = F.binary_cross_entropy_with_logits(
             out, torch.nan_to_num(y.float()), pos_weight=pw, reduction='none')

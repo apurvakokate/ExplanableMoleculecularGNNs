@@ -914,6 +914,55 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             self.assertTrue(np.isnan(result[subset]['gt_mean_score'])
                             or result[subset]['gt_mean_score'] != result[subset]['gt_mean_score'])
 
+    def _setup_index_remap(self):
+        """A graph (4 nodes incl. an explicit-H) whose mask cache is in
+        SMILES space (length 3). Without index_maps remapping, every ablation
+        is skipped and GT impact is NaN; with it, impacts are computed."""
+        from torch_geometric.data import Data
+        smi = 'C[N:2]O_remap'
+        # graph node 3 = explicit H, folds onto heavy atom 2
+        g2s = {0: 0, 1: 1, 2: 2, 3: 2}
+        vocab = _make_fake_vocab()
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
+        model.eval()
+        d = Data(
+            x=torch.randn(4, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
+            y=torch.tensor([1.0]),
+            smiles=smi,
+        )
+        # No nodes_to_motifs → _resolve_mask_cache falls back to vocab.mask_cache,
+        # which is SMILES-space (length 3, shorter than the 4-node graph).
+        vocab.mask_cache['test'] = {
+            0: {smi: torch.tensor([True, False, False])},
+            1: {smi: torch.tensor([False, True, False])},
+        }
+        scores  = {0: 0.9, 1: 0.2}
+        impacts = {0: {'impact': 0.7, 'motif_smarts': 's0'},
+                   1: {'impact': 0.1, 'motif_smarts': 's1'}}
+        return model, vocab, [d], scores, impacts, {0}, {smi: g2s}
+
+    def test_mutag_style_mask_remapped_with_index_maps(self):
+        """With index_maps, GT impact is computed (not silently NaN'd)."""
+        model, vocab, data_list, scores, impacts, gt_ids, idx = \
+            self._setup_index_remap()
+        result = gt_vs_outside_gt_eval(
+            scores, impacts, gt_ids, data_list, model, vocab,
+            DEVICE, task_type='BinaryClass', index_maps=idx,
+        )
+        self.assertFalse(np.isnan(result['all']['gt_mean_impact']))
+
+    def test_mutag_style_mask_nan_without_index_maps(self):
+        """Without index_maps, the length-mismatched mask can't be applied, so
+        GT impact falls through to NaN — confirms the remap is what fixes it."""
+        model, vocab, data_list, scores, impacts, gt_ids, _ = \
+            self._setup_index_remap()
+        result = gt_vs_outside_gt_eval(
+            scores, impacts, gt_ids, data_list, model, vocab,
+            DEVICE, task_type='BinaryClass',  # index_maps omitted
+        )
+        self.assertTrue(np.isnan(result['all']['gt_mean_impact']))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # evaluation/pipeline.py — to_dataframe for new result types

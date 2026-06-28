@@ -307,10 +307,12 @@ class PNAConvSimple(MessagePassing):
         ]
 
         deg = deg.float()
+        # Only 'log' is consumed by the scalers below; 'lin' is kept for parity
+        # with the PNA reference. ('exp' was dead and overflows for large
+        # degrees, so it is intentionally omitted.)
         self.avg_deg: Dict[str, float] = {
             'lin': deg.mean().item(),
             'log': (deg + 1).log().mean().item(),
-            'exp': deg.exp().mean().item(),
         }
 
         # Post-aggregation MLP: 4 agg × 3 scalers × F_in → F_out

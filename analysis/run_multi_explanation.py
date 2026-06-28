@@ -63,6 +63,15 @@ def _run_one(run_dir: Path, data_root: str, vocab_root: str, device, local_filte
     from SharedModules.data.vocab import load_vocab
     vocab = load_vocab(vocab_root, meta['dataset'], meta.get('vocab_variant', ''))
 
+    # Mutag needs SMILES→graph index maps to remap motif masks (explicit-H
+    # atoms make masks shorter than the graph); without them every mutag
+    # ablation would be skipped.
+    _index_maps = None
+    if meta.get('dataset') == 'mutag':
+        from SharedModules.data.dataset_routing import load_mutag_eval_index_maps
+        _index_maps = load_mutag_eval_index_maps(
+            data_root, int(meta.get('fold', 0)))
+
     agg_fn = _att_aggregate_fn() if fam in ('gsat', 'motifsat') else None
     ok = run_multi_explanation_posthoc(
         model, vocab, test_list, device, task_type, run_dir,
@@ -70,6 +79,7 @@ def _run_one(run_dir: Path, data_root: str, vocab_root: str, device, local_filte
         att_aggregate_fn=agg_fn,
         max_motifs=meta.get('max_motifs_eval'),
         local_filter=local_filter,
+        index_maps=_index_maps,
     )
     if ok:
         meta['run_multi_explanation'] = True

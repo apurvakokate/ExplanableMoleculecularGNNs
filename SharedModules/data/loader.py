@@ -923,20 +923,20 @@ def compute_deg_histogram(dataset) -> torch.Tensor:
     torch.Tensor  [max_degree + 1]  dtype=torch.long
     """
     from torch_geometric.utils import degree
-    max_degree = 0
+    # Single pass over the dataset: some dataset wrappers (e.g. MutagTUDataset)
+    # do expensive per-item work in __getitem__ (clone + SMILES motif lookup),
+    # so iterating twice doubled that cost. Grow the histogram as needed.
+    deg = torch.zeros(1, dtype=torch.long)
     for data in dataset:
         if data.edge_index.numel() == 0:
             continue
-        d = degree(data.edge_index[1], num_nodes=data.num_nodes)
-        max_degree = max(max_degree, int(d.max().item()))
-
-    deg = torch.zeros(max_degree + 1, dtype=torch.long)
-    for data in dataset:
-        if data.edge_index.numel() == 0:
-            continue
-        d = degree(data.edge_index[1],
-                   num_nodes=data.num_nodes).long()
-        deg += torch.bincount(d, minlength=deg.numel())
+        d = degree(data.edge_index[1], num_nodes=data.num_nodes).long()
+        bc = torch.bincount(d)
+        if bc.numel() > deg.numel():
+            grown = torch.zeros(bc.numel(), dtype=torch.long)
+            grown[:deg.numel()] = deg
+            deg = grown
+        deg[:bc.numel()] += bc
     return deg
 
 
