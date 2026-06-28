@@ -254,6 +254,7 @@ def compute_motif_impact(
         motif_ids = motif_ids[:max_motifs]
 
     results: Dict[int, Dict[str, float]] = {}
+    n_skipped = 0
     for mid in motif_ids:
         impacts = []
         for smi, bool_mask in mask_cache[mid].items():
@@ -264,9 +265,11 @@ def compute_motif_impact(
             graph_mask = _remap_smiles_mask_to_graph(
                 bool_mask, d.num_nodes, (index_maps or {}).get(smi))
             if graph_mask is None:
+                n_skipped += 1
                 continue
             masked_d = _ablate_motif(d, graph_mask, mask_nodes, mask_edges)
             if masked_d is None:
+                n_skipped += 1
                 continue
             impacts.append(abs(orig_p - _single_prob(model, masked_d, device, task_type)))
 
@@ -278,6 +281,11 @@ def compute_motif_impact(
                 'n_graphs':     len(impacts),
                 'motif_smarts': smarts,
             }
+
+    if n_skipped:
+        print(f"  [motif_impact] skipped {n_skipped} (graph, motif) ablations "
+              f"with unmappable masks "
+              f"(missing index_maps or mask/graph length mismatch).")
     return results
 
 
@@ -579,6 +587,10 @@ def gt_vs_outside_gt_eval(
     gt_ids     = [m for m in common_motifs if m in gt_motif_ids]
     non_gt_ids = [m for m in common_motifs if m not in gt_motif_ids]
 
+    # (motif_id, smiles) pairs whose mask could not be applied. Deduped via a set
+    # because _subset_impacts runs once per subset, so the same failure recurs.
+    skipped_pairs: Set[Tuple[int, str]] = set()
+
     def _subset_impacts(motif_id: int, allowed_smiles: Set[str]) -> List[float]:
         """Impacts of motif_id restricted to allowed_smiles."""
         d = smi_to_data
@@ -600,9 +612,11 @@ def gt_vs_outside_gt_eval(
             graph_mask = _remap_smiles_mask_to_graph(
                 bool_mask, data.num_nodes, (index_maps or {}).get(smi))
             if graph_mask is None:
+                skipped_pairs.add((motif_id, smi))
                 continue
             masked = _ablate_motif(data, graph_mask, mask_nodes, mask_edges)
             if masked is None:
+                skipped_pairs.add((motif_id, smi))
                 continue
             impacts.append(abs(orig_p - _single_prob(model, masked, device, task_type)))
         return impacts
@@ -650,6 +664,11 @@ def gt_vs_outside_gt_eval(
             'score_auc':           score_auc,        # same for all subsets
             'gt_impact_rank':      gt_impact_rank,   # same for all subsets
         }
+
+    if skipped_pairs:
+        print(f"  [gt_vs_outside] skipped {len(skipped_pairs)} (graph, motif) "
+              f"ablations with unmappable masks "
+              f"(missing index_maps or mask/graph length mismatch).")
 
     return results
 

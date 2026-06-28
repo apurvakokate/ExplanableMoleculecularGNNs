@@ -1939,6 +1939,56 @@ class TestMultiExplanation(unittest.TestCase):
         # Each row's mean ratios should sum to approximately 1
         self.assertTrue((total > 0.9).all() and (total <= 1.01).all())
 
+    # ── build_per_graph_impact_df_from_masks (mutag-style remap) ──────────────
+
+    def _setup_mask_df(self):
+        """A 4-node graph (one explicit-H) with SMILES-space masks of length 3,
+        so the builder must remap via index_maps (mirrors compute_motif_impact)."""
+        from torch_geometric.data import Data
+        smi = 'C[N:2]O_me'
+        g2s = {0: 0, 1: 1, 2: 2, 3: 2}  # graph node 3 = H → heavy atom 2
+        vocab = _make_fake_vocab()
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
+        model.eval()
+        d = Data(
+            x=torch.randn(4, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
+            y=torch.tensor([1.0]),
+            smiles=smi,
+        )
+        # No nodes_to_motifs → falls back to vocab.mask_cache (SMILES space, len 3).
+        vocab.mask_cache['test'] = {
+            0: {smi: torch.tensor([True, False, False])},
+            1: {smi: torch.tensor([False, True, False])},
+        }
+        scores = {0: 0.9, 1: 0.2}
+        return model, vocab, [d], scores, {smi: g2s}
+
+    def test_build_df_from_masks_remaps_with_index_maps(self):
+        from SharedModules.evaluation.multi_explanation import (
+            build_per_graph_impact_df_from_masks,
+        )
+        model, vocab, data_list, scores, idx = self._setup_mask_df()
+        df = build_per_graph_impact_df_from_masks(
+            model, data_list, vocab, DEVICE, scores,
+            split='test', task_type='BinaryClass', index_maps=idx,
+        )
+        # Both motifs produce a (graph, motif) row; impacts are finite.
+        self.assertEqual(set(df['motif_id']), {0, 1})
+        self.assertTrue(np.isfinite(df['impact']).all())
+
+    def test_build_df_from_masks_empty_without_index_maps(self):
+        from SharedModules.evaluation.multi_explanation import (
+            build_per_graph_impact_df_from_masks,
+        )
+        model, vocab, data_list, scores, _ = self._setup_mask_df()
+        df = build_per_graph_impact_df_from_masks(
+            model, data_list, vocab, DEVICE, scores,
+            split='test', task_type='BinaryClass',  # index_maps omitted
+        )
+        # Length-3 masks can't be applied to the 4-node graph → all skipped.
+        self.assertTrue(df.empty)
+
 
 class TestMutagSplits(unittest.TestCase):
     """GSAT-style mutag train/valid/test indexing."""
