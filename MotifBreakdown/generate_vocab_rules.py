@@ -52,7 +52,9 @@ used only to build rule-extraction candidates.
 
 MotifSAT pickle files (per dataset/variant, under {out_dir}/{dataset}/{variant}/)
 --------------------------------------------------------------------------------
-{base}_graph_lookup.pickle         smiles -> {node_idx: (smarts, motif_id)} (train)
+{base}_lookup_all.pickle           pre-threshold SMILES → atom maps (all fold-0 pool)
+{base}_mol_fragment_smarts.pickle  per-SMILES fragment lists (per-fold threshold support)
+{base}_graph_lookup.pickle         smiles -> {node_idx: (smarts, motif_id)} (fold-0 train, thresholded)
 {base}_valid_graph_lookup.pickle   same for valid split
 {base}_test_graph_lookup.pickle    same for test split
 {base}_motif_list.pickle           list[str] SMARTS, index = global motif_id
@@ -113,67 +115,11 @@ if _shared not in sys.path:
 # Single source of truth — no local fallback. If SharedModules is not importable
 # the run must fail loudly rather than silently use a stale duplicate schema.
 from data.dataset_schema import DATASET_COLUMN, TASK_TYPE   # type: ignore
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHOSEN THRESHOLD — per variant × dataset
-#
-# Key = variant name (= output directory, e.g. "all_fallback_bpe_filter").
-# Applied when --apply_threshold is set without --threshold_pct.
-#
-# Threshold semantics: fraction of N_trainval (0.002 → ≥ 0.2% of train+val mols).
-#
-# Unified table (June 2026 manual review) — identical across all filter variants
-# for cross-algorithm comparability.  Cov/vocab at these points vary by variant;
-# see phase-2 coverage CSVs.  Known tradeoffs at this table:
-#   • Mutagenicity 0.2%: plain rbrics/rbrics_old ~50% cov (all_fallback 52%)
-#   • hERG 0.5%: all_fallback_bpe ~48% cov (legacy rbrics ~64%)
-#   • ogbg-molhiv 0.4%: legacy rbrics ~49% cov; all_fallback not yet phase-2'd
-#   • freesolv/tox21: no phase-2 CSV yet — 0.5% assumed (same class as peers)
-# ─────────────────────────────────────────────────────────────────────────────
-_UNIFIED_FILTER_THRESHOLDS: dict = {
-    'Mutagenicity':      0.002,
-    'Benzene':           0.005,
-    'BBBP':              0.006,
-    'hERG':              0.005,
-    'Alkane_Carbonyl':   0.005,
-    'Fluoride_Carbonyl': 0.005,
-    'esol':              0.002,
-    'Lipophilicity':     0.005,
-    'freesolv':          0.005,
-    'tox21':             0.005,
-    'mutag':             0.005,
-    'ogbg-molhiv':       0.004,
-    'ogbg-molbace':      0.005,
-}
-
-CHOSEN_THRESHOLD: dict = {
-    'all_fallback_bpe_filter':              {**_UNIFIED_FILTER_THRESHOLDS},
-    'rbrics_filter':                        {**_UNIFIED_FILTER_THRESHOLDS},
-    'rbrics_with_struct_fallback_filter':   {**_UNIFIED_FILTER_THRESHOLDS},
-    'rbrics_old_filter':                    {**_UNIFIED_FILTER_THRESHOLDS},
-}
-
-# Helper: look up the threshold for a given variant + dataset combination.
-# Called from run_dataset() when --apply_threshold is set without --threshold_pct.
-def get_chosen_threshold(variant: str, dataset: str) -> float:
-    """Return the threshold from CHOSEN_THRESHOLD[variant][dataset].
-
-    Raises KeyError with a helpful message if the combination is not in the dict.
-    Add the entry to CHOSEN_THRESHOLD to fix the error.
-    """
-    if variant not in CHOSEN_THRESHOLD:
-        raise KeyError(
-            f"No CHOSEN_THRESHOLD entry for variant='{variant}'. "
-            f"Available variants: {list(CHOSEN_THRESHOLD.keys())}. "
-            f"Add '{variant}' to the CHOSEN_THRESHOLD dict in generate_vocab_rules.py."
-        )
-    if dataset not in CHOSEN_THRESHOLD[variant]:
-        raise KeyError(
-            f"No CHOSEN_THRESHOLD entry for variant='{variant}', dataset='{dataset}'. "
-            f"Add '{dataset}' under CHOSEN_THRESHOLD['{variant}'] in generate_vocab_rules.py."
-        )
-    return CHOSEN_THRESHOLD[variant][dataset]
-
+from data.threshold_config import (
+    CHOSEN_THRESHOLD,
+    get_chosen_threshold,
+    select_threshold_motifs,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PARAMETERS
@@ -961,11 +907,16 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
                  frag_to_id: Dict[str, int],
                  X: sp.csr_matrix,
                  lookup_train: dict, lookup_valid: dict, lookup_test: dict,
+                 lookup_all_raw: dict,
+                 mol_fragment_smarts: dict,
                  gmi_train: dict, gmi_test: dict,
                  rules: List[dict], labels: np.ndarray,
                  kept_motif_ids: List[int],
                  test_occ_ctr: dict = None,
-                 is_regression: bool = False) -> dict:
+                 is_regression: bool = False,
+                 apply_threshold: bool = False,
+                 threshold_pct: Optional[float] = None,
+                 mining_fold: int = 0) -> dict:
 
     vdir = out_dir / dataset / variant
     vdir.mkdir(parents=True, exist_ok=True)
@@ -977,6 +928,8 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
             pickle.dump(obj, f, protocol=4)
 
     # MotifSAT pickle files
+    dump(lookup_all_raw, base + '_lookup_all.pickle')
+    dump(mol_fragment_smarts, base + '_mol_fragment_smarts.pickle')
     dump(lookup_train,  base + '_graph_lookup.pickle')
     dump(lookup_valid,  base + '_valid_graph_lookup.pickle')
     dump(lookup_test,   base + '_test_graph_lookup.pickle')
@@ -1039,6 +992,9 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
             'vocab_size':  len(motif_list),
             'dataset':     dataset,
             'variant':     variant,
+            'apply_threshold': bool(apply_threshold),
+            'threshold_pct': threshold_pct,
+            'mining_fold': mining_fold,
         }, _f, indent=2)
 
     smdf.to_csv(vdir / 'smiles_labels.csv', index=False)
@@ -1519,27 +1475,30 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     else:
                         wt_counts_1[smarts] += 1.0
 
-        threshold_motifs = {m for m,c in mol_counts.items() if c >= global_cut}
-        if not is_regression:
-            n0_tv = sum(1 for g,l in zip(groups_all,labels_all)
-                        if g in ('training','valid') and int(l)==0)
-            n1_tv = N_tv - n0_tv
-            r0, r1 = n0_tv/max(N_tv,1), n1_tv/max(N_tv,1)
-            minority   = (1 if r0 >= 0.6 else (0 if r1 >= 0.6 else None))
-            minority_n = (n1_tv if minority==1 else (n0_tv if minority==0 else None))
-            if minority is not None and minority_n is not None:
-                mb_cut = int(resolved_pct * minority_n)
-                wt = wt_counts_1 if minority == 1 else wt_counts_0
-                for m, cnt in wt.items():
-                    if cnt >= mb_cut:
-                        threshold_motifs.add(m)
+        n0_tv = sum(1 for g,l in zip(groups_all,labels_all)
+                    if g in ('training','valid') and int(l)==0)
+        n1_tv = N_tv - n0_tv
+        threshold_motifs = select_threshold_motifs(
+            mol_counts, wt_counts_0, wt_counts_1,
+            n_tv=N_tv, n0_tv=n0_tv, n1_tv=n1_tv,
+            resolved_pct=resolved_pct,
+            is_regression=is_regression,
+        )
 
         n_below = len(motif_list) - len(threshold_motifs & set(motif_list))
         print(f"    Threshold {resolved_pct*100:.3f}%: cutoff={global_cut}  "
               f"kept={len(threshold_motifs & set(motif_list))}  "
               f"below (→ -1)={n_below}")
 
-    # Lookup + matrix
+    # Pre-threshold maps (SMILES → motif_id) + per-mol fragment lists for
+    # per-fold threshold re-application at training time without re-fragmentation.
+    lookup_all_raw = build_lookup(smiles_all, mol_frags_tracked, frag_to_id, None)
+    mol_fragment_smarts = {
+        smi: [smarts for smarts, _ in mf]
+        for smi, mf in zip(smiles_all, mol_frags_tracked)
+    }
+
+    # Lookup + matrix (threshold remaps below-cutoff nodes to -1)
     lookup_all = build_lookup(smiles_all, mol_frags_tracked, frag_to_id,
                                threshold_motifs)
     X          = build_matrix(mol_frags_tracked, frag_to_id, n_all)
@@ -1626,11 +1585,16 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         motif_list=motif_list, motif_stats=motif_stats, frag_to_id=frag_to_id,
                         X=X, lookup_train=lookup_train, lookup_valid=lookup_valid,
                         lookup_test=lookup_test,
+                        lookup_all_raw=lookup_all_raw,
+                        mol_fragment_smarts=mol_fragment_smarts,
                         gmi_train=gmi_train, gmi_test=gmi_test,
                         rules=rules, labels=labels_all,
                         kept_motif_ids=kept_motif_ids,
                         test_occ_ctr=_test_occ,
-                        is_regression=is_regression)
+                        is_regression=is_regression,
+                        apply_threshold=apply_threshold,
+                        threshold_pct=resolved_pct if apply_threshold else None,
+                        mining_fold=fold)
 
     # Statistics CSV
     motif_df, graph_df = compute_stats(

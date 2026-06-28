@@ -294,10 +294,12 @@ class MolDataset(InMemoryDataset):
             self.mean = 0.0
             self.std = 1.0
 
+        proc_dir = Path(root) / 'processed'
+        pt_name = f'{split}_{Path(csv_file).stem}.pt'
+        proc_file = proc_dir / pt_name
+
         if force_reprocess:
-            proc_dir = Path(root) / 'processed'
-            pt_name = f'{split}_{Path(csv_file).stem}.pt'
-            (proc_dir / pt_name).unlink(missing_ok=True)
+            proc_file.unlink(missing_ok=True)
 
         super().__init__(root, transform, pre_transform, pre_filter)
         self.data, self.slices = torch.load(

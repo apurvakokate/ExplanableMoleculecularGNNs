@@ -128,6 +128,101 @@ def _validate_rule_nodes(rule_nodes: list, n_nodes: int, smi: str) -> list:
     return rule_nodes
 
 
+def validate_rule_threshold_consistency(
+    rule_clauses: List[Set[str]],
+    motif_list: List[str],
+    kept_motif_ids: Optional[List[int]],
+    apply_threshold: bool,
+    *,
+    dataset: str,
+    variant: str,
+    fold: int,
+) -> None:
+    """Fail if any rule-motif SMARTS would be ``-1`` under this fold's threshold.
+
+    Rules are mined from high-support motifs on the filtered vocab, so this
+    should not trigger in normal operation. When it does, training would see
+    unknown (-1) nodes for motifs the GT treats as present.
+    """
+    if not apply_threshold or kept_motif_ids is None:
+        return
+
+    rule_motifs = {m for cl in rule_clauses for m in cl}
+    if not rule_motifs:
+        return
+
+    kept_smarts = {
+        motif_list[i] for i in kept_motif_ids
+        if 0 <= i < len(motif_list)
+    }
+    below_threshold = sorted(rule_motifs - kept_smarts)
+    if below_threshold:
+        raise ValueError(
+            f"Rule references motif(s) below fold-{fold} threshold for "
+            f"{dataset}/{variant!r} — they would be motif_id=-1 during "
+            f"training but are used for GT rule presence:\n"
+            f"  {below_threshold}\n"
+            f"kept={len(kept_motif_ids)}/{len(motif_list)} motifs on this fold.\n"
+            f"Pick a different RULE_INDEX, re-mine rules on the filtered vocab, "
+            f"or adjust CHOSEN_THRESHOLD."
+        )
+
+
+def validate_rule_fires_on_trainable_motifs(
+    data_list: List,
+    rule_clauses: List[Set[str]],
+    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
+    *,
+    dataset: str,
+    variant: str,
+    fold: int,
+    split: str,
+) -> None:
+    """Fail if a rule fires on pre-threshold fragments but rule atoms are -1 on graphs."""
+    all_rule_motifs = {m for cl in rule_clauses for m in cl}
+    violations: List[Tuple[str, str, int]] = []
+
+    for data in data_list:
+        smi = getattr(data, 'smiles', None)
+        if not smi:
+            continue
+        node_map = graph_lookup.get(smi, {})
+        if not node_map:
+            continue
+
+        frag_set = {smarts for smarts, _mid in node_map.values()}
+        rule_fires = any(cl.issubset(frag_set) for cl in rule_clauses if cl)
+        if not rule_fires:
+            continue
+
+        n2m = getattr(data, 'nodes_to_motifs', None)
+        if n2m is None:
+            continue
+
+        for idx, (smarts, _mid) in node_map.items():
+            if smarts not in all_rule_motifs:
+                continue
+            if int(n2m[idx].item()) < 0:
+                violations.append((smi, smarts, idx))
+
+    if violations:
+        sample = violations[:5]
+        detail = '\n'.join(
+            f"  smiles={s!r} motif={m!r} atom={i}" for s, m, i in sample
+        )
+        extra = (
+            f"\n  … and {len(violations) - len(sample)} more"
+            if len(violations) > len(sample) else ''
+        )
+        raise ValueError(
+            f"Rule fired on pre-threshold fragments but {len(violations)} "
+            f"rule-motif atom(s) are motif_id=-1 on fold-{fold} {split} graphs "
+            f"for {dataset}/{variant!r}:\n{detail}{extra}\n"
+            f"GT rule presence uses pre-threshold lookup_all; training uses "
+            f"fold-specific threshold. This mismatch is not allowed."
+        )
+
+
 def annotate_split(data_list: List,
                    rule_clauses: List[Set[str]],
                    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
@@ -314,10 +409,8 @@ Examples
     vocab = load_vocab(args.vocab_root, args.dataset, args.variant)
     print(f'    {vocab.num_motifs} motifs')
 
-    # Merge train + valid lookups (both are needed for the three splits)
-    lookup_train = vocab.lookup_train   # training molecules
-    lookup_valid = vocab.lookup_valid   # valid molecules
-    lookup_test  = vocab.lookup_test    # test molecules
+    # Pre-threshold fragmentation for rule presence (threshold is per-fold on y/n2m).
+    lookup = vocab.annotation_lookup
 
     # ── Load data loaders to get Data objects ─────────────────────────────────
     print('  Loading data loaders...')
@@ -340,12 +433,26 @@ Examples
           f'valid={len(loaders["valid"].dataset)}  '
           f'test={len(test_ds)}')
 
+    validate_rule_threshold_consistency(
+        rule_clauses, vocab.motif_list, meta.kept_motif_ids,
+        vocab.apply_threshold,
+        dataset=args.dataset, variant=args.variant, fold=args.fold,
+    )
+
     # ── Annotate each split ───────────────────────────────────────────────────
     split_configs = [
-        ('train', loaders['train'].dataset, lookup_train),
-        ('valid', loaders['valid'].dataset, lookup_valid),
-        ('test',  test_ds,                  lookup_test),
+        ('train', loaders['train'].dataset, lookup),
+        ('valid', loaders['valid'].dataset, lookup),
+        ('test',  test_ds,                  lookup),
     ]
+
+    for split_name, ds, _lookup in split_configs:
+        data_list = [ds[i] for i in range(len(ds))]
+        validate_rule_fires_on_trainable_motifs(
+            data_list, rule_clauses, lookup,
+            dataset=args.dataset, variant=args.variant,
+            fold=args.fold, split=split_name,
+        )
 
     out_base = (Path(args.out_dir) / args.dataset
                 / f'fold{args.fold}' / args.variant

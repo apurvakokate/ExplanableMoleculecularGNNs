@@ -187,6 +187,129 @@ class TestVocabData(unittest.TestCase):
         lup = self.vocab.lookup_for_split('test')
         self.assertEqual(lup, {})
 
+    def test_annotation_lookup_requires_lookup_all(self):
+        """annotation_lookup fails loudly without _lookup_all.pickle."""
+        vocab = VocabData(
+            motif_list=self.vocab.motif_list,
+            motif_counts=self.vocab.motif_counts,
+            motif_lengths=self.vocab.motif_lengths,
+            motif_class=self.vocab.motif_class,
+            lookup_train=self.vocab.lookup_train,
+            lookup_valid={},
+            lookup_test={},
+            gmi_train={},
+            gmi_test={},
+            lookup_all=None,
+        )
+        with self.assertRaises(FileNotFoundError):
+            _ = vocab.annotation_lookup
+
+    def test_annotation_lookup_returns_lookup_all(self):
+        """Pre-threshold lookup_all is the annotation source of truth."""
+        benz = SMILES['benzene']
+        nitro = SMILES['nitrobenzene']
+        train_map = {benz: self.vocab.lookup_train[benz]}
+        test_map = {nitro: {i: ('[*][N+](=O)[O-]', 4) for i in range(9)}}
+        lookup_all = {**train_map, **test_map}
+        vocab = VocabData(
+            motif_list=self.vocab.motif_list,
+            motif_counts=self.vocab.motif_counts,
+            motif_lengths=self.vocab.motif_lengths,
+            motif_class=self.vocab.motif_class,
+            lookup_train=train_map,
+            lookup_valid={},
+            lookup_test=test_map,
+            gmi_train={},
+            gmi_test={},
+            lookup_all=lookup_all,
+        )
+        ann = vocab.annotation_lookup
+        self.assertIs(ann, lookup_all)
+        self.assertIn(benz, ann)
+        self.assertIn(nitro, ann)
+
+    def test_per_fold_threshold_changes_keep_set(self):
+        from SharedModules.data.fold_threshold import (
+            build_fold_annotation, apply_threshold_to_lookup,
+        )
+        import tempfile
+        import os
+
+        motif_list = ['[*]C', '[*]N', '[*]O']
+        lookup_all = {
+            'A': {0: ('[*]C', 0), 1: ('[*]N', 1)},
+            'B': {0: ('[*]O', 2)},
+        }
+        mol_frags = {'A': ['[*]C', '[*]N'], 'B': ['[*]O']}
+        rows = [
+            ('A', 1, 'training'), ('A', 1, 'valid'),
+            ('B', 0, 'training'),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = os.path.join(td, 'T_0.csv')
+            pd.DataFrame({'smiles': [r[0] for r in rows],
+                          'label': [r[1] for r in rows],
+                          'group': [r[2] for r in rows]}).to_csv(csv_path, index=False)
+            meta = td + '/meta'
+            os.makedirs(meta, exist_ok=True)
+            with open(os.path.join(meta, 'vocab_meta.json'), 'w') as f:
+                import json
+                json.dump({'apply_threshold': True, 'threshold_pct': 0.5}, f)
+            lookup, kept, _, pct = build_fold_annotation(
+                lookup_all=lookup_all,
+                motif_list=motif_list,
+                mol_fragment_smarts=mol_frags,
+                csv_path=csv_path,
+                label_col='label',
+                dataset='Benzene',
+                variant='test_filter',
+                vocab_dir=Path(meta),
+            )
+        self.assertEqual(pct, 0.5)
+        # N_tv=3, cut=int(0.5*3)=1 → C,N,O each appear ≥1 in train+val
+        self.assertEqual(len(kept), 3)
+
+
+class TestApplyGtThresholdValidation(unittest.TestCase):
+    def test_rule_motif_below_threshold_raises(self):
+        from SharedModules.data.apply_gt import validate_rule_threshold_consistency
+        rule_clauses = [{'[*]C', '[*]N'}]
+        motif_list = ['[*]C', '[*]N', '[*]O']
+        with self.assertRaises(ValueError) as ctx:
+            validate_rule_threshold_consistency(
+                rule_clauses, motif_list, kept_motif_ids=[0],
+                apply_threshold=True,
+                dataset='Benzene', variant='test_filter', fold=1,
+            )
+        self.assertIn('[*]N', str(ctx.exception))
+
+    def test_rule_motif_ok_when_no_threshold(self):
+        from SharedModules.data.apply_gt import validate_rule_threshold_consistency
+        validate_rule_threshold_consistency(
+            [{'[*]C'}], ['[*]C'], kept_motif_ids=None,
+            apply_threshold=False,
+            dataset='Benzene', variant='all_fallback_bpe', fold=0,
+        )
+
+    def test_rule_fires_on_minus_one_atoms_raises(self):
+        from SharedModules.data.apply_gt import validate_rule_fires_on_trainable_motifs
+        from torch_geometric.data import Data
+        smi = 'CCN'
+        lookup = {smi: {0: ('[*]C', 0), 1: ('[*]C', 0), 2: ('[*]N', 1)}}
+        data = Data(
+            x=torch.zeros(3, 4),
+            edge_index=torch.zeros(2, 0, dtype=torch.long),
+            smiles=smi,
+            nodes_to_motifs=torch.tensor([0, 0, -1], dtype=torch.long),
+        )
+        with self.assertRaises(ValueError) as ctx:
+            validate_rule_fires_on_trainable_motifs(
+                [data], [{'[*]C', '[*]N'}], lookup,
+                dataset='Benzene', variant='test_filter',
+                fold=0, split='train',
+            )
+        self.assertIn('motif_id=-1', str(ctx.exception))
+
 
 class TestComputeMaskCache(unittest.TestCase):
     def test_basic(self):

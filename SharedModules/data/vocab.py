@@ -1,28 +1,24 @@
 """vocab.py — load the MotifBreakdown vocabulary from pickle files.
 
-File produced by generate_vocab_rules.py
-  {base}_graph_lookup.pickle
-  {base}_test_graph_lookup.pickle
+Artifacts from generate_vocab_rules.py (fold-0 mining)
+  {base}_lookup_all.pickle          SMILES → atom map, pre-threshold (annotation)
+  {base}_mol_fragment_smarts.pickle per-SMILES fragment list (threshold support)
+  {base}_graph_lookup.pickle        fold-0 train slice, thresholded (legacy/mining)
+  {base}_valid_graph_lookup.pickle  fold-0 valid slice
+  {base}_test_graph_lookup.pickle   fold-0 test slice
   {base}_motif_list.pickle
-  {base}_motif_counts.pickle
-  {base}_motif_length.pickle
-  {base}_motif_class.pickle
-  {base}_graph_motifidx.pickle
-  {base}_test_graph_motifidx.pickle
-  {base}_kept_motif_ids.pickle   ← global ids surviving the threshold (compact params)
-  mask_cache_training.pickle   ← added by patched generate_vocab_rules
-  mask_cache_valid.pickle
-  mask_cache_test.pickle
-  mask_cache_all.pickle
+  {base}_kept_motif_ids.pickle      fold-0 kept ids (reference; trainers use per-fold)
+  vocab_meta.json                   apply_threshold, threshold_pct, mining_fold
 
 Usage
 -----
     from SharedModules.data.vocab import load_vocab
-    vocab = load_vocab('/path/to/variant/dir', 'Mutagenicity', 'all_fallback_bpe')
+    vocab = load_vocab('/path/to/vocab_root', 'Benzene', 'all_fallback_bpe_filter')
 """
 
 from __future__ import annotations
 
+import json
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,34 +31,9 @@ import torch
 class VocabData:
     """All vocabulary artefacts for one dataset × variant.
 
-    Attributes
-    ----------
-    motif_list : list[str]
-        SMARTS strings, index = motif_id.
-    motif_counts : list[int]
-        Per-motif molecule occurrence counts.
-    motif_lengths : list[int]
-        Per-motif heavy-atom count.
-    motif_class : dict[int, dict[int, int]]
-        {motif_id: {0: n_neg, 1: n_pos}}.
-    lookup_train : dict[str, dict[int, tuple[str, int]]]
-        {smiles: {node_idx: (smarts, motif_id)}} — training split only
-        (valid is in lookup_valid; older vocab dirs without a separate valid
-        file may have folded valid in here).
-    lookup_valid : dict[str, dict[int, tuple[str, int]]]
-        {smiles: {node_idx: (smarts, motif_id)}} — valid split (empty for
-        older vocab dirs produced before the valid file existed).
-    lookup_test : dict[str, dict[int, tuple[str, int]]]
-        {smiles: {node_idx: (smarts, motif_id)}} — test split.
-    gmi_train : dict[str, set[int]]
-        {smiles: set[motif_id]} — training split only (-1 excluded).
-    gmi_test : dict[str, set[int]]
-        {smiles: set[motif_id]} — test split (-1 excluded).
-    mask_cache : dict[str, dict[int, dict[str, torch.BoolTensor]]]
-        {split: {motif_id: {smiles: bool_mask [n_atoms]}}}.
-        Empty dict if cache files are absent (use compute_mask_cache()).
-    num_motifs : int
-        len(motif_list).
+    lookup_all : pre-threshold SMILES → atom maps (use for GT rule presence).
+    lookup_train/valid/test : fold-0 split slices after threshold (mining stats).
+    Per-fold training annotations are built in get_loaders via fold_threshold.py.
     """
 
     motif_list: List[str]
@@ -77,30 +48,46 @@ class VocabData:
     mask_cache: Dict[str, Dict[int, Dict[str, torch.BoolTensor]]] = field(
         default_factory=dict
     )
-    # Ordered global motif ids that survive the threshold (= every id when no
-    # threshold was applied).  The model allocates parameters ONLY for these,
-    # while motif_list / lookups keep the full, stable global id space.  None for
-    # older vocab dirs produced before this artifact existed (→ treat as all ids).
     kept_motif_ids: Optional[List[int]] = None
+    # Pre-threshold full-pool annotation (all SMILES in fold-0 CSV).
+    lookup_all: Optional[Dict[str, Dict[int, Tuple[str, int]]]] = None
+    # {smiles: [smarts, ...]} — one entry per fragment instance for support counts.
+    mol_fragment_smarts: Optional[Dict[str, List[str]]] = None
+    apply_threshold: bool = False
+    threshold_pct: Optional[float] = None
+    mining_fold: int = 0
+    variant: str = ''
+    dataset: str = ''
+    vocab_dir: str = ''
 
     @property
     def num_motifs(self) -> int:
         return len(self.motif_list)
 
     def motif_id(self, smarts: str) -> Optional[int]:
-        """Return motif_id for a SMARTS string, or None if unknown."""
         try:
             return self.motif_list.index(smarts)
         except ValueError:
             return None
 
     def lookup_for_split(self, split: str) -> Dict[str, Dict[int, Tuple[str, int]]]:
-        """Return the node lookup dict for 'train'/'training'/'test'/'valid'."""
+        """Fold-0 split slice (thresholded at mining time). Mining/eval legacy only."""
         if split in ('test',):
             return self.lookup_test
         if split in ('valid',):
             return self.lookup_valid
         return self.lookup_train
+
+    @property
+    def annotation_lookup(self) -> Dict[str, Dict[int, Tuple[str, int]]]:
+        """Pre-threshold SMILES map for rule / fragmentation checks."""
+        if self.lookup_all is None:
+            raise FileNotFoundError(
+                f"Vocab {self.dataset}/{self.variant}: missing _lookup_all.pickle. "
+                f"Re-run phase 1 (generate_vocab_rules.py). Merged split-lookup "
+                f"fallback is disabled — per-fold thresholding requires the full pool."
+            )
+        return self.lookup_all
 
 
 def _load_pickle(path: Path):
@@ -114,25 +101,6 @@ def load_vocab(
     variant: str,
     load_mask_cache: bool = True,
 ) -> VocabData:
-    """Load vocabulary artefacts produced by generate_vocab_rules.py.
-
-    Parameters
-    ----------
-    out_dir : str
-        Root output directory (the ``--out_dir`` passed to generate_vocab_rules).
-    dataset : str
-        Dataset name (e.g. ``'Mutagenicity'``).
-    variant : str
-        Variant string (e.g. ``'all_fallback_bpe'``).  This is the subdirectory
-        name under ``{out_dir}/{dataset}/``.
-    load_mask_cache : bool
-        Whether to load the bool mask cache.  Set False to save memory when
-        you only need graph structure.
-
-    Returns
-    -------
-    VocabData
-    """
     vdir = Path(out_dir) / dataset / variant
     base = str(vdir / f'{dataset}_{variant}')
 
@@ -144,19 +112,45 @@ def load_vocab(
     motif_lengths = list(_load_pickle(p('_motif_length.pickle')))
     motif_class = _load_pickle(p('_motif_class.pickle'))
     lookup_train = _load_pickle(p('_graph_lookup.pickle'))
-    # lookup_valid was added in a later version of generate_vocab_rules.
-    # Fall back to empty dict for backwards compatibility with older vocab dirs.
     _valid_path = Path(f'{base}_valid_graph_lookup.pickle')
     lookup_valid = _load_pickle(_valid_path) if _valid_path.exists() else {}
     lookup_test = _load_pickle(p('_test_graph_lookup.pickle'))
     gmi_train = _load_pickle(p('_graph_motifidx.pickle'))
     gmi_test = _load_pickle(p('_test_graph_motifidx.pickle'))
 
-    # kept_motif_ids was added with the compact-parameter remap. Older vocab dirs
-    # don't have it → None (model then keeps a parameter row for every motif).
     _kept_path = Path(f'{base}_kept_motif_ids.pickle')
     kept_motif_ids = (list(_load_pickle(_kept_path))
                       if _kept_path.exists() else None)
+
+    _all_path = Path(f'{base}_lookup_all.pickle')
+    if not _all_path.exists():
+        raise FileNotFoundError(
+            f"Missing required vocab artifact: {_all_path}\n"
+            f"Re-run phase 1 for {dataset}/{variant} "
+            f"(generate_vocab_rules.py writes _lookup_all.pickle)."
+        )
+    lookup_all = _load_pickle(_all_path)
+
+    _frags_path = Path(f'{base}_mol_fragment_smarts.pickle')
+    if not _frags_path.exists():
+        raise FileNotFoundError(
+            f"Missing required vocab artifact: {_frags_path}\n"
+            f"Re-run phase 1 for {dataset}/{variant} "
+            f"(generate_vocab_rules.py writes _mol_fragment_smarts.pickle)."
+        )
+    mol_fragment_smarts = _load_pickle(_frags_path)
+
+    apply_threshold = False
+    threshold_pct = None
+    mining_fold = 0
+    meta_path = vdir / 'vocab_meta.json'
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+        apply_threshold = bool(meta.get('apply_threshold', False))
+        if meta.get('threshold_pct') is not None:
+            threshold_pct = float(meta['threshold_pct'])
+        mining_fold = int(meta.get('mining_fold', 0))
 
     mask_cache: Dict[str, Dict[int, Dict[str, torch.BoolTensor]]] = {}
     if load_mask_cache:
@@ -177,6 +171,14 @@ def load_vocab(
         gmi_test=gmi_test,
         mask_cache=mask_cache,
         kept_motif_ids=kept_motif_ids,
+        lookup_all=lookup_all,
+        mol_fragment_smarts=mol_fragment_smarts,
+        apply_threshold=apply_threshold,
+        threshold_pct=threshold_pct,
+        mining_fold=mining_fold,
+        variant=variant,
+        dataset=dataset,
+        vocab_dir=str(vdir),
     )
 
 
@@ -185,10 +187,7 @@ def compute_mask_cache(
     groups_all: List[str],
     lookup_all: Dict[str, Dict[int, Tuple[str, int]]],
 ) -> Dict[str, Dict[int, Dict[str, torch.BoolTensor]]]:
-    """Compute the bool mask cache on-the-fly (when pickle files are absent).
-
-    Mirrors the logic in MotifBreakdown/generate_vocab_rules.py:build_mask_cache.
-    """
+    """Compute bool mask cache (mirrors generate_vocab_rules.build_mask_cache)."""
     splits = {'training', 'valid', 'test'}
     cache: Dict[str, Dict[int, Dict[str, torch.BoolTensor]]] = {
         'training': {}, 'valid': {}, 'test': {}, 'all': {}

@@ -52,7 +52,8 @@ export BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 # export BACKBONE="${BACKBONE:-GIN}"
 export NODE_ENCODER="${NODE_ENCODER:-onehot}"  # onehot | linear | atom_encoder (OGB only)
 export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
-export EPOCHS="${EPOCHS:-100}"
+# Phase 5 training budget (max epochs; early stopping may stop sooner).
+export EPOCHS="${EPOCHS:-500}"
 # Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
 export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
 # MOSE multi-explanation (H0/H1/H2) runs post-hoc — see phase multi_explanation.
@@ -69,7 +70,7 @@ export GSAT_INJ="${GSAT_INJ:---w_message}"                    # 010
 # ── Phase 3: thresholds ───────────────────────────────────────────────────────
 # Thresholds are set per-dataset in a dict — no shell variable needed.
 # After reviewing phase 2 coverage plots, edit CHOSEN_THRESHOLD in:
-#   MotifBreakdown/generate_vocab_rules.py
+#   SharedModules/data/threshold_config.py
 # Key: CHOSEN_THRESHOLD[variant_filter_name][dataset] = threshold_pct
 # e.g. CHOSEN_THRESHOLD["all_fallback_bpe_filter"]["Mutagenicity"] = 0.002
 
@@ -85,6 +86,9 @@ export RULE_INDEX="${RULE_INDEX:-}"          # e.g. 0
 # Aliases: old  struct|struct_fallback  all|v4
 # Example: export VOCAB_FOCUS=rbrics,all_fallback_bpe
 export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
+# MOSE phase5_mose runs filtered variants (*_filter) before base variants.
+# Set MOSE_BASE=0 to skip unfiltered MOSE runs (filtered-only sweep).
+export MOSE_BASE="${MOSE_BASE:-1}"
 
 # ── Phase 5 resume ────────────────────────────────────────────────────────────
 # Skip runs whose out_dir already has summary.json + best_model.pt (default on).
@@ -112,6 +116,7 @@ echo "  CSV        = $DATASETS_CSV"
 echo "  SPECIAL    = $DATASETS_SPECIAL"
 echo "  CONV_NORM  = $CONV_NORMALIZE"
 echo "  BACKBONES  = $BACKBONES"
+echo "  EPOCHS     = $EPOCHS   (phase 5 max; early stopping may finish earlier)"
 echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
 echo "  OGB_ROOT   = $OGB_DATA_ROOT"
 if [ -n "$VOCAB_FOCUS" ]; then

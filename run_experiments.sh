@@ -53,7 +53,7 @@ DATASETS_CSV="${DATASETS_CSV:-Mutagenicity BBBP hERG Benzene Alkane_Carbonyl Flu
 DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-500}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
@@ -343,7 +343,11 @@ _check_phase5_single_dataset() {
         echo "  export DATASETS=mutag   # then re-run phase5_*" >&2
         exit 1
     fi
-    echo "  [phase5] dataset=$DATASETS  SKIP_EXISTING=${SKIP_EXISTING:-1}  FORCE_RERUN=${FORCE_RERUN:-0}"
+    echo "  [phase5] dataset=$DATASETS  EPOCHS=${EPOCHS:-500}  SKIP_EXISTING=${SKIP_EXISTING:-1}  FORCE_RERUN=${FORCE_RERUN:-0}"
+    if [ "${SKIP_EXISTING:-1}" = "1" ] && [ "${FORCE_RERUN:-0}" != "1" ]; then
+        echo "  [phase5] NOTE: completed runs (summary.json + best_model.pt) are SKIPPED."
+        echo "           To retrain with a new EPOCHS budget: export FORCE_RERUN=1"
+    fi
 }
 
 # GT relabelled training: honour DATASETS (single-dataset phase5), not all of DATASETS_CSV.
@@ -352,6 +356,14 @@ _phase5_gt_datasets() {
     for ds in $DATASETS; do
         _skip_synthetic_gt_dataset "$ds" && echo "$ds"
     done
+}
+
+_phase5_has_gt_training() {
+    local ds
+    for ds in $(_phase5_gt_datasets); do
+        return 0
+    done
+    return 1
 }
 
 # ── Helper: fragment one variant ──────────────────────────────────────────────
@@ -663,9 +675,14 @@ run_mose_gt() {
     local gt_variant
     local n_skip=0 n_run=0
     gt_variant=$(_gt_variant_name "$variant")
+    local gt_ds
+    gt_ds=$(_phase5_gt_datasets)
+    if [ -z "$gt_ds" ]; then
+        return 0
+    fi
+    echo "  [MOSE+GT] variant=$gt_variant datasets:$gt_ds"
     for backbone in $BACKBONES; do
-        echo "  [MOSE+GT] backbone=$backbone base=$variant → $gt_variant"
-        for ds in $(_phase5_gt_datasets); do
+        for ds in $gt_ds; do
             for fold in $FOLDS; do
                 if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
                     echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
@@ -704,9 +721,14 @@ run_motifsat_gt() {
     local gt_variant
     local n_skip=0 n_run=0
     gt_variant=$(_gt_variant_name "$variant")
+    local gt_ds
+    gt_ds=$(_phase5_gt_datasets)
+    if [ -z "$gt_ds" ]; then
+        return 0
+    fi
+    echo "  [MotifSAT+GT] variant=$gt_variant datasets:$gt_ds"
     for backbone in $BACKBONES; do
-        echo "  [MotifSAT+GT] backbone=$backbone base=$variant → $gt_variant"
-        for ds in $(_phase5_gt_datasets); do
+        for ds in $gt_ds; do
             for fold in $FOLDS; do
                 if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
                     echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
@@ -979,16 +1001,22 @@ phase5_mose() {
     for variant in $(_vocab_focus_filtered_variants); do
         run_mose "$variant" "$MOSE_INJ"
     done
-    for variant in $(_vocab_focus_base_variants); do
-        run_mose "$variant" "$MOSE_INJ"
-    done
+    if [ "${MOSE_BASE:-1}" = "1" ]; then
+        for variant in $(_vocab_focus_base_variants); do
+            run_mose "$variant" "$MOSE_INJ"
+        done
+    else
+        echo "  [skip] unfiltered MOSE — MOSE_BASE=0 (filtered variants only)"
+    fi
 
-    if [ -d "$OUT_ROOT/gt_cache" ]; then
+    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
             run_mose_gt "$variant"
         done
+    elif ! _phase5_has_gt_training; then
+        echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"
     else
-        echo "  [skip] *_relabelled — run phase4 first"
+        echo "  [skip] *_relabelled — run phase4 first (no $OUT_ROOT/gt_cache)"
     fi
 
     echo "MOSE training complete."
@@ -1055,12 +1083,14 @@ phase5_motifsat() {
         run_motifsat "$variant" "$MOTIFSAT_INJ"
     done
 
-    if [ -d "$OUT_ROOT/gt_cache" ]; then
+    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
             run_motifsat_gt "$variant"
         done
+    elif ! _phase5_has_gt_training; then
+        echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"
     else
-        echo "  [skip] *_relabelled — run phase4 first"
+        echo "  [skip] *_relabelled — run phase4 first (no $OUT_ROOT/gt_cache)"
     fi
 
     echo "MotifSAT training complete."

@@ -245,6 +245,9 @@ def training_summary_extras(cfg) -> Dict:
         'final_r': getattr(cfg, 'final_r', None),
         'decay_interval': getattr(cfg, 'decay_interval', None),
         'decay_r': getattr(cfg, 'decay_r', None),
+        'epochs': getattr(cfg, 'epochs', None),
+        'patience': getattr(cfg, 'patience', None),
+        'min_epochs': getattr(cfg, 'min_epochs', None),
     }
     wvv = getattr(cfg, 'weight_vocab_variant', None)
     if wvv not in (None, ''):

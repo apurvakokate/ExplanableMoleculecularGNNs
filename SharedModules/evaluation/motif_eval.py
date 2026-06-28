@@ -70,12 +70,38 @@ def _single_prob(model, data: Data, device: torch.device, task_type: str) -> flo
     return float(out.view(-1)[0])
 
 
+def _mask_cache_from_graphs(
+    data_list: List[Data],
+) -> Dict[int, Dict[str, torch.BoolTensor]]:
+    """Build motif bool masks from thresholded ``nodes_to_motifs`` on each graph."""
+    cache: Dict[int, Dict[str, torch.BoolTensor]] = {}
+    for data in data_list:
+        smi = getattr(data, 'smiles', None)
+        n2m = getattr(data, 'nodes_to_motifs', None)
+        if smi is None or n2m is None:
+            continue
+        n = data.num_nodes
+        motif_atoms: Dict[int, List[int]] = {}
+        for atom_idx in range(n):
+            mid = int(n2m[atom_idx].item())
+            if mid >= 0:
+                motif_atoms.setdefault(mid, []).append(atom_idx)
+        for mid, idxs in motif_atoms.items():
+            mask = torch.zeros(n, dtype=torch.bool)
+            mask[torch.tensor(idxs, dtype=torch.long)] = True
+            cache.setdefault(mid, {})[smi] = mask
+    return cache
+
+
 def _resolve_mask_cache(
     vocab: VocabData,
     data_list: List[Data],
     split: str,
 ) -> Dict[int, Dict[str, torch.BoolTensor]]:
-    """Return mask cache for the given split, computing on-the-fly if absent."""
+    """Mask cache for motif impact / discriminativeness on this fold's graphs."""
+    graph_cache = _mask_cache_from_graphs(data_list)
+    if graph_cache:
+        return graph_cache
     cache = vocab.mask_cache.get(split, {})
     if cache:
         return cache

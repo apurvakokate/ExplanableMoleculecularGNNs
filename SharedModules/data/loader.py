@@ -57,9 +57,10 @@ class LoaderMeta:
     # Required for PNA backbone; None for all others.
     norm_mean: float = 0.0
     norm_std: float = 1.0
-    # Regression target normalisation stats (z-score) computed from the TRAIN
-    # split. Identity (0.0 / 1.0) when normalize=False. Used to denormalise
-    # MAE/RMSE back to the original target units for reporting.
+    # Per-fold motif threshold (CSV datasets with vocab). When set, MOSE/MotifSAT
+    # should use this instead of vocab.kept_motif_ids from fold-0 mining.
+    kept_motif_ids: Optional[List[int]] = None
+    threshold_pct: Optional[float] = None
 
 
 def resolve_node_encoder(cli_value: Optional[str], meta_value: str) -> str:
@@ -699,44 +700,88 @@ def get_loaders(
     task_type = TASK_TYPE.get(dataset, 'BinaryClass')
     num_classes = NUM_CLASSES.get(dataset, 1)
 
-    lookup_train = vocab.lookup_train if vocab is not None else None
-    lookup_valid = vocab.lookup_valid if vocab is not None else None
-    lookup_test  = vocab.lookup_test  if vocab is not None else None
+    kept_motif_ids = None
+    threshold_pct = None
+    lookup = None
+    proc_tag = ''
+
+    if vocab is not None:
+        from .fold_threshold import build_fold_annotation
+        from pathlib import Path as _Path
+
+        if vocab.lookup_all is None or vocab.mol_fragment_smarts is None:
+            missing = []
+            if vocab.lookup_all is None:
+                missing.append('_lookup_all.pickle')
+            if vocab.mol_fragment_smarts is None:
+                missing.append('_mol_fragment_smarts.pickle')
+            raise FileNotFoundError(
+                f"Vocab {dataset}/{vocab.variant} missing required artifacts: "
+                f"{', '.join(missing)}. Re-run phase 1 "
+                f"(generate_vocab_rules.py). Legacy split-lookup fallback "
+                f"is disabled."
+            )
+
+        lookup, kept_motif_ids, _thr_motifs, threshold_pct = build_fold_annotation(
+            lookup_all=vocab.lookup_all,
+            motif_list=vocab.motif_list,
+            mol_fragment_smarts=vocab.mol_fragment_smarts,
+            csv_path=csv,
+            label_col=label_col,
+            dataset=dataset,
+            variant=vocab.variant or '',
+            vocab_dir=_Path(vocab.vocab_dir) if vocab.vocab_dir else _Path('.'),
+            apply_threshold=vocab.apply_threshold,
+            threshold_pct=vocab.threshold_pct,
+        )
+        proc_tag = 'pfold_thr'
+        _n_kept = len(kept_motif_ids) if kept_motif_ids is not None else vocab.num_motifs
+        if threshold_pct is not None:
+            print(f'  [fold threshold] fold={fold} pct={threshold_pct} '
+                  f'kept={_n_kept}/{vocab.num_motifs} motifs '
+                  f'(support from this fold train+val)')
+        else:
+            print(f'  [fold lookup] fold={fold} no threshold filter '
+                  f'({vocab.num_motifs} motifs)')
+
+    proc_base = f'{processed_root}/{dataset}_fold{fold}'
+    if proc_tag:
+        proc_base = f'{proc_base}/{proc_tag}'
 
     # Training split — compute normalisation stats from training data
     train_ds = MolDataset(
-        root=f'{processed_root}/{dataset}_fold{fold}/train',
+        root=f'{proc_base}/train',
         csv_file=csv,
         split='training',
         label_col=label_col,
         normalize=normalize,
-        lookup=lookup_train,
+        lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
     )
 
     val_ds = MolDataset(
-        root=f'{processed_root}/{dataset}_fold{fold}/valid',
+        root=f'{proc_base}/valid',
         csv_file=csv,
         split='valid',
         label_col=label_col,
         normalize=normalize,
         mean=train_ds.mean if normalize else None,
         std=train_ds.std if normalize else None,
-        lookup=lookup_valid,
+        lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
     )
 
     test_ds = MolDataset(
-        root=f'{processed_root}/{dataset}_fold{fold}/test',
+        root=f'{proc_base}/test',
         csv_file=csv,
         split='test',
         label_col=label_col,
         normalize=normalize,
         mean=train_ds.mean if normalize else None,
         std=train_ds.std if normalize else None,
-        lookup=lookup_test,
+        lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
     )
@@ -763,6 +808,8 @@ def get_loaders(
         deg=_deg,
         norm_mean=(train_ds.mean if normalize else 0.0),
         norm_std=(train_ds.std if normalize else 1.0),
+        kept_motif_ids=kept_motif_ids,
+        threshold_pct=threshold_pct,
     )
     return loaders, test_ds, meta
 

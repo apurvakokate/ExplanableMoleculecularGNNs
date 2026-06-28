@@ -122,13 +122,14 @@ def run(cfg: MOSEConfig) -> dict:
         )
 
     # Model
+    _fold_kept = getattr(meta, 'kept_motif_ids', None)
+    _kept_ids = (_fold_kept if _fold_kept is not None else vocab.kept_motif_ids)
     model = build_model(cfg, vocab.num_motifs, task_type, meta,
-                        kept_motif_ids=vocab.kept_motif_ids)
+                        kept_motif_ids=_kept_ids)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    _n_kept = (len(vocab.kept_motif_ids) if vocab.kept_motif_ids is not None
-               else vocab.num_motifs)
+    _kept = len(_kept_ids) if _kept_ids is not None else vocab.num_motifs
     print(f'  Model: {model.__class__.__name__}  params={n_params:,}  '
-          f'motif_params rows={_n_kept}/{vocab.num_motifs} (kept/total)')
+          f'motif_params rows={_kept}/{vocab.num_motifs} (kept/total)')
 
     # Guard: with no injection the motif-importance params never enter the
     # forward pass, so they receive no task gradient (scores stay at sigmoid(0)
