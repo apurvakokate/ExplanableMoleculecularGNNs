@@ -5,6 +5,10 @@
 # HPC — BBBP full sweep (after archival, clean start):
 #   bash run_full_pipeline.sh full fresh
 #
+# HPC — mutag full (fold 0 only; needs phase0 export + TUDataset raw/):
+#   bash run_full_pipeline.sh mutag full fresh
+#   bash run_full_pipeline.sh submit mutag full fresh
+#
 # Submit to SLURM (edit SLURM_* / SLURM_SETUP below first):
 #   bash run_full_pipeline.sh submit full fresh
 #
@@ -77,6 +81,25 @@ else
 fi
 export FOLDS BACKBONES EPOCHS MOSE_BASE FAIL_FAST SKIP_PHASE0
 
+# ── Dataset-specific overrides (mutag / OGB) ─────────────────────────────────
+# mutag: fold 0 only, phase0 export required, no synthetic GT (phase4).
+_is_special_dataset() {
+    case "$1" in
+        mutag|ogbg-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+if _is_special_dataset "$DATASET"; then
+    FOLDS="${FOLDS:-0}"
+    export FOLDS
+    SKIP_PHASE0=0
+    export SKIP_PHASE0
+    if [ "$DATASET" = "mutag" ]; then
+        SLURM_JOB_NAME="${SLURM_JOB_NAME:-mutag_full}"
+        SLURM_TIME="${SLURM_TIME:-48:00:00}"
+    fi
+fi
+
 if [ "$FRESH" = "1" ]; then
     export FORCE_PHASE1=1 FORCE_RERUN=1 SKIP_EXISTING=0
 else
@@ -116,7 +139,12 @@ EOF
 fi
 
 export DATASETS="$DATASET"
-export DATASETS_CSV="$DATASET"
+# CSV benchmarks only — mutag/OGB use source GT, not phase4 synthetic relabel.
+if _is_special_dataset "$DATASET"; then
+    export DATASETS_CSV="${DATASETS_CSV:-}"
+else
+    export DATASETS_CSV="${DATASETS_CSV:-$DATASET}"
+fi
 
 # shellcheck disable=SC1091
 source ./experiment_config.sh
@@ -126,8 +154,12 @@ LOG="logs/pipeline_${DATASET}_${MODE}_$(date +%Y%m%d_%H%M%S).log"
 
 PHASES=()
 [ "$SKIP_PHASE0" != "1" ] && PHASES+=( phase0 )
+PHASES+=( phase1 phase2 phase3 )
+# phase4 synthetic GT applies only to CSV benchmarks in GT_SUPPORTED_DATASETS.
+if ! _is_special_dataset "$DATASET"; then
+    PHASES+=( phase4 )
+fi
 PHASES+=(
-  phase1 phase2 phase3 phase4
   phase5_vanilla phase5_mose phase5_gsat phase5_motifsat phase5_baselines
   collect
 )
@@ -138,7 +170,7 @@ run_pipeline() {
   echo "# FULL PIPELINE — dataset=$DATASET   mode=$MODE   fresh=$FRESH"
   echo "#   VOCAB_FOCUS=$VOCAB_FOCUS  FOLDS='$FOLDS'  BACKBONES='$BACKBONES'"
   echo "#   EPOCHS=$EPOCHS  MOSE_BASE=$MOSE_BASE  RULE_INDEX=$RULE_INDEX"
-  echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST"
+  echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST  DATASETS_CSV='${DATASETS_CSV:-}'"
   echo "#   SKIP_EXISTING=${SKIP_EXISTING:-?}  WANDB_MODE=$WANDB_MODE"
   echo "#   PROJECT=$PROJECT"
   echo "#   started $(date)"
