@@ -79,7 +79,8 @@ def _baseline_explainers(run_dir: Path):
     return sorted(names)
 
 
-def collect(out_root: Path, agg: str = 'mean') -> pd.DataFrame:
+def collect(out_root: Path, agg: str = 'mean',
+            datasets: set[str] | None = None) -> pd.DataFrame:
     """Gather per-motif (score, impact) rows for every model family.
 
     mose / motifsat write score_vs_impact.csv directly. Baseline explainers
@@ -88,9 +89,13 @@ def collect(out_root: Path, agg: str = 'mean') -> pd.DataFrame:
     we join them on motif_id so each explainer becomes its own group, named
     "{explainer}_{agg}" (e.g. gnnexplainer_mean).
     """
+    from analysis.aggregate_experiments import dataset_allowed
+
     recs = []
     # 1) native score_vs_impact.csv (mose, motifsat)
     for csv in out_root.rglob('score_vs_impact.csv'):
+        if datasets and not dataset_allowed(csv.parent, datasets):
+            continue
         try:
             df = pd.read_csv(csv)
         except Exception:
@@ -105,6 +110,8 @@ def collect(out_root: Path, agg: str = 'mean') -> pd.DataFrame:
     # 2) baseline explainers: join {explainer}_motif_scores_{agg}.csv + motif_impact.csv
     for impact_csv in out_root.rglob('motif_impact.csv'):
         run_dir = impact_csv.parent
+        if datasets and not dataset_allowed(run_dir, datasets):
+            continue
         explainers = _baseline_explainers(run_dir)
         if not explainers:
             continue  # only baseline dirs have these score files
@@ -228,13 +235,16 @@ def main():
                     help='Baseline node-score aggregation to plot (mean|max). '
                          'Affects baseline explainer groups only; outputs are '
                          'suffixed with the agg so mean/max do not overwrite.')
+    ap.add_argument('--dataset', nargs='*', default=None,
+                    help='only plot runs for these dataset(s), e.g. --dataset mutag')
     args = ap.parse_args()
 
     out_root = Path(args.out_root)
     save_dir = Path(args.save_dir) if args.save_dir else out_root / 'plots'
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    df = collect(out_root, agg=args.agg)
+    datasets = set(args.dataset) if args.dataset else None
+    df = collect(out_root, agg=args.agg, datasets=datasets)
     if df.empty:
         print('No score_vs_impact.csv found under', out_root,
               '\n(Train with the updated code so runs emit it.)')

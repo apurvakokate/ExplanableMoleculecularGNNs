@@ -51,7 +51,7 @@ export WANDB_FLAGS="--use_wandb --wandb_project $WANDB_PROJECT"
 [ -n "$WANDB_ENTITY" ] && export WANDB_FLAGS="$WANDB_FLAGS --wandb_entity $WANDB_ENTITY"
 
 RUN_ANALYZE="${RUN_ANALYZE:-1}"
-export ANALYZE_ARGS="${ANALYZE_ARGS:---skip_regenerate}"
+# ANALYZE_ARGS set after CLI parses DATASET (below).
 
 # ── CLI: [submit] [dataset] [full|smoke] [fresh] ─────────────────────────────
 for _tok in "$@"; do
@@ -98,6 +98,14 @@ if _is_special_dataset "$DATASET"; then
         SLURM_JOB_NAME="${SLURM_JOB_NAME:-mutag_full}"
         SLURM_TIME="${SLURM_TIME:-48:00:00}"
     fi
+fi
+
+# Analyze scoped to pipeline DATASET (avoids scanning unrelated results on disk).
+_base_analyze="${ANALYZE_ARGS:---skip_regenerate}"
+if [[ "$_base_analyze" == *"--dataset"* ]]; then
+    export ANALYZE_ARGS="$_base_analyze"
+else
+    export ANALYZE_ARGS="$_base_analyze --dataset $DATASET"
 fi
 
 if [ "$FRESH" = "1" ]; then
@@ -172,6 +180,7 @@ run_pipeline() {
   echo "#   EPOCHS=$EPOCHS  MOSE_BASE=$MOSE_BASE  RULE_INDEX=$RULE_INDEX"
   echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST  DATASETS_CSV='${DATASETS_CSV:-}'"
   echo "#   SKIP_EXISTING=${SKIP_EXISTING:-?}  WANDB_MODE=$WANDB_MODE"
+  echo "#   ANALYZE_ARGS=$ANALYZE_ARGS"
   echo "#   PROJECT=$PROJECT"
   echo "#   started $(date)"
   echo "############################################################"

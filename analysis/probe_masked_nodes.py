@@ -179,6 +179,14 @@ def _prepend_trainer_path(trainer_dir: Path) -> None:
         sys.path.insert(0, p)
 
 
+def _meta_float(meta: dict, key: str, default: float = 0.0) -> float:
+    """Read a float from summary.json; treat explicit JSON null as missing."""
+    val = meta.get(key)
+    if val is None:
+        return default
+    return float(val)
+
+
 def _infer_hidden_dim(meta: dict, ckpt: Path) -> int:
     hidden_dim = meta.get('hidden_dim')
     if hidden_dim is None:
@@ -232,7 +240,12 @@ def _common_cfg_kwargs(meta: dict, data_root: str, vocab_root: str,
         mutag_index_maps_path=meta.get('mutag_index_maps_path'),
         mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
         mutag_splits_path=meta.get('mutag_splits_path'),
-        mutag_seed=int(meta.get('mutag_seed', 42)),
+        mutag_seed=int(meta.get('mutag_seed') or 42),
+        gnn_lr=_meta_float(meta, 'gnn_lr', 0.001),
+        explainer_lr=_meta_float(meta, 'explainer_lr', 0.01),
+        ent_reg=_meta_float(meta, 'ent_reg', 0.01),
+        size_reg=_meta_float(meta, 'size_reg', 0.0),
+        unk_mode=meta.get('unk_mode') or 'fixed',
     )
 
 
@@ -314,10 +327,17 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
             motifsat_run = importlib.import_module('run')
             ms_kwargs = {
                 **cfg_kwargs,
-                'motif_method': meta.get('motif_method', 'readout'),
-                'noise': meta.get('noise', 'none'),
-                'info_loss_level': meta.get('info_loss_level', 'none'),
-                'info_loss_coef': float(meta.get('info_loss_coef', 0.0)),
+                'motif_method': meta.get('motif_method') or 'readout',
+                'noise': meta.get('noise') or 'none',
+                'info_loss_level': meta.get('info_loss_level') or 'none',
+                'info_loss_coef': _meta_float(meta, 'info_loss_coef', 0.0),
+                'motif_loss_coef': _meta_float(meta, 'motif_loss_coef', 0.0),
+                'within_node_coef': _meta_float(meta, 'within_node_coef', 0.0),
+                'between_motif_coef': _meta_float(meta, 'between_motif_coef', 0.0),
+                'init_r': meta.get('init_r'),
+                'final_r': meta.get('final_r'),
+                'decay_interval': meta.get('decay_interval'),
+                'decay_r': meta.get('decay_r'),
                 'learn_edge_att': bool(meta.get('learn_edge_att', False)),
             }
             cfg = MotifSATConfig(**{k: v for k, v in ms_kwargs.items()
@@ -364,15 +384,20 @@ def main():
     ap.add_argument('--max_graphs', type=int, default=500)
     ap.add_argument('--save', default='masked_node_probe.csv')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--dataset', nargs='*', default=None,
+                    help='only probe runs for these dataset(s), e.g. --dataset mutag')
     args = ap.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    datasets = set(args.dataset) if args.dataset else None
 
     if args.run_dir:
         run_dirs = [Path(args.run_dir)]
     elif args.out_root:
+        from analysis.aggregate_experiments import dataset_allowed
         run_dirs = [p.parent for p in Path(args.out_root).rglob('summary.json')
-                    if _is_probeable_run(p)]
+                    if _is_probeable_run(p)
+                    and (not datasets or dataset_allowed(p, datasets))]
     else:
         raise SystemExit('provide --run_dir or --out_root')
 

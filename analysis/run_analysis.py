@@ -18,7 +18,7 @@ Subcommands
 -----------
     python analysis/run_analysis.py all \
         --out_root results --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT \
-        [--processed_root $PROCESSED_ROOT]
+        [--processed_root $PROCESSED_ROOT] [--dataset mutag]
 
     python analysis/run_analysis.py table  --out_root results
     python analysis/run_analysis.py plots  --out_root results
@@ -66,6 +66,10 @@ DEFAULT_METRICS = ['auc', 'val_auc', 'train_auc',
 
 # ── individual steps ──────────────────────────────────────────────────────────
 
+def _datasets_arg(args) -> list[str] | None:
+    return getattr(args, 'dataset', None) or None
+
+
 def step_regenerate(args) -> int:
     if not (args.data_root and args.vocab_root):
         print('[regenerate] needs --data_root and --vocab_root; skipping.')
@@ -81,6 +85,8 @@ def step_regenerate(args) -> int:
         cmd += ['--processed_root', args.processed_root]
     if getattr(args, 'families', None):
         cmd += ['--families', *args.families]
+    if _datasets_arg(args):
+        cmd += ['--dataset', *_datasets_arg(args)]
     if getattr(args, 'dry_run', False):
         cmd += ['--dry_run']
     print('\n=== regenerate eval metrics from checkpoints ===')
@@ -109,7 +115,10 @@ def step_collect(args) -> int:
     print('\n=== collect summaries -> all_results.csv ===')
     rows = []
     n_cfg = 0
-    for p in iter_summaries(out_root, getattr(args, 'exclude', None)):
+    datasets = _datasets_arg(args)
+    if datasets:
+        print(f'  dataset filter: {sorted(set(datasets))}')
+    for p in iter_summaries(out_root, getattr(args, 'exclude', None), datasets):
         try:
             with open(p, encoding='utf-8') as f:
                 d = json.load(f)
@@ -197,6 +206,16 @@ def step_table(args) -> int:
         print(f'[table] {csv} not found — run collect first.')
         return 1
     df = pd.read_csv(csv)
+    datasets = _datasets_arg(args)
+    if datasets:
+        allowed = set(datasets)
+        if 'dataset' in df.columns:
+            before = len(df)
+            df = df[df['dataset'].astype(str).isin(allowed)].copy()
+            print(f'  dataset filter {sorted(allowed)}: {len(df)}/{before} rows')
+        if df.empty:
+            print('  no rows after dataset filter.')
+            return 1
     save_dir = Path(args.save_dir) if args.save_dir else out_root / 'tables'
     save_dir.mkdir(parents=True, exist_ok=True)
     print('\n=== results tables (dataset×family×variant rows, backbone cols) ===')
@@ -222,6 +241,8 @@ def step_multi_explanation(args) -> int:
     cmd = [sys.executable, str(ANALYSIS / 'run_multi_explanation.py'),
            '--out_root', args.out_root,
            '--data_root', args.data_root, '--vocab_root', args.vocab_root]
+    if _datasets_arg(args):
+        cmd += ['--dataset', *_datasets_arg(args)]
     print('\n=== post-hoc multi-explanation (H0/H1/H2) ===')
     return subprocess.run(cmd).returncode
 
@@ -234,6 +255,8 @@ def step_probe(args) -> int:
            '--out_root', args.out_root,
            '--data_root', args.data_root, '--vocab_root', args.vocab_root,
            '--save', 'masked_node_probe.csv']
+    if _datasets_arg(args):
+        cmd += ['--dataset', *_datasets_arg(args)]
     print('\n=== masked-node feature probe ===')
     return subprocess.run(cmd).returncode
 
@@ -245,6 +268,8 @@ def step_plots(args) -> int:
            '--nbins', str(args.nbins)]
     if args.save_dir:
         cmd += ['--save_dir', args.save_dir]
+    if _datasets_arg(args):
+        cmd += ['--dataset', *_datasets_arg(args)]
     print('\n=== score-vs-impact plots + count table ===')
     return subprocess.run(cmd).returncode
 
@@ -260,7 +285,11 @@ def main():
         p.add_argument('--out_root', required=True)
         p.add_argument('--save_dir', default=None)
 
-    def collect_args(p):
+    def filter_args(p):
+        p.add_argument('--dataset', nargs='*', default=None,
+                       help='only include these dataset(s), e.g. --dataset mutag')
+
+    def collect_args(p, *, with_dataset: bool = True):
         path_args(p)
         p.add_argument('--exclude', nargs='*', default=None,
                        help='extra directory-name prefixes to skip when walking '
@@ -268,8 +297,10 @@ def main():
         p.add_argument('--vocab_variant', nargs='*', default=None,
                        help='collect ONLY these vocab variants, e.g. '
                             '--vocab_variant rbrics_old_filter (default: all).')
+        if with_dataset:
+            filter_args(p)
 
-    def train_args(p):
+    def train_args(p, *, with_dataset: bool = True):
         p.add_argument('--data_root', default=None)
         p.add_argument('--mutag_data_root', default=os.environ.get('MUTAG_DATA_ROOT'))
         p.add_argument('--ogb_data_root', default=os.environ.get('OGB_DATA_ROOT'))
@@ -278,6 +309,8 @@ def main():
         p.add_argument('--families', nargs='*',
                        default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
         p.add_argument('--dry_run', action='store_true')
+        if with_dataset:
+            filter_args(p)
 
     p_re = sub.add_parser('regenerate', help='eval-only on existing checkpoints')
     path_args(p_re)
@@ -290,6 +323,7 @@ def main():
     path_args(p_tb)
     p_tb.add_argument('--csv', default=None)
     p_tb.add_argument('--metrics', nargs='*', default=None)
+    filter_args(p_tb)
 
     p_me = sub.add_parser('multi_explanation', help='post-hoc H0/H1/H2 analysis')
     path_args(p_me)
@@ -301,14 +335,16 @@ def main():
 
     p_pl = sub.add_parser('plots', help='score-vs-impact grid + counts')
     path_args(p_pl)
+    filter_args(p_pl)
     p_pl.add_argument('--group', default='family')
     p_pl.add_argument('--facet', default='variant')
     p_pl.add_argument('--nbins', type=int, default=6)
 
     p_all = sub.add_parser('all',
                            help='regenerate -> multi_explanation -> probe -> collect -> table -> plots')
-    collect_args(p_all)
-    train_args(p_all)
+    collect_args(p_all, with_dataset=False)
+    train_args(p_all, with_dataset=False)
+    filter_args(p_all)
     p_all.add_argument('--csv', default=None)
     p_all.add_argument('--metrics', nargs='*', default=None)
     p_all.add_argument('--group', default='family')

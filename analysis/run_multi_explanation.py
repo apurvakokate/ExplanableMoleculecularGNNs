@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from analysis.aggregate_experiments import resolve_family
+from analysis.aggregate_experiments import resolve_family, dataset_allowed
 from analysis.probe_masked_nodes import _load_model_and_data, _is_probeable_run
 from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 
@@ -101,12 +101,15 @@ def main():
     ap.add_argument('--vocab_root', required=True)
     ap.add_argument('--local_filter', default='p75',
                     choices=['global', 'p50', 'p75', 'beat_unk'])
+    ap.add_argument('--dataset', nargs='*', default=None,
+                    help='only process runs for these dataset(s), e.g. --dataset mutag')
     ap.add_argument('--families', nargs='*', default=['mose', 'motifsat', 'gsat'],
                     help='Only process these families (default: ante-hoc models).')
     args = ap.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     allowed = set(args.families)
+    datasets = set(args.dataset) if args.dataset else None
 
     if args.run_dir:
         run_dirs = [Path(args.run_dir)]
@@ -114,6 +117,8 @@ def main():
         run_dirs = []
         for p in Path(args.out_root).rglob('summary.json'):
             if not _is_probeable_run(p):
+                continue
+            if datasets and not dataset_allowed(p, datasets):
                 continue
             try:
                 with open(p, encoding='utf-8') as f:

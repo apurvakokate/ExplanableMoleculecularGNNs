@@ -86,14 +86,40 @@ REGRESSION_DATASETS = {
 ARCHIVE_PREFIXES = ('_archive', '_trash', '_old')
 
 
-def iter_summaries(root, extra_excludes=()):
+def dataset_allowed(run_path: Path, datasets: set[str] | None) -> bool:
+    """True when *run_path* (run dir or summary.json) belongs to an allowed dataset."""
+    if not datasets:
+        return True
+    allowed = set(datasets)
+    run_dir = run_path.parent if run_path.name == 'summary.json' else Path(run_path)
+    if any(part in allowed for part in run_dir.parts):
+        return True
+    sj = run_dir / 'summary.json'
+    if sj.exists():
+        try:
+            with open(sj, encoding='utf-8') as f:
+                meta = json.load(f)
+            return str(meta.get('dataset', '')) in allowed
+        except Exception:
+            pass
+    return False
+
+
+def iter_summaries(root, extra_excludes=(), datasets=None):
     """Yield every summary.json under ``root`` whose relative path does NOT pass
-    through an excluded directory (archive/scratch dirs by default)."""
+    through an excluded directory (archive/scratch dirs by default).
+
+    When *datasets* is set (e.g. ``{'mutag'}``), only yields summaries for those
+    datasets (matched by path segment or ``summary.json`` metadata).
+    """
     root = Path(root)
     excl = tuple(ARCHIVE_PREFIXES) + tuple(extra_excludes or ())
+    allowed = set(datasets) if datasets else None
     for p in root.rglob('summary.json'):
         rel = p.relative_to(root)
         if any(part.startswith(excl) for part in rel.parts):
+            continue
+        if not dataset_allowed(p, allowed):
             continue
         yield p
 

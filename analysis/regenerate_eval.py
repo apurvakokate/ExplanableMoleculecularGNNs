@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from analysis.aggregate_experiments import resolve_family
+from analysis.aggregate_experiments import resolve_family, dataset_allowed
 from SharedModules.data.dataset_routing import (
     base_from_stored_processed_root,
     mutag_artifact_paths,
@@ -45,6 +45,13 @@ from SharedModules.data.dataset_routing import (
 
 def _flag(b):
     return bool(b)
+
+
+def _meta_float(meta: dict, key: str, default: float = 0.0) -> float:
+    val = meta.get(key)
+    if val is None:
+        return default
+    return float(val)
 
 
 def _family_allowed(fam: str, allowed: set[str]) -> bool:
@@ -182,7 +189,7 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
         cmd += ['--motif_method', str(meta.get('motif_method', 'readout')),
                 '--noise', str(meta.get('noise', 'none')),
                 '--info_loss_level', str(meta.get('info_loss_level', 'none')),
-                '--info_loss_coef', str(meta.get('info_loss_coef', 0.0))]
+                '--info_loss_coef', str(_meta_float(meta, 'info_loss_coef', 0.0))]
         for f, name in ((meta.get('w_feat'), '--w_feat'),
                         (meta.get('w_message'), '--w_message'),
                         (meta.get('w_readout'), '--w_readout'),
@@ -215,6 +222,8 @@ def main():
     ap.add_argument('--processed_root', default=None)
     ap.add_argument('--families', nargs='*',
                     default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
+    ap.add_argument('--dataset', nargs='*', default=None,
+                    help='only regenerate runs for these dataset(s), e.g. --dataset mutag')
     ap.add_argument('--dry_run', action='store_true',
                     help='Print the commands without running them.')
     args = ap.parse_args()
@@ -226,8 +235,13 @@ def main():
 
     out_root = Path(args.out_root)
     allowed = set(args.families)
+    datasets = set(args.dataset) if args.dataset else None
     runs = sorted({p.parent for p in out_root.rglob('best_model.pt')})
-    print(f'Found {len(runs)} checkpoint(s) under {out_root}\n')
+    if datasets:
+        runs = [rd for rd in runs if dataset_allowed(rd, datasets)]
+        print(f'Dataset filter {sorted(datasets)}: {len(runs)} checkpoint(s)\n')
+    else:
+        print(f'Found {len(runs)} checkpoint(s) under {out_root}\n')
 
     ran = skipped = failed = 0
     for run_dir in runs:
