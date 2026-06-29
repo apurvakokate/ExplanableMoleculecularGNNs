@@ -169,8 +169,12 @@ if ! _is_special_dataset "$DATASET"; then
 fi
 PHASES+=(
   phase5_vanilla phase5_mose phase5_gsat phase5_motifsat phase5_baselines
-  collect
 )
+# GT vanilla + post-hoc baselines (CSV benchmarks with phase-4 gt_cache only).
+if ! _is_special_dataset "$DATASET"; then
+    PHASES+=( phase5_vanilla_gt phase5_baselines_gt )
+fi
+PHASES+=( collect )
 [ "$RUN_ANALYZE" = "1" ] && PHASES+=( analyze )
 
 run_pipeline() {
