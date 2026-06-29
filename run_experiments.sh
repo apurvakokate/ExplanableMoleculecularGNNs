@@ -757,13 +757,16 @@ run_baselines_gt() {
 
 apply_gt() {
     # Write relabelled graph objects to gt_cache for CSV datasets × folds.
+    # Honour DATASETS (single-dataset pipeline), not the full DATASETS_CSV list.
     local variant=$1 rule_idx=$2
-    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx"
-    for ds in $DATASETS_CSV; do
-        if ! _skip_synthetic_gt_dataset "$ds"; then
-            echo "  [skip] $ds — not in GT_SUPPORTED_DATASETS"
-            continue
-        fi
+    local gt_ds
+    gt_ds=$(_phase5_gt_datasets)
+    if [ -z "$gt_ds" ]; then
+        echo "  [skip] no GT-supported dataset in DATASETS=$DATASETS"
+        return 0
+    fi
+    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx datasets:$gt_ds"
+    for ds in $gt_ds; do
         for fold in $FOLDS; do
             python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
@@ -1353,7 +1356,7 @@ case "$PHASE" in
         echo "  phase1            fragment all 4 variants (rbrics_old, rbrics, struct_fallback, all_fallback_bpe)"
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
         echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
-        echo "  phase4            synthetic GT (all 4 base variants; VOCAB_FOCUS)"
+        echo "  phase4            synthetic GT (DATASETS; VOCAB_FOCUS base variants)"
         echo "  phase5_vanilla    vanilla GNN (exactly one DATASET; SKIP_EXISTING on by default)"
         echo "  phase5_mose       MOSE-GNN (one DATASET; filtered + base + GT per VOCAB_FOCUS)"
         echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base variants)"

@@ -147,11 +147,11 @@ EOF
 fi
 
 export DATASETS="$DATASET"
-# CSV benchmarks only — mutag/OGB use source GT, not phase4 synthetic relabel.
+# Force single-dataset scope (do not inherit a full DATASETS_CSV from the shell).
 if _is_special_dataset "$DATASET"; then
-    export DATASETS_CSV="${DATASETS_CSV:-}"
+    export DATASETS_CSV=""
 else
-    export DATASETS_CSV="${DATASETS_CSV:-$DATASET}"
+    export DATASETS_CSV="$DATASET"
 fi
 
 # shellcheck disable=SC1091
