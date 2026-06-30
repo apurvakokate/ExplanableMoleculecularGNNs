@@ -71,6 +71,8 @@ class VanillaConfig:
     run_pgexplainer: bool  = True
     run_mage: bool         = True
     run_motif_impact: bool = True
+    explainer_max_graphs: Optional[int] = None
+    pgex_explain_model: bool = True
     max_motifs_eval: Optional[int] = None
     load_weights_from: Optional[str] = None  # dir containing best_model.pt
     weight_vocab_variant: Optional[str] = None  # vocab variant of loaded weights
@@ -295,7 +297,9 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_gnnexplainer:
         try:
             print('\n  Running GNNExplainer ...')
-            gnnex_scores = run_gnnexplainer(model, test_list, vocab, device, task_type)
+            gnnex_scores = run_gnnexplainer(
+                model, test_list, vocab, device, task_type,
+                max_graphs=cfg.explainer_max_graphs)
             _save_explainer_scores(gnnex_scores, out_dir / 'gnnexplainer_motif_scores', vocab)
             results['gnnexplainer_mean'] = gnnex_scores.get('mean', {})
             results['gnnexplainer_max']  = gnnex_scores.get('max', {})
@@ -306,7 +310,10 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_pgexplainer:
         try:
             print('\n  Running PGExplainer ...')
-            pgex_scores = run_pgexplainer(model, loaders, test_list, vocab, device, task_type)
+            pgex_scores = run_pgexplainer(
+                model, loaders, test_list, vocab, device, task_type,
+                max_graphs=cfg.explainer_max_graphs,
+                explain_model=cfg.pgex_explain_model)
             _save_explainer_scores(pgex_scores, out_dir / 'pgexplainer_motif_scores', vocab)
             results['pgexplainer_mean'] = pgex_scores.get('mean', {})
             results['pgexplainer_max']  = pgex_scores.get('max', {})
@@ -542,6 +549,12 @@ def main():
                              'launcher to avoid double dataset/fold nesting.')
     parser.add_argument('--no_gnnexplainer', action='store_true')
     parser.add_argument('--no_pgexplainer',  action='store_true')
+    parser.add_argument('--pgex_phenomenon', action='store_true',
+                        help='PGExplainer: explain ground-truth labels instead of '
+                             'model predictions (PyG only supports phenomenon mode).')
+    parser.add_argument('--explainer_max_graphs', type=int, default=None,
+                        help='Cap test graphs for GNNExplainer/PGExplainer '
+                             '(default: all test graphs).')
     parser.add_argument('--no_mage',         action='store_true')
     parser.add_argument('--use_wandb',       action='store_true',
                         help='Initialise a W&B run and log the final summary.')
@@ -579,6 +592,8 @@ def main():
         out_dir=args.out_dir, seed=args.seed,
         run_gnnexplainer=not args.no_gnnexplainer,
         run_pgexplainer=not args.no_pgexplainer,
+        pgex_explain_model=not args.pgex_phenomenon,
+        explainer_max_graphs=args.explainer_max_graphs,
         run_mage=not args.no_mage,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,

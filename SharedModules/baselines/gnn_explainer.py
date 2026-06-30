@@ -45,7 +45,7 @@ def run_gnnexplainer(
     device: torch.device,
     task_type: str = 'BinaryClass',
     epochs: int = 200,
-    max_graphs: Optional[int] = 200,
+    max_graphs: Optional[int] = None,
 ) -> NodeScoreResult:
     """Per-motif importance scores from GNNExplainer node masks.
 

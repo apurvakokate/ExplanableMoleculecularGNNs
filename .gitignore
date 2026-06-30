@@ -37,6 +37,9 @@ env/
 data/mutag/processed/
 data/mutag/raw/Mutagenicity.pkl
 
+# ── Design retrospective (report/deck + exported source chats; not for GitHub) ─
+reports/
+
 # ── OS / editor ─────────────────────────────────────────────────────────────
 .DS_Store
 .idea/
