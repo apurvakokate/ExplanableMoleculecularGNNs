@@ -71,7 +71,9 @@ class VanillaConfig:
     run_pgexplainer: bool  = True
     run_mage: bool         = True
     run_motif_impact: bool = True
-    explainer_max_graphs: Optional[int] = None
+    gnnex_max_graphs: Optional[int] = 200
+    gnnex_epochs: int = 100
+    pgex_max_graphs: Optional[int] = None
     pgex_explain_model: bool = True
     max_motifs_eval: Optional[int] = None
     load_weights_from: Optional[str] = None  # dir containing best_model.pt
@@ -299,7 +301,9 @@ def run(cfg: VanillaConfig) -> dict:
             print('\n  Running GNNExplainer ...')
             gnnex_scores = run_gnnexplainer(
                 model, test_list, vocab, device, task_type,
-                max_graphs=cfg.explainer_max_graphs)
+                epochs=cfg.gnnex_epochs,
+                max_graphs=cfg.gnnex_max_graphs,
+                verbose=cfg.verbose)
             _save_explainer_scores(gnnex_scores, out_dir / 'gnnexplainer_motif_scores', vocab)
             results['gnnexplainer_mean'] = gnnex_scores.get('mean', {})
             results['gnnexplainer_max']  = gnnex_scores.get('max', {})
@@ -312,7 +316,7 @@ def run(cfg: VanillaConfig) -> dict:
             print('\n  Running PGExplainer ...')
             pgex_scores = run_pgexplainer(
                 model, loaders, test_list, vocab, device, task_type,
-                max_graphs=cfg.explainer_max_graphs,
+                max_graphs=cfg.pgex_max_graphs,
                 explain_model=cfg.pgex_explain_model)
             _save_explainer_scores(pgex_scores, out_dir / 'pgexplainer_motif_scores', vocab)
             results['pgexplainer_mean'] = pgex_scores.get('mean', {})
@@ -552,9 +556,17 @@ def main():
     parser.add_argument('--pgex_phenomenon', action='store_true',
                         help='PGExplainer: explain ground-truth labels instead of '
                              'model predictions (PyG only supports phenomenon mode).')
+    parser.add_argument('--gnnex_max_graphs', type=int, default=None,
+                        help='Cap test graphs for GNNExplainer (default: 200). '
+                             '0 or negative = all test graphs.')
+    parser.add_argument('--gnnex_epochs', type=int, default=None,
+                        help='GNNExplainer optimization epochs per graph (default: 100).')
+    parser.add_argument('--pgex_max_graphs', type=int, default=None,
+                        help='Cap test graphs for PGExplainer (default: all test graphs). '
+                             '0 or negative = all test graphs.')
     parser.add_argument('--explainer_max_graphs', type=int, default=None,
-                        help='Cap test graphs for GNNExplainer/PGExplainer '
-                             '(default: all test graphs).')
+                        help='Set both GNNExplainer and PGExplainer graph caps '
+                             '(overrides --gnnex_max_graphs / --pgex_max_graphs).')
     parser.add_argument('--no_mage',         action='store_true')
     parser.add_argument('--use_wandb',       action='store_true',
                         help='Initialise a W&B run and log the final summary.')
@@ -579,8 +591,23 @@ def main():
                         help='mutag only: RNG seed when splits pickle is absent.')
     args = parser.parse_args()
 
+    def _cap(v: Optional[int]) -> Optional[int]:
+        """<=0 = no cap (all test graphs); else cap at v."""
+        if v is None:
+            return None
+        return None if v <= 0 else v
+
+    if args.explainer_max_graphs is not None:
+        shared = _cap(args.explainer_max_graphs)
+        gnnex_max, pgex_max = shared, shared
+    else:
+        gnnex_max = 200 if args.gnnex_max_graphs is None else _cap(args.gnnex_max_graphs)
+        pgex_max = None if args.pgex_max_graphs is None else _cap(args.pgex_max_graphs)
+    gnnex_epochs = args.gnnex_epochs if args.gnnex_epochs is not None else 100
+
     base_proc = default_processed_base(args.data_root, args.processed_root)
     proc_root = variant_processed_root(base_proc, args.vocab_variant)
+
     cfg = VanillaConfig(
         dataset=args.dataset, fold=args.fold, backbone=args.backbone,
         node_encoder=args.node_encoder, apply_layer_norm=args.apply_layer_norm,
@@ -593,7 +620,9 @@ def main():
         run_gnnexplainer=not args.no_gnnexplainer,
         run_pgexplainer=not args.no_pgexplainer,
         pgex_explain_model=not args.pgex_phenomenon,
-        explainer_max_graphs=args.explainer_max_graphs,
+        gnnex_max_graphs=gnnex_max,
+        gnnex_epochs=gnnex_epochs,
+        pgex_max_graphs=pgex_max,
         run_mage=not args.no_mage,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,

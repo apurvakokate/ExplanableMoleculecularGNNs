@@ -423,6 +423,16 @@ run_frag_thresh() {
     done
 }
 
+# Post-hoc explainer caps (phase5_baselines). GNNExplainer optimizes per graph.
+_baseline_explainer_flags() {
+    local flags=""
+    [ -n "${GNNEX_MAX_GRAPHS:-}" ] && flags="$flags --gnnex_max_graphs $GNNEX_MAX_GRAPHS"
+    [ -n "${GNNEX_EPOCHS:-}" ] && flags="$flags --gnnex_epochs $GNNEX_EPOCHS"
+    [ -n "${PGEX_MAX_GRAPHS:-}" ] && flags="$flags --pgex_max_graphs $PGEX_MAX_GRAPHS"
+    [ -n "${EXPLAINER_MAX_GRAPHS:-}" ] && flags="$flags --explainer_max_graphs $EXPLAINER_MAX_GRAPHS"
+    echo "$flags"
+}
+
 # ── Helper: training runners ───────────────────────────────────────────────────
 run_vanilla() {
     local variant=$1
@@ -689,6 +699,7 @@ run_baselines() {
                     --weight_vocab_variant "$weight_variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
+                    $(_baseline_explainer_flags) \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -746,6 +757,7 @@ run_baselines_gt() {
                     --weight_vocab_variant "$variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
+                    $(_baseline_explainer_flags) \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS

@@ -44,10 +44,16 @@ def run_gnnexplainer(
     vocab,
     device: torch.device,
     task_type: str = 'BinaryClass',
-    epochs: int = 200,
-    max_graphs: Optional[int] = None,
+    epochs: int = 100,
+    max_graphs: Optional[int] = 200,
+    verbose: bool = True,
 ) -> NodeScoreResult:
     """Per-motif importance scores from GNNExplainer node masks.
+
+    GNNExplainer optimizes a mask **per graph** (``epochs`` steps each), so cost
+    scales with the number of explained test graphs. Default ``max_graphs=200``
+    keeps pipeline sweeps tractable; set ``max_graphs=None`` for the full test
+    set (slow on BBBP-scale benchmarks).
 
     Returns
     -------
@@ -62,8 +68,8 @@ def run_gnnexplainer(
             self._inner = inner
 
         def forward(self, x, edge_index, batch=None, **kwargs):
-            out = self._inner(x, edge_index, batch,
-                              getattr(self._inner, 'nodes_to_motifs', None))
+            n2m = kwargs.get('nodes_to_motifs')
+            out = self._inner(x, edge_index, batch, n2m)
             return out[0] if isinstance(out, (tuple, list)) else out
 
     wrapped = _Wrapper(model).to(device)
@@ -91,8 +97,15 @@ def run_gnnexplainer(
     max_cnt:  Dict[int, int]   = {}
 
     graphs = data_list[:max_graphs] if max_graphs else data_list
+    n_total = len(graphs)
+    if verbose and n_total > 0:
+        cap = f'first {max_graphs}' if max_graphs and max_graphs < len(data_list) else str(n_total)
+        print(f'    GNNExplainer: {n_total} graph(s) ({cap} of {len(data_list)} test), '
+              f'{epochs} epochs/graph')
 
-    for data in graphs:
+    for gi, data in enumerate(graphs):
+        if verbose and n_total > 25 and gi > 0 and gi % 25 == 0:
+            print(f'    GNNExplainer: {gi}/{n_total} graphs ...')
         data = data.to(device)
         n   = data.x.size(0)
         n2m = getattr(data, 'nodes_to_motifs', None)
@@ -101,8 +114,11 @@ def run_gnnexplainer(
 
         try:
             if explainer is not None:
-                expl      = explainer(data.x, data.edge_index,
-                                      batch=torch.zeros(n, dtype=torch.long, device=device))
+                expl      = explainer(
+                    data.x, data.edge_index,
+                    batch=torch.zeros(n, dtype=torch.long, device=device),
+                    nodes_to_motifs=n2m,
+                )
                 node_mask = expl.node_mask.mean(dim=-1).abs().detach().cpu()
             else:
                 node_mask = _gradient_saliency(wrapped, data, device)
