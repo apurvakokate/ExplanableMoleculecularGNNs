@@ -87,12 +87,22 @@ def _pg_target(
     **model_kwargs,
 ) -> torch.Tensor:
     """Target passed to PGExplainer train/explain (GT label or model prediction)."""
+    x = data.x.to(device)
+    edge_index = data.edge_index.to(device)
     if batch is None:
-        batch = torch.zeros(data.x.size(0), dtype=torch.long, device=device)
+        batch = torch.zeros(x.size(0), dtype=torch.long, device=device)
+    else:
+        batch = batch.to(device)
+    mk = {
+        k: (v.to(device) if torch.is_tensor(v) else v)
+        for k, v in model_kwargs.items()
+    }
     if explain_model:
-        return _model_graph_target(
-            wrapped, data.x, data.edge_index, batch, task_type, **model_kwargs)
-    return _graph_target(data)
+        tgt = _model_graph_target(
+            wrapped, x, edge_index, batch, task_type, **mk)
+    else:
+        tgt = _graph_target(data).to(device)
+    return tgt.to(device)
 
 
 def _aggregate_motif_scores(
@@ -202,6 +212,7 @@ def run_pgexplainer(
                 return_type='raw',
             ),
         )
+        explainer.algorithm.to(device)
 
         print(f'    Training PGExplainer ({epochs} epochs) ...')
         if explain_model:
@@ -219,12 +230,13 @@ def run_pgexplainer(
             print(f'    PGExplainer train: {train_ok} ok, {train_fail} skipped/failed')
 
         def _explain_graph(data: Data) -> Optional[torch.Tensor]:
+            data = data.to(device)
             n = data.x.size(0)
             batch = torch.zeros(n, dtype=torch.long, device=device)
             kwargs = {}
             n2m = getattr(data, 'nodes_to_motifs', None)
             if n2m is not None:
-                kwargs['nodes_to_motifs'] = n2m
+                kwargs['nodes_to_motifs'] = n2m.to(device)
             target = _pg_target(
                 wrapped, data, device, task_type, explain_model,
                 batch=batch, **kwargs)
@@ -274,8 +286,10 @@ def _train_pgexplainer(
             model_kwargs = {}
             n2m = getattr(batch_data, 'nodes_to_motifs', None)
             if n2m is not None:
-                model_kwargs['nodes_to_motifs'] = n2m
+                model_kwargs['nodes_to_motifs'] = n2m.to(device)
             batch_vec = getattr(batch_data, 'batch', None)
+            if batch_vec is not None:
+                batch_vec = batch_vec.to(device)
 
             target = _pg_target(
                 wrapped, batch_data, device, task_type, explain_model,
