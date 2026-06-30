@@ -44,7 +44,7 @@ def run_gnnexplainer(
     vocab,
     device: torch.device,
     task_type: str = 'BinaryClass',
-    epochs: int = 100,
+    epochs: int = 200,
     max_graphs: Optional[int] = None,
     verbose: bool = True,
 ) -> NodeScoreResult:

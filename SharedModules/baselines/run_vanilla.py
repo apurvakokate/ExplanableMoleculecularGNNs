@@ -72,7 +72,7 @@ class VanillaConfig:
     run_mage: bool         = True
     run_motif_impact: bool = True
     gnnex_max_graphs: Optional[int] = None
-    gnnex_epochs: int = 100
+    gnnex_epochs: int = 200
     pgex_max_graphs: Optional[int] = None
     pgex_explain_model: bool = True
     max_motifs_eval: Optional[int] = None
@@ -565,7 +565,7 @@ def main():
                         help='Cap test graphs for GNNExplainer (default: all test '
                              'graphs). 0 or negative also means no cap.')
     parser.add_argument('--gnnex_epochs', type=int, default=None,
-                        help='GNNExplainer optimization epochs per graph (default: 100).')
+                        help='GNNExplainer optimization epochs per graph (default: 200).')
     parser.add_argument('--pgex_max_graphs', type=int, default=None,
                         help='Cap test graphs for PGExplainer (default: all test graphs). '
                              '0 or negative = all test graphs.')
@@ -608,7 +608,7 @@ def main():
     else:
         gnnex_max = None if args.gnnex_max_graphs is None else _cap(args.gnnex_max_graphs)
         pgex_max = None if args.pgex_max_graphs is None else _cap(args.pgex_max_graphs)
-    gnnex_epochs = args.gnnex_epochs if args.gnnex_epochs is not None else 100
+    gnnex_epochs = args.gnnex_epochs if args.gnnex_epochs is not None else 200
 
     base_proc = default_processed_base(args.data_root, args.processed_root)
     proc_root = variant_processed_root(base_proc, args.vocab_variant)

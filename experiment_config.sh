@@ -106,10 +106,10 @@ export SKIP_EXISTING="${SKIP_EXISTING:-1}"
 export WANDB_FLAGS="${WANDB_FLAGS:-}"
 
 # ── Post-hoc explainers (phase5_baselines) ────────────────────────────────────
-# GNNExplainer: ``GNNEX_EPOCHS`` optimization steps per test graph (default 100).
+# GNNExplainer: ``GNNEX_EPOCHS`` optimization steps per test graph (default 200).
 # Optional cap for quick sweeps only — unset = all test graphs.
 # export GNNEX_MAX_GRAPHS=200
-export GNNEX_EPOCHS="${GNNEX_EPOCHS:-100}"
+export GNNEX_EPOCHS="${GNNEX_EPOCHS:-200}"
 # export PGEX_MAX_GRAPHS=   # unset = all test graphs
 
 # ── Confirmation ──────────────────────────────────────────────────────────────
