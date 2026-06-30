@@ -106,10 +106,9 @@ export SKIP_EXISTING="${SKIP_EXISTING:-1}"
 export WANDB_FLAGS="${WANDB_FLAGS:-}"
 
 # ── Post-hoc explainers (phase5_baselines) ────────────────────────────────────
-# GNNExplainer runs ``GNNEX_EPOCHS`` optimization steps per test graph; cap
-# graphs to keep BBBP-scale sweeps tractable. PGExplainer trains once then
-# explains all graphs (default: no cap). Use 0 for either cap = full test set.
-export GNNEX_MAX_GRAPHS="${GNNEX_MAX_GRAPHS:-200}"
+# GNNExplainer: ``GNNEX_EPOCHS`` optimization steps per test graph (default 100).
+# Optional cap for quick sweeps only — unset = all test graphs.
+# export GNNEX_MAX_GRAPHS=200
 export GNNEX_EPOCHS="${GNNEX_EPOCHS:-100}"
 # export PGEX_MAX_GRAPHS=   # unset = all test graphs
 
@@ -125,7 +124,7 @@ echo "  SPECIAL    = $DATASETS_SPECIAL"
 echo "  CONV_NORM  = $CONV_NORMALIZE"
 echo "  BACKBONES  = $BACKBONES"
 echo "  EPOCHS     = $EPOCHS   (phase 5 max; early stopping may finish earlier)"
-echo "  GNNEX      = max_graphs=$GNNEX_MAX_GRAPHS epochs=$GNNEX_EPOCHS"
+echo "  GNNEX      = max_graphs=${GNNEX_MAX_GRAPHS:-all} epochs=$GNNEX_EPOCHS"
 echo "  MUTAG_ROOT = $MUTAG_DATA_ROOT"
 echo "  OGB_ROOT   = $OGB_DATA_ROOT"
 if [ -n "$VOCAB_FOCUS" ]; then

@@ -45,15 +45,14 @@ def run_gnnexplainer(
     device: torch.device,
     task_type: str = 'BinaryClass',
     epochs: int = 100,
-    max_graphs: Optional[int] = 200,
+    max_graphs: Optional[int] = None,
     verbose: bool = True,
 ) -> NodeScoreResult:
     """Per-motif importance scores from GNNExplainer node masks.
 
     GNNExplainer optimizes a mask **per graph** (``epochs`` steps each), so cost
-    scales with the number of explained test graphs. Default ``max_graphs=200``
-    keeps pipeline sweeps tractable; set ``max_graphs=None`` for the full test
-    set (slow on BBBP-scale benchmarks).
+    scales with the number of explained test graphs. Default ``max_graphs=None``
+    uses the full test split; pass a positive int to cap (e.g. for quick sweeps).
 
     Returns
     -------
@@ -97,11 +96,17 @@ def run_gnnexplainer(
     max_cnt:  Dict[int, int]   = {}
 
     graphs = data_list[:max_graphs] if max_graphs else data_list
+    n_test = len(data_list)
     n_total = len(graphs)
     if verbose and n_total > 0:
-        cap = f'first {max_graphs}' if max_graphs and max_graphs < len(data_list) else str(n_total)
-        print(f'    GNNExplainer: {n_total} graph(s) ({cap} of {len(data_list)} test), '
-              f'{epochs} epochs/graph')
+        if max_graphs is None:
+            cap_note = 'no cap — all test graphs'
+        elif max_graphs >= n_test:
+            cap_note = f'cap={max_graphs} (≥ test size — all test graphs)'
+        else:
+            cap_note = f'cap={max_graphs} of {n_test} test graphs'
+        print(f'    GNNExplainer: explaining {n_total}/{n_test} test graph(s) '
+              f'({cap_note}), {epochs} epochs/graph')
 
     for gi, data in enumerate(graphs):
         if verbose and n_total > 25 and gi > 0 and gi % 25 == 0:

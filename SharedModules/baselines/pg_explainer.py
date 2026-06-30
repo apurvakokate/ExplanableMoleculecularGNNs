@@ -271,17 +271,19 @@ def _train_pgexplainer(
             if batch_data.x is None:
                 continue
             batch_data = batch_data.to(device)
-            kwargs = {}
+            model_kwargs = {}
             n2m = getattr(batch_data, 'nodes_to_motifs', None)
             if n2m is not None:
-                kwargs['nodes_to_motifs'] = n2m
+                model_kwargs['nodes_to_motifs'] = n2m
             batch_vec = getattr(batch_data, 'batch', None)
-            if batch_vec is not None:
-                kwargs['batch'] = batch_vec
 
             target = _pg_target(
                 wrapped, batch_data, device, task_type, explain_model,
-                batch=batch_vec, **kwargs)
+                batch=batch_vec, **model_kwargs)
+
+            train_kwargs = dict(model_kwargs)
+            if batch_vec is not None:
+                train_kwargs['batch'] = batch_vec
 
             n_graphs = int(getattr(batch_data, 'num_graphs', 1))
             indices = range(n_graphs) if n_graphs > 1 else [None]
@@ -292,7 +294,7 @@ def _train_pgexplainer(
                         batch_data.x, batch_data.edge_index,
                         target=target,
                         index=g_idx,
-                        **kwargs,
+                        **train_kwargs,
                     )
                     train_ok += 1
                 except Exception as e:

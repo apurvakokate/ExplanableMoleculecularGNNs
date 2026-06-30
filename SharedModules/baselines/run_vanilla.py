@@ -71,7 +71,7 @@ class VanillaConfig:
     run_pgexplainer: bool  = True
     run_mage: bool         = True
     run_motif_impact: bool = True
-    gnnex_max_graphs: Optional[int] = 200
+    gnnex_max_graphs: Optional[int] = None
     gnnex_epochs: int = 100
     pgex_max_graphs: Optional[int] = None
     pgex_explain_model: bool = True
@@ -299,6 +299,11 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_gnnexplainer:
         try:
             print('\n  Running GNNExplainer ...')
+            _gnnex_cap = ('all test graphs'
+                          if cfg.gnnex_max_graphs is None
+                          else f'first {cfg.gnnex_max_graphs} test graphs')
+            print(f'    settings: max_graphs={cfg.gnnex_max_graphs!r} → {_gnnex_cap}, '
+                  f'epochs={cfg.gnnex_epochs} (test split only, not train/valid)')
             gnnex_scores = run_gnnexplainer(
                 model, test_list, vocab, device, task_type,
                 epochs=cfg.gnnex_epochs,
@@ -557,8 +562,8 @@ def main():
                         help='PGExplainer: explain ground-truth labels instead of '
                              'model predictions (PyG only supports phenomenon mode).')
     parser.add_argument('--gnnex_max_graphs', type=int, default=None,
-                        help='Cap test graphs for GNNExplainer (default: 200). '
-                             '0 or negative = all test graphs.')
+                        help='Cap test graphs for GNNExplainer (default: all test '
+                             'graphs). 0 or negative also means no cap.')
     parser.add_argument('--gnnex_epochs', type=int, default=None,
                         help='GNNExplainer optimization epochs per graph (default: 100).')
     parser.add_argument('--pgex_max_graphs', type=int, default=None,
@@ -601,7 +606,7 @@ def main():
         shared = _cap(args.explainer_max_graphs)
         gnnex_max, pgex_max = shared, shared
     else:
-        gnnex_max = 200 if args.gnnex_max_graphs is None else _cap(args.gnnex_max_graphs)
+        gnnex_max = None if args.gnnex_max_graphs is None else _cap(args.gnnex_max_graphs)
         pgex_max = None if args.pgex_max_graphs is None else _cap(args.pgex_max_graphs)
     gnnex_epochs = args.gnnex_epochs if args.gnnex_epochs is not None else 100
 
