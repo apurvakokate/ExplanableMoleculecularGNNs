@@ -160,6 +160,7 @@ def step_collect(args) -> int:
     df = collapse_redundant_folds(df)
 
     core = [c for c in ['exp_dir', 'family', 'dataset', 'backbone', 'vocab_variant',
+                        'vocab_base', 'is_filter', 'is_relabelled', 'use_gt',
                         *ALL_AXES, 'fold',
                         'motif_method', 'noise', 'info_loss_coef',
                         'ent_reg', 'size_reg', 'num_layers', 'explainer_lr', 'gnn_lr',
@@ -199,7 +200,7 @@ def step_collect(args) -> int:
 
 def step_table(args) -> int:
     import pandas as pd
-    from analysis.make_results_table import build
+    from analysis.make_results_table import build, PREDICTION_METRICS
     out_root = Path(args.out_root)
     csv = Path(args.csv) if args.csv else out_root / 'all_results.csv'
     if not csv.exists():
@@ -218,19 +219,27 @@ def step_table(args) -> int:
             return 1
     save_dir = Path(args.save_dir) if args.save_dir else out_root / 'tables'
     save_dir.mkdir(parents=True, exist_ok=True)
-    print('\n=== results tables (dataset×family×synthetic×variant rows, backbone cols) ===')
+    print('\n=== results tables (dataset×family×synthetic×vocab_base×filter rows) ===')
     metrics = args.metrics or [m for m in DEFAULT_METRICS if m in df.columns]
     for metric in metrics:
-        if metric not in df.columns:
+        mode = 'prediction' if metric in PREDICTION_METRICS else 'explanation'
+        if metric not in df.columns and mode == 'explanation':
+            # Post-hoc metrics live on expanded explainer rows, not raw CSV cols.
+            pass
+        elif metric not in df.columns:
             print(f'  [skip] metric {metric} not in CSV')
             continue
-        tbl = build(df, metric)
-        md = save_dir / f'results_table_{metric}.md'
+        tbl = build(df, metric, mode=mode)
+        if tbl.empty:
+            print(f'  [skip] metric {metric}: no rows after pivot')
+            continue
+        suffix = '' if mode == 'auto' else f'_{mode}'
+        md = save_dir / f'results_table_{metric}{suffix}.md'
         try:
             md.write_text(tbl.to_markdown())
         except Exception:
             md.write_text(tbl.to_string())
-        print(f'  wrote {md}')
+        print(f'  wrote {md}  ({mode}, {len(tbl)} rows)')
     return 0
 
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """make_results_table.py — pivot all_results.csv to dataset×run rows, backbone cols.
 
-Rows  : dataset × family × synthetic (real|gt) × vocab_variant
+Rows  : dataset × family × synthetic (real|gt) × vocab_base × is_filter
 Cols  : backbone (GIN, GCN, GAT, SAGE, PNA)
-Cells : mean ± std of the chosen metric over folds
+Cells : mean ± std of the chosen metric over folds (single value when one fold, e.g. mutag)
 
 The ``synthetic`` axis separates real-label runs from GT-relabelled training
-(MOSE/MotifSAT ``*_relabelled`` variants, vanilla/baselines ``*_gt`` dirs).
-Without it, headline AUC mixes incompatible label targets.
+(vocab ``*_relabelled``, summary ``use_gt`` for vanilla/baselines). ``vocab_base``
+and ``is_filter`` split the bundled ``vocab_variant`` string (E10).
 
 Usage
 -----
     python analysis/make_results_table.py all_results.csv --metric auc
-    python analysis/make_results_table.py all_results.csv --metric auc --md out.md
+    python analysis/make_results_table.py all_results.csv --metric pearson --mode explanation
 """
 from __future__ import annotations
 import argparse
@@ -25,6 +25,41 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 BACKBONE_ORDER = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
+PIVOT_INDEX = ['dataset', 'family', 'synthetic', 'vocab_base', 'is_filter']
+
+PREDICTION_METRICS = frozenset({
+    'auc', 'val_auc', 'train_auc', 'rmse', 'mae', 'rmse_orig', 'mae_orig',
+})
+
+# Ante-hoc families that produce NODE-level scores: node GT-ROC differs under
+# mean- vs max-pooling, so report both (like the post-hoc baselines). MOSE and
+# MotifSAT produce MOTIF-level scores, so mean == max — they keep one value.
+NODE_SCORING_FAMILIES = frozenset({'gsat'})
+NODE_POOL_SRC = {'mean': 'gt_roc_node_mean_auc_mean', 'max': 'gt_roc_node_max_auc_mean'}
+
+
+def _expand_node_pooling(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """For node GT-ROC, split node-scoring ante-hoc families (GSAT) into mean/max
+    pooled rows; all other families get a single blank-agg row (mean == max)."""
+    df = df.copy()
+    if 'family' not in df.columns:
+        df['explainer_agg'] = ''
+        return df
+    is_node = (metric == 'gt_roc_node_auc_mean') and \
+        all(c in df.columns for c in NODE_POOL_SRC.values())
+    split = is_node & df['family'].astype(str).isin(NODE_SCORING_FAMILIES)
+    keep = df[~split].copy()
+    keep['explainer_agg'] = ''
+    if not split.any():
+        return keep
+    src = df[split]
+    pieces = [keep]
+    for agg, col in NODE_POOL_SRC.items():
+        sub = src.copy()
+        sub['explainer_agg'] = agg
+        sub[metric] = src[col]
+        pieces.append(sub)
+    return pd.concat(pieces, ignore_index=True)
 
 
 def _cell(g: pd.Series) -> str:
@@ -71,32 +106,62 @@ def _ensure_family(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_synthetic(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure ``synthetic`` is ``real`` or ``gt`` (never blank / mixed in pivot)."""
+    """Ensure ``synthetic`` is ``real`` or ``gt`` via central ``normalize()``."""
     from analysis.aggregate_experiments import normalize
 
     df = df.copy()
     if 'exp_dir' not in df.columns:
         df['exp_dir'] = ''
-    df = normalize(df)
-    syn = df.get('synthetic', pd.Series([''] * len(df))).fillna('').astype(str).str.strip()
-    if 'use_gt' in df.columns:
-        gt_flag = df['use_gt'].astype(str).str.lower().isin(('true', '1', 'yes'))
-        syn = syn.where(~gt_flag, 'gt')
-    vv = df.get('vocab_variant', pd.Series([''] * len(df))).astype(str)
-    syn = syn.where(~vv.str.endswith('_relabelled'), 'gt')
-    df['synthetic'] = syn.replace('', 'real')
-    return df
+    return normalize(df)
 
 
-def build(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    df = _ensure_family(df)
-    df = _ensure_synthetic(df)
+def _pivot(df: pd.DataFrame, metric: str, index: list | None = None) -> pd.DataFrame:
     piv = df.pivot_table(
-        index=['dataset', 'family', 'synthetic', 'vocab_variant'],
-        columns='backbone', values=metric, aggfunc=_cell)
+        index=index or PIVOT_INDEX, columns='backbone', values=metric, aggfunc=_cell)
     cols = [b for b in BACKBONE_ORDER if b in piv.columns] + \
            [b for b in piv.columns if b not in BACKBONE_ORDER]
     return piv[cols]
+
+
+def build(df: pd.DataFrame, metric: str, *, mode: str = 'auto') -> pd.DataFrame:
+    """Pivot rows for *metric*.
+
+    ``mode``:
+      * ``prediction`` — ante-hoc families only; drops duplicate baselines (E8)
+      * ``explanation`` — ante-hoc + post-hoc explainer rows from baselines (E5)
+      * ``auto`` — picks prediction vs explanation from *metric* name
+    """
+    from analysis.aggregate_experiments import (
+        expand_posthoc_explainer_rows,
+        filter_prediction_rows,
+    )
+
+    if mode == 'auto':
+        mode = 'prediction' if metric in PREDICTION_METRICS else 'explanation'
+
+    df = _ensure_family(df)
+    df = _ensure_synthetic(df)
+
+    if mode == 'prediction':
+        df = filter_prediction_rows(df)
+        return _pivot(df, metric)
+
+    # explanation: ante-hoc + post-hoc explainer rows. Post-hoc baselines carry
+    # BOTH mean- and max-pooled scores; keep them as a distinct index level
+    # (explainer_agg) so the two are reported separately, never averaged (E11).
+    # ante-hoc: GSAT (node scores) splits into mean/max for node GT-ROC; motif
+    # methods (MOSE/MotifSAT) stay single (mean == max).
+    ante = _expand_node_pooling(filter_prediction_rows(df), metric)
+    posthoc = expand_posthoc_explainer_rows(df)
+    if posthoc.empty:
+        df = ante
+    else:
+        df = pd.concat([ante, posthoc], ignore_index=True)
+    if 'explainer_agg' not in df.columns:
+        df['explainer_agg'] = ''
+    # non-node-scoring rows have no pooling variant → blank level (single value)
+    df['explainer_agg'] = df['explainer_agg'].fillna('').astype(str)
+    return _pivot(df, metric, index=PIVOT_INDEX + ['explainer_agg'])
 
 
 def main():
@@ -111,16 +176,20 @@ def main():
                          'top_k_abs_disc, score_disc_spearman; baseline columns '
                          'like gnnexplainer_mean_pearson and '
                          'gnnexplainer_mean_gt_roc_node_auc_mean (also _max_) work.')
+    ap.add_argument('--mode', choices=('auto', 'prediction', 'explanation'),
+                    default='auto',
+                    help='prediction drops baselines duplicates (E8); '
+                         'explanation expands post-hoc explainer rows (E5)')
     ap.add_argument('--md', default=None, help='Optional markdown output path.')
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
-    if args.metric not in df.columns:
+    if args.metric not in df.columns and args.mode != 'explanation':
         raise SystemExit(f'metric "{args.metric}" not in {args.csv}. '
                          f'Available: {[c for c in df.columns]}')
-    table = build(df, args.metric)
-    print(f'\n{args.metric}  — rows: dataset × family × synthetic × variant   '
-          f'cols: backbone   (mean ± std over folds)\n')
+    table = build(df, args.metric, mode=args.mode)
+    print(f'\n{args.metric} ({args.mode})  — rows: {" × ".join(PIVOT_INDEX)}   '
+          f'cols: backbone   (mean ± std over folds; single value if one fold)\n')
     print(table.to_string())
     if args.md:
         Path(args.md).write_text(table.to_markdown())

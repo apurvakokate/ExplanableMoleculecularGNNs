@@ -60,10 +60,18 @@ assert _spec.loader is not None
 _spec.loader.exec_module(_schema)
 TASK_TYPE = _schema.TASK_TYPE
 
-FAMILIES = ('vanilla', 'baselines', 'mose', 'motifsat', 'gsat', 'base_gsat')
+BACKBONE_ORDER = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
+
+POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'mage')
+EXPLAINER_AGGS = ('mean', 'max')
+
+# Prediction AUC is identical on vanilla vs its baselines row (epochs=0 reload).
+PREDICTION_FAMILIES = ('vanilla', 'mose', 'motifsat', 'gsat', 'base_gsat')
 # Families whose identity does NOT include the injection axis. Their rows are
 # broadcast across every injection value present for the ante-hoc families.
 INJECTION_AGNOSTIC = {'vanilla', 'baselines'}
+
+FAMILIES = ('vanilla', 'baselines', 'mose', 'motifsat', 'gsat', 'base_gsat')
 
 # every config axis we normalize (recorded as columns on every tidy row)
 ALL_AXES = ['fragmentation', 'threshold', 'synthetic',
@@ -219,59 +227,147 @@ def _prefer(df: pd.DataFrame, col: str, parsed: pd.Series) -> pd.Series:
     return existing.where(has, parsed)
 
 
+def _truthy(v) -> bool:
+    if v is True:
+        return True
+    if v is False or v is None:
+        return False
+    return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def parse_vocab_variant(vv: str) -> tuple[str, bool, bool]:
+    """Split bundled vocab_variant into base name, filter flag, relabel flag (E10)."""
+    v = (vv or '').strip()
+    is_relabelled = False
+    is_filter = False
+    if v.endswith('_relabelled'):
+        is_relabelled = True
+        v = v[:-len('_relabelled')]
+    if v.endswith('_filter'):
+        is_filter = True
+        v = v[:-len('_filter')]
+    return v, is_filter, is_relabelled
+
+
+def _dataset_from_path(exp_dir: str) -> str:
+    parts = [p for p in str(exp_dir).split('/') if p]
+    for i, p in enumerate(parts):
+        if re.match(r'fold\d+$', p) and i > 0:
+            return parts[i - 1]
+    return ''
+
+
+def _backbone_from_path(exp_dir: str) -> str:
+    s = str(exp_dir)
+    m = re.search(r'bb-(GIN|GCN|GAT|SAGE|PNA)_', s, re.I)
+    if m:
+        return m.group(1).upper()
+    for bb in BACKBONE_ORDER:
+        if re.search(rf'(?:^|[/_-]){bb}(?:[/_-]|$)', s):
+            return bb
+    return ''
+
+
+def enrich_from_exp_dir(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing dataset / backbone / fold from exp_dir (E4: both layout schemes)."""
+    df = df.copy()
+    if 'exp_dir' not in df.columns:
+        df['exp_dir'] = ''
+    exp = df['exp_dir'].astype(str)
+
+    for col, parser in (
+        ('dataset', _dataset_from_path),
+        ('backbone', _backbone_from_path),
+        ('fold', _fold),
+    ):
+        parsed = exp.map(parser)
+        if col not in df.columns:
+            df[col] = parsed
+        else:
+            blank = df[col].isna() | df[col].astype(str).str.strip().eq('')
+            if blank.any() and col == 'fold':
+                df[col] = df[col].astype(object)
+            df.loc[blank, col] = parsed[blank]
+    return df
+
+
+def _synthetic_from_row(row, exp_dir: str) -> str:
+    """real vs gt: summary use_gt beats path (E2 vanilla/baselines GT runs)."""
+    if _truthy(row.get('use_gt')):
+        return 'gt'
+    vv = str(row.get('vocab_variant') or '')
+    _, _, relabel = parse_vocab_variant(vv)
+    if relabel:
+        return 'gt'
+    if _synthetic(exp_dir) == 'gt':
+        return 'gt'
+    return 'real'
+
+
 def resolve_family(meta: dict, exp_dir: str = '') -> str:
-    """Resolve model family: path segment (gsat/baselines/…) preferred over summary fields."""
+    """Resolve model family from path first; never merge GSAT into MotifSAT via model_type (E3)."""
     fam = _family(exp_dir) if exp_dir else ''
     if fam:
         return fam
-    mt = (meta.get('model_type') or '').lower()
-    mm = (meta.get('motif_method') or '').lower()
-    if 'mose' in mt or mm == 'mose':
+
+    mm = (meta.get('motif_method') or 'none').lower()
+    if mm == 'mose':
         return 'mose'
-    if 'motifsat' in mt or 'gsat' in mt:
-        return 'gsat' if mm == 'none' else 'motifsat'
     if mm in ('readout', 'loss'):
         return 'motifsat'
-    if 'vanilla' in mt or mm == 'none':
+    if mm == 'none':
+        if re.search(r'(?:^|/)(base_gsat|gsat)(?:/|$)', exp_dir):
+            return 'gsat'
+        if re.search(r'(?:^|/)baselines(?:/|$)', exp_dir):
+            return 'baselines'
+        if re.search(r'(?:^|/)vanilla(?:/|$)', exp_dir):
+            return 'vanilla'
+        # GSAT uses motif_method=none but lives under gsat/ or base_gsat/
+        if 'gsat' in exp_dir.lower() and 'motifsat' not in exp_dir.lower():
+            return 'gsat'
         return 'vanilla'
-    return mt or mm or 'unknown'
+
+    return mm or 'unknown'
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Add normalized axis columns derived from explicit columns (config.json,
-    when present) + exp_dir parsing (legacy fallback)."""
+    """Add normalized axis columns derived from summary fields + exp_dir parsing."""
     df = df.copy()
+    if 'exp_dir' not in df.columns:
+        df['exp_dir'] = ''
+    df = enrich_from_exp_dir(df)
     exp = df['exp_dir'].astype(str)
 
-    fam = exp.map(_family)
-    # fall back to motif_method only to separate mose/motifsat from the rest
-    if 'motif_method' in df.columns:
-        need = fam == ''
-        mm = df['motif_method'].fillna('none').astype(str)
-        fam = fam.where(~need, mm.map(
-            lambda m: 'mose' if m == 'mose'
-            else ('motifsat' if m in ('readout', 'loss')
-                  else 'vanilla')))
-    df['family'] = _prefer(df, 'family', fam)
+    # E3: path-derived family wins over stale summary.json model_type.
+    path_fam = exp.map(_family)
+    df['family'] = path_fam
+    blank_fam = path_fam.eq('')
+    if blank_fam.any():
+        for idx in df.index[blank_fam]:
+            df.at[idx, 'family'] = resolve_family(
+                df.loc[idx].to_dict(), exp.at[idx])
 
     df['fold'] = _prefer(df, 'fold', exp.map(_fold))
 
-    # fragmentation + threshold from the (reliable) vocab_variant column
     vv = df.get('vocab_variant', pd.Series([''] * len(df))).fillna('').astype(str)
+    parsed = vv.map(parse_vocab_variant)
+    df['vocab_base'] = parsed.map(lambda t: t[0])
+    df['is_filter'] = parsed.map(lambda t: t[1])
+    df['is_relabelled'] = parsed.map(lambda t: t[2])
     df['threshold'] = _prefer(
-        df, 'threshold', vv.map(lambda v: 'on' if v.endswith('_filter') else 'off'))
-    df['fragmentation'] = _prefer(
-        df, 'fragmentation',
-        vv.map(lambda v: v[:-len('_filter')] if v.endswith('_filter') else v))
+        df, 'threshold',
+        df['is_filter'].map(lambda x: 'on' if x else 'off'))
+    df['fragmentation'] = _prefer(df, 'fragmentation', df['vocab_base'])
 
-    # priority-prefix overrides (legacy run_priority.sh trees only)
-    # pri = exp.map(_priority_axes)
-    # pri_syn = pri.map(lambda t: t[0])
-    # pri_norm = pri.map(lambda t: t[1])
-
-    syn = exp.map(_synthetic)
-    # syn = syn.where(pri_syn.isna(), pri_syn)
+    syn = pd.Series(
+        [_synthetic_from_row(df.loc[i], exp.at[i]) for i in df.index],
+        index=df.index,
+    )
     df['synthetic'] = _prefer(df, 'synthetic', syn)
+    if 'use_gt' not in df.columns:
+        df['use_gt'] = df['synthetic'].eq('gt')
+    else:
+        df['use_gt'] = df['use_gt'].apply(_truthy) | df['synthetic'].eq('gt')
 
     df['features'] = _prefer(df, 'features', exp.map(_features))
     inj = pd.Series([_injection(e, f) for e, f in zip(exp, df['family'])],
@@ -280,10 +376,53 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df['epochs'] = _prefer(df, 'epochs', exp.map(_epochs))
 
     nrm = df.apply(_norm, axis=1)
-    # nrm = nrm.where(pri_norm.isna(), pri_norm)
     df['norm'] = _prefer(df, 'norm', nrm)
 
     return df
+
+
+def filter_prediction_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop baselines rows for predictive metrics — they duplicate vanilla (E8)."""
+    fam = df.get('family', pd.Series([''] * len(df))).astype(str)
+    return df[fam.isin(PREDICTION_FAMILIES)].copy()
+
+
+def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Expand baselines summary columns into explainer-family rows (E5).
+
+    Post-hoc GNNExplainer/PGExplainer/MAGE metrics live as ``{expl}_{agg}_*``
+    columns on baselines runs, not as separate run dirs.
+    """
+    fam = df.get('family', pd.Series([''] * len(df))).astype(str)
+    bl = df[fam == 'baselines'].copy()
+    if bl.empty:
+        return bl
+
+    pieces = []
+    metric_map = [
+        ('pearson', 'pearson'),
+        ('spearman', 'spearman'),
+        ('gt_roc_node_auc_mean', 'gt_roc_node_auc_mean'),
+        ('gt_roc_edge_auc_mean', 'gt_roc_edge_auc_mean'),
+        ('top_k_abs_disc', 'top_k_abs_disc'),
+        ('score_disc_spearman', 'score_disc_spearman'),
+    ]
+    for ex in POSTHOC_EXPLAINERS:
+        for agg in EXPLAINER_AGGS:
+            sub = bl.copy()
+            sub['family'] = ex
+            sub['explainer_agg'] = agg
+            any_metric = False
+            for dst, suffix in metric_map:
+                src = f'{ex}_{agg}_{suffix}'
+                if src in sub.columns:
+                    sub[dst] = sub[src]
+                    any_metric = True
+            if any_metric:
+                pieces.append(sub)
+    if not pieces:
+        return pd.DataFrame(columns=df.columns)
+    return pd.concat(pieces, ignore_index=True)
 
 
 def experiment_id(row, axes) -> str:
