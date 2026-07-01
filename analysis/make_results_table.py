@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """make_results_table.py — pivot all_results.csv to dataset×run rows, backbone cols.
 
-Rows  : dataset × family × vocab_variant   ("dataset × run")
+Rows  : dataset × family × synthetic (real|gt) × vocab_variant
 Cols  : backbone (GIN, GCN, GAT, SAGE, PNA)
 Cells : mean ± std of the chosen metric over folds
+
+The ``synthetic`` axis separates real-label runs from GT-relabelled training
+(MOSE/MotifSAT ``*_relabelled`` variants, vanilla/baselines ``*_gt`` dirs).
+Without it, headline AUC mixes incompatible label targets.
 
 Usage
 -----
@@ -66,10 +70,29 @@ def _ensure_family(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _ensure_synthetic(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure ``synthetic`` is ``real`` or ``gt`` (never blank / mixed in pivot)."""
+    from analysis.aggregate_experiments import normalize
+
+    df = df.copy()
+    if 'exp_dir' not in df.columns:
+        df['exp_dir'] = ''
+    df = normalize(df)
+    syn = df.get('synthetic', pd.Series([''] * len(df))).fillna('').astype(str).str.strip()
+    if 'use_gt' in df.columns:
+        gt_flag = df['use_gt'].astype(str).str.lower().isin(('true', '1', 'yes'))
+        syn = syn.where(~gt_flag, 'gt')
+    vv = df.get('vocab_variant', pd.Series([''] * len(df))).astype(str)
+    syn = syn.where(~vv.str.endswith('_relabelled'), 'gt')
+    df['synthetic'] = syn.replace('', 'real')
+    return df
+
+
 def build(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     df = _ensure_family(df)
+    df = _ensure_synthetic(df)
     piv = df.pivot_table(
-        index=['dataset', 'family', 'vocab_variant'],
+        index=['dataset', 'family', 'synthetic', 'vocab_variant'],
         columns='backbone', values=metric, aggfunc=_cell)
     cols = [b for b in BACKBONE_ORDER if b in piv.columns] + \
            [b for b in piv.columns if b not in BACKBONE_ORDER]
@@ -96,7 +119,7 @@ def main():
         raise SystemExit(f'metric "{args.metric}" not in {args.csv}. '
                          f'Available: {[c for c in df.columns]}')
     table = build(df, args.metric)
-    print(f'\n{args.metric}  — rows: dataset × family × variant   '
+    print(f'\n{args.metric}  — rows: dataset × family × synthetic × variant   '
           f'cols: backbone   (mean ± std over folds)\n')
     print(table.to_string())
     if args.md:

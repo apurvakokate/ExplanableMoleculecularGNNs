@@ -218,7 +218,7 @@ def step_table(args) -> int:
             return 1
     save_dir = Path(args.save_dir) if args.save_dir else out_root / 'tables'
     save_dir.mkdir(parents=True, exist_ok=True)
-    print('\n=== results tables (dataset×family×variant rows, backbone cols) ===')
+    print('\n=== results tables (dataset×family×synthetic×variant rows, backbone cols) ===')
     metrics = args.metrics or [m for m in DEFAULT_METRICS if m in df.columns]
     for metric in metrics:
         if metric not in df.columns:

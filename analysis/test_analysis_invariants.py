@@ -12,6 +12,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from analysis.aggregate_experiments import normalize, resolve_family
+from analysis.make_results_table import build
 
 
 def _collapse_redundant_folds(df: pd.DataFrame) -> pd.DataFrame:
@@ -64,6 +65,24 @@ class TestAnalysisInvariants(unittest.TestCase):
         ])
         out = normalize(df)
         self.assertEqual(set(out['dataset']), {'Mutagenicity', 'mutag'})
+
+    def test_results_table_separates_real_and_gt(self):
+        df = pd.DataFrame([
+            {'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
+             'vocab_variant': 'rbrics', 'fold': 0, 'auc': 0.55,
+             'exp_dir': 'mose/BBBP/fold0/rbrics/GIN_onehot_norm-l2_real_rbrics'},
+            {'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
+             'vocab_variant': 'rbrics_relabelled', 'fold': 0, 'auc': 0.98,
+             'exp_dir': 'mose/BBBP/fold0/rbrics_relabelled/GIN_onehot_norm-l2_gt_rbrics',
+             'use_gt': True},
+        ])
+        tbl = build(df, 'auc')
+        self.assertEqual(len(tbl), 2)
+        idx = tbl.index
+        self.assertIn(('BBBP', 'mose', 'real', 'rbrics'), idx)
+        self.assertIn(('BBBP', 'mose', 'gt', 'rbrics_relabelled'), idx)
+        self.assertEqual(tbl.loc[('BBBP', 'mose', 'real', 'rbrics'), 'GIN'], '0.550')
+        self.assertEqual(tbl.loc[('BBBP', 'mose', 'gt', 'rbrics_relabelled'), 'GIN'], '0.980')
 
 
 if __name__ == '__main__':
