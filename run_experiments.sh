@@ -14,6 +14,7 @@
 #   phase2           coverage vs threshold sweep  (review, then edit CHOSEN_THRESHOLD)
 #   phase3           thresholded vocabularies     (reads CHOSEN_THRESHOLD dict)
 #   phase4           synthetic GT                 (requires RULE_INDEX)
+#   phase0_4         phase0 → phase4 for all DATASETS (SKIP_EXISTING skips done work)
 #   phase5_vanilla   train Vanilla GNN
 #   phase5_mose      train MOSE-GNN
 #   phase5_gsat      train base GSAT
@@ -121,7 +122,7 @@ _check_paths() {
     else
         echo "  VOCAB_FOCUS= (all four base variants)"
     fi
-    echo "  SKIP_EXISTING= ${SKIP_EXISTING:-1}  (FORCE_RERUN=1 to redo all)"
+    echo "  SKIP_EXISTING= ${SKIP_EXISTING:-1}  (FORCE_RERUN=1 to redo; FORCE_PHASE1=1 for phase1 only)"
 }
 
 # ── Vocabulary variant names ───────────────────────────────────────────────────
@@ -257,18 +258,52 @@ sys.exit(0 if sys.argv[1] in GT_SUPPORTED_DATASETS else 1)
     }
 }
 
-# Phase 1 writes three base variants per dataset (no threshold).
+# Phase 1 writes four base variants per dataset (no threshold).
 _phase1_variant_done() {
     local ds=$1 variant=$2
     [ -f "$VOCAB_ROOT/$ds/$variant/rules.json" ] && \
     [ -f "$VOCAB_ROOT/$ds/$variant/vocab_meta.json" ]
 }
 
-_phase1_complete() {
-    local ds=$1
-    _phase1_variant_done "$ds" "$V_OLD" && \
-    _phase1_variant_done "$ds" "$V_RBRICS" && \
-    _phase1_variant_done "$ds" "$V_ALL"
+# Phase 3 filtered vocabs use the same completion markers as phase 1.
+_phase3_variant_done() {
+    _phase1_variant_done "$1" "$2"
+}
+
+_all_base_variants() {
+    echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL"
+}
+
+_all_filtered_variants() {
+    echo "$V_OLD_TH $V_RBRICS_TH $V_RBRICS_SF_TH $V_ALL_TH"
+}
+
+_phase2_variant_done() {
+    local variant=$1 ds
+    local plot="$OUT_ROOT/coverage_plots/all_datasets_${variant}_coverage.png"
+    [ -f "$plot" ] || return 1
+    for ds in $DATASETS; do
+        _phase1_variant_done "$ds" "$variant" || continue
+        [ -f "$OUT_ROOT/coverage_plots/${ds}_${variant}_coverage.csv" ] || return 1
+    done
+    return 0
+}
+
+_phase4_done() {
+    local variant=$1 ds=$2 fold=$3
+    local base="$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/relabel1"
+    [ -f "$base/train_with_gt.pt" ] && \
+    [ -f "$base/valid_with_gt.pt" ] && \
+    [ -f "$base/test_with_gt.pt" ] && \
+    [ -f "$base/selected_rule.json" ]
+}
+
+_phase0_dataset_done() {
+    case "$1" in
+        mutag)    [ -f "$MUTAG_DATA_ROOT/mutag_0.csv" ] ;;
+        ogbg-*)   [ -f "$OGB_DATA_ROOT/${1}_0.csv" ] ;;
+        *)        return 0 ;;  # CSV benchmarks need no phase0 export
+    esac
 }
 
 _mutag_train_flags() {
@@ -373,18 +408,10 @@ run_frag() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4 use_shatter=${5:-0}
     echo "  [$variant] method=$method fallback=$use_fallback bpe=$use_bpe shatter=$use_shatter"
     for ds in $DATASETS; do
-        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_variant_done "$ds" "$variant"; then
-            echo "  [skip] $ds / $variant — already exists"
+        if [ "${FORCE_PHASE1:-0}" != "1" ] && \
+           _should_skip_existing && _phase1_variant_done "$ds" "$variant"; then
+            echo "  [skip] $ds / $variant — vocab exists"
             continue
-        fi
-        # Skip only when re-running the standard phase1 trio and all three exist.
-        if [ "${FORCE_PHASE1:-0}" != "1" ] && _phase1_complete "$ds"; then
-            case "$variant" in
-                "$V_OLD"|"$V_RBRICS"|"$V_ALL")
-                    echo "  [skip] $ds — phase1 complete ($V_OLD, $V_RBRICS, $V_ALL)"
-                    continue
-                    ;;
-            esac
         fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
@@ -408,6 +435,10 @@ run_frag_thresh() {
     local method=$1 use_fallback=$2 use_bpe=$3 variant=$4
     echo "  [$variant] method=$method (threshold from CHOSEN_THRESHOLD dict)"
     for ds in $DATASETS; do
+        if _should_skip_existing && _phase3_variant_done "$ds" "$variant"; then
+            echo "  [skip] $ds / $variant — filtered vocab exists"
+            continue
+        fi
         ds_root="$(_dataset_data_root "$ds")"
         python3 "$PROJECT/MotifBreakdown/generate_vocab_rules.py" \
             --datasets      "$ds" \
@@ -780,6 +811,10 @@ apply_gt() {
     echo "  [SyntheticGT] vocab=$variant rule=$rule_idx datasets:$gt_ds"
     for ds in $gt_ds; do
         for fold in $FOLDS; do
+            if _should_skip_existing && _phase4_done "$variant" "$ds" "$fold"; then
+                echo "  [skip] $ds fold$fold / $variant — gt_cache exists"
+                continue
+            fi
             python3 "$PROJECT/SharedModules/data/apply_gt.py" \
                 --dataset    "$ds" \
                 --fold       "$fold" \
@@ -906,8 +941,8 @@ phase0() {
             mutag)
                 local csv="$MUTAG_DATA_ROOT/mutag_0.csv"
                 echo "  [mutag] → $MUTAG_DATA_ROOT"
-                if [ -f "$csv" ]; then
-                    echo "    skip (exists): $csv"
+                if _should_skip_existing && _phase0_dataset_done mutag; then
+                    echo "    [skip] exists: $csv"
                 else
                     python3 "$PROJECT/MotifBreakdown/export_mutag_dataset_to_csv.py" \
                         --data_root "$MUTAG_DATA_ROOT" \
@@ -918,8 +953,8 @@ phase0() {
             ogbg-*)
                 local csv="$OGB_DATA_ROOT/${ds}_0.csv"
                 echo "  [$ds] → $OGB_DATA_ROOT"
-                if [ -f "$csv" ]; then
-                    echo "    skip (exists): $csv"
+                if _should_skip_existing && _phase0_dataset_done "$ds"; then
+                    echo "    [skip] exists: $csv"
                 else
                     python3 "$PROJECT/MotifBreakdown/export_ogb_to_csv.py" \
                         --dataset  "$ds" \
@@ -964,8 +999,9 @@ phase1() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 1 — Fragmentation (no threshold, 4 variants)"
-    echo "  Skips: datasets with phase1 trio done ($V_OLD, $V_RBRICS, $V_ALL);"
-    echo "         individual variants already on disk (set FORCE_PHASE1=1 to redo)"
+    echo "  DATASETS=$DATASETS"
+    echo "  Skips per dataset/variant when rules.json + vocab_meta.json exist"
+    echo "  (SKIP_EXISTING=1 default; FORCE_PHASE1=1 or FORCE_RERUN=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
     echo "1a. rbrics_old  (CreateMotifVocab plot path — BreakrBRICSBonds + ToSmiles)"
@@ -998,11 +1034,19 @@ phase2() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 2 — Coverage vs threshold sweep (4 variants)"
+    echo "  DATASETS=$DATASETS"
+    echo "  Skips variant when combined plot + per-dataset CSVs exist (SKIP_EXISTING=1)"
     echo "══════════════════════════════════════════════════════════"
 
     local vocab_datasets="$DATASETS"
+    local variant
 
-    for variant in "$V_OLD" "$V_RBRICS" "$V_RBRICS_SF" "$V_ALL"; do
+    for variant in $(_all_base_variants); do
+        if _should_skip_existing && _phase2_variant_done "$variant"; then
+            echo ""
+            echo "  [skip] $variant — coverage plots exist"
+            continue
+        fi
         echo ""
         echo "  [combined / $variant]"
         python3 "$PROJECT/MotifBreakdown/coverage_vs_threshold.py" \
@@ -1032,6 +1076,8 @@ phase3() {
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 3 — Thresholded vocabularies (per-dataset CHOSEN_THRESHOLD)"
+    echo "  DATASETS=$DATASETS"
+    echo "  Skips per dataset/variant when filtered vocab exists (SKIP_EXISTING=1)"
     echo "══════════════════════════════════════════════════════════"
 
     echo "3a. rbrics_old_filter"
@@ -1065,12 +1111,19 @@ phase3() {
 #   Result cached in $OUT_ROOT/gt_cache/{dataset}/fold{N}/{variant}/relabel1/
 # =============================================================================
 phase4() {
+    if ! _phase5_has_gt_training; then
+        echo ""
+        echo "  [skip] phase4 — no GT-supported dataset in DATASETS=$DATASETS"
+        return 0
+    fi
     [ -z "$RULE_INDEX" ] && \
         echo "ERROR: set RULE_INDEX first.  export RULE_INDEX=0" && exit 1
 
     echo ""
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 4 — Synthetic GT (rule=$RULE_INDEX, VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
+    echo "  GT datasets: $(_phase5_gt_datasets | tr '\n' ' ')"
+    echo "  Skips per dataset/fold/variant when gt_cache exists (SKIP_EXISTING=1)"
     echo "══════════════════════════════════════════════════════════"
 
     local variant
@@ -1086,6 +1139,43 @@ phase4() {
     echo "GT vanilla + baselines (phase5): vanilla|baselines/.../bb-*_gt/"
     echo ""
     echo "Next: bash run_experiments.sh phase5_vanilla"
+}
+
+# =============================================================================
+# PHASE 0–4 — Full data-prep sweep (all DATASETS × four base variants)
+#   Runs phase0 → phase1 → phase2 → phase3 → phase4 with SKIP_EXISTING=1
+#   (default): skips any step whose artifacts are already on disk.
+#   Phases 1–3 always run all four base variants. Phase 4 respects VOCAB_FOCUS
+#   (unset = all four; set e.g. VOCAB_FOCUS=rbrics to limit GT to that variant).
+#   Requires RULE_INDEX when any GT-supported CSV dataset is in DATASETS.
+# =============================================================================
+phase0_4() {
+    _check_paths
+    if _phase5_has_gt_training && [ -z "$RULE_INDEX" ]; then
+        echo "ERROR: phase0_4 includes phase4 (synthetic GT) for:" \
+             "$(_phase5_gt_datasets | tr '\n' ' ')"
+        echo "       Set RULE_INDEX first, e.g.  export RULE_INDEX=0"
+        exit 1
+    fi
+    echo ""
+    echo "══════════════════════════════════════════════════════════"
+    echo " PHASE 0–4 — Full prep for all datasets + 4 variants"
+    echo "  DATASETS=$DATASETS"
+    echo "  FOLDS=$FOLDS  RULE_INDEX=${RULE_INDEX:-<unset>}"
+    echo "  VOCAB_FOCUS=${VOCAB_FOCUS:-<unset — all 4 variants in phase 4>}"
+    echo "  SKIP_EXISTING=${SKIP_EXISTING:-1}  FORCE_RERUN=${FORCE_RERUN:-0}"
+    echo "  Note: phases 1–3 always all 4 base variants; phase 4 uses VOCAB_FOCUS"
+    echo "══════════════════════════════════════════════════════════"
+
+    phase0
+    phase1
+    phase2
+    phase3
+    phase4
+
+    echo ""
+    echo "Phases 0–4 complete."
+    echo "Next: bash run_experiments.sh phase5_vanilla  (one DATASET at a time)"
 }
 
 # =============================================================================
@@ -1337,6 +1427,7 @@ case "$PHASE" in
     phase2)           phase2 ;;
     phase3)           phase3 ;;
     phase4)           phase4 ;;
+    phase0_4|phases0_4) phase0_4 ;;
     phase5_vanilla)   phase5_vanilla ;;
     phase5_mose)      phase5_mose ;;
     phase5_gsat)      phase5_gsat ;;
@@ -1369,6 +1460,7 @@ case "$PHASE" in
         echo "  phase2            coverage vs threshold sweep (review, then edit CHOSEN_THRESHOLD)"
         echo "  phase3            threshold all 4 variants  (reads CHOSEN_THRESHOLD)"
         echo "  phase4            synthetic GT (DATASETS; VOCAB_FOCUS base variants)"
+        echo "  phase0_4          run phase0 through phase4 (all DATASETS; SKIP_EXISTING on by default)"
         echo "  phase5_vanilla    vanilla GNN (exactly one DATASET; SKIP_EXISTING on by default)"
         echo "  phase5_mose       MOSE-GNN (one DATASET; filtered + base + GT per VOCAB_FOCUS)"
         echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base variants)"

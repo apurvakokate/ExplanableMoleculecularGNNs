@@ -90,16 +90,17 @@ export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
 # Set MOSE_BASE=0 to skip unfiltered MOSE runs (filtered-only sweep).
 export MOSE_BASE="${MOSE_BASE:-1}"
 
-# ── Phase 5 resume ────────────────────────────────────────────────────────────
-# Skip runs whose out_dir already has summary.json + best_model.pt (default on).
-# phase5_* enforces exactly ONE dataset in DATASETS per invocation.
+# ── Phase 0–5 resume ──────────────────────────────────────────────────────────
+# Skip work when expected artifacts already exist (default on).
+# Phases 0–4: vocabs, coverage plots, filtered vocabs, gt_cache.
+# Phase 5: summary.json + best_model.pt per run dir.
 #
-#   export DATASETS=mutag
-#   export FOLDS=0
-#   export VOCAB_FOCUS=rbrics,all_fallback_bpe
-#   export SKIP_EXISTING=1          # default — skip completed runs
+#   export SKIP_EXISTING=1          # default — skip completed work
 #   export FORCE_RERUN=1            # redo everything (overrides SKIP_EXISTING)
-#   bash run_experiments.sh phase5_vanilla
+#   export FORCE_PHASE1=1           # redo phase1 vocabs only
+#
+# Run phases 0–4 for all DATASETS × four base variants:
+#   bash run_experiments.sh phase0_4
 export SKIP_EXISTING="${SKIP_EXISTING:-1}"
 # Set WANDB_FLAGS to enable logging for phase5 training runs.
 # Example: export WANDB_FLAGS="--use_wandb --wandb_project ChemIntuit"
