@@ -273,8 +273,11 @@ def step_probe(args) -> int:
 def step_plots(args) -> int:
     cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
            '--out_root', args.out_root,
-           '--group', args.group, '--facet', args.facet,
            '--nbins', str(args.nbins)]
+    if getattr(args, 'score_min', None) is not None:
+        cmd += ['--score_min', str(args.score_min)]
+    if getattr(args, 'score_max', None) is not None:
+        cmd += ['--score_max', str(args.score_max)]
     if args.save_dir:
         cmd += ['--save_dir', args.save_dir]
     if _datasets_arg(args):
@@ -345,9 +348,9 @@ def main():
     p_pl = sub.add_parser('plots', help='score-vs-impact grid + counts')
     path_args(p_pl)
     filter_args(p_pl)
-    p_pl.add_argument('--group', default='family')
-    p_pl.add_argument('--facet', default='variant')
     p_pl.add_argument('--nbins', type=int, default=6)
+    p_pl.add_argument('--score_min', type=float, default=None)
+    p_pl.add_argument('--score_max', type=float, default=None)
 
     p_all = sub.add_parser('all',
                            help='regenerate -> multi_explanation -> probe -> collect -> table -> plots')
@@ -356,9 +359,9 @@ def main():
     filter_args(p_all)
     p_all.add_argument('--csv', default=None)
     p_all.add_argument('--metrics', nargs='*', default=None)
-    p_all.add_argument('--group', default='family')
-    p_all.add_argument('--facet', default='variant')
     p_all.add_argument('--nbins', type=int, default=6)
+    p_all.add_argument('--score_min', type=float, default=None)
+    p_all.add_argument('--score_max', type=float, default=None)
     p_all.add_argument('--skip_regenerate', action='store_true',
                        help='Use existing summaries; do not re-run eval.')
     p_all.add_argument('--skip_multi_explanation', action='store_true')
