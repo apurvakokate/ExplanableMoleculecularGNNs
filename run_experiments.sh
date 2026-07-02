@@ -17,7 +17,7 @@
 #   phase0_4         phase0 → phase4 for all DATASETS (SKIP_EXISTING skips done work)
 #   phase5_vanilla   train Vanilla GNN
 #   phase5_mose      train MOSE-GNN
-#   phase5_gsat      train base GSAT
+#   phase5_gsat      train base GSAT (+ GT relabelled when phase4 gt_cache exists)
 #   phase5_baselines post-hoc explainers on vanilla
 #   phase5_vanilla_gt / phase5_baselines_gt  synthetic GT vanilla + explainers
 #   phase5_motifsat  train MotifSAT
@@ -510,7 +510,7 @@ run_vanilla() {
 }
 
 run_vanilla_gt() {
-    # Train vanilla GNN on phase-4 synthetic GT (same rule labels as MOSE/MotifSAT *_relabelled).
+    # Train vanilla GNN on phase-4 synthetic GT (same rule labels as MOSE/MotifSAT/GSAT *_relabelled).
     local variant=$1
     local n_skip=0 n_run=0
     local gt_ds
@@ -642,6 +642,61 @@ run_gsat() {
         done
     done
     echo "  [BaseGSAT/$variant] planned=$n_run skipped_existing=$n_skip"
+}
+
+run_gsat_gt() {
+    local variant=$1 inj_args=${2:-$GSAT_INJ}
+    local gt_variant
+    local n_skip=0 n_run=0
+    gt_variant=$(_gt_variant_name "$variant")
+    local gt_ds
+    gt_ds=$(_phase5_gt_datasets)
+    if [ -z "$gt_ds" ]; then
+        return 0
+    fi
+    echo "  [BaseGSAT+GT] variant=$gt_variant datasets:$gt_ds inj=$inj_args learn_edge_att=$GSAT_LEARN_EDGE_ATT"
+    for backbone in $BACKBONES; do
+        for ds in $gt_ds; do
+            for fold in $FOLDS; do
+                _skip_redundant_fold "$ds" "$fold" && continue
+                if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
+                    echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
+                    continue
+                fi
+                local ds_root="$(_dataset_data_root "$ds")"
+                local enc="$(_dataset_node_encoder "$ds")"
+                local eff_fold="$fold"
+                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                local gsat_gt_base="$OUT_ROOT/base_gsat/${gt_variant}"
+                if _should_skip_existing && _nested_trainer_run_complete "$gsat_gt_base" "$ds" "$eff_fold" "$backbone"; then
+                    echo "  [skip existing] GSAT+GT $ds fold$eff_fold $backbone → $gsat_gt_base/$ds/fold$eff_fold/${backbone}_*"
+                    n_skip=$((n_skip + 1))
+                    continue
+                fi
+                n_run=$((n_run + 1))
+                python3 "$PROJECT/MotifSAT/run.py" \
+                    --dataset         "$ds" --fold "$eff_fold" \
+                    --backbone        "$backbone" --node_encoder "$enc" \
+                    --motif_method    none \
+                    $inj_args \
+                    $(_gsat_learn_edge_att_flag) \
+                    --noise           none \
+                    --info_loss_level node \
+                    --info_loss_coef  1.0 \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --epochs          "$EPOCHS" \
+                    --data_root       "$ds_root" \
+                    --vocab_root      "$VOCAB_ROOT" \
+                    --vocab_variant   "$variant" \
+                    --conv_normalize  "$CONV_NORMALIZE" \
+                    --processed_root  "$PROCESSED_ROOT" \
+                    --out_dir         "$OUT_ROOT/base_gsat/${gt_variant}" \
+                    $(_mutag_train_flags "$ds" "$eff_fold") \
+                    $WANDB_FLAGS
+            done
+        done
+    done
+    echo "  [BaseGSAT+GT/$gt_variant] planned=$n_run skipped_existing=$n_skip"
 }
 
 run_motifsat() {
@@ -1135,7 +1190,7 @@ phase4() {
 
     echo ""
     echo "Phase 4 complete.  GT cache: $OUT_ROOT/gt_cache"
-    echo "Per-variant GT training dirs (phase5): {mose,motifsat}/{variant}_relabelled"
+    echo "Per-variant GT training dirs (phase5): {mose,motifsat,base_gsat}/{variant}_relabelled"
     echo "GT vanilla + baselines (phase5): vanilla|baselines/.../bb-*_gt/"
     echo ""
     echo "Next: bash run_experiments.sh phase5_vanilla"
@@ -1242,6 +1297,7 @@ phase5_mose() {
 #   Node-level attention + message injection (default 010: --w_message).
 #   learn_edge_att=False by default (node att scaled to edges via src×dst).
 #   Set GSAT_LEARN_EDGE_ATT=1 for the legacy edge-attention MLP path.
+#   Unfiltered base vocabs + GT relabelled (when phase4 gt_cache exists).
 # =============================================================================
 phase5_gsat() {
     _check_paths
@@ -1255,6 +1311,16 @@ phase5_gsat() {
     for variant in $(_vocab_focus_base_variants); do
         run_gsat "$variant"
     done
+
+    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
+        for variant in $(_vocab_focus_base_variants); do
+            run_gsat_gt "$variant"
+        done
+    elif ! _phase5_has_gt_training; then
+        echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"
+    else
+        echo "  [skip] *_relabelled — run phase4 first (no $OUT_ROOT/gt_cache)"
+    fi
 
     echo "Base GSAT training complete."
 }
@@ -1463,7 +1529,7 @@ case "$PHASE" in
         echo "  phase0_4          run phase0 through phase4 (all DATASETS; SKIP_EXISTING on by default)"
         echo "  phase5_vanilla    vanilla GNN (exactly one DATASET; SKIP_EXISTING on by default)"
         echo "  phase5_mose       MOSE-GNN (one DATASET; filtered + base + GT per VOCAB_FOCUS)"
-        echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base variants)"
+        echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base + GT variants)"
         echo "  phase5_baselines  post-hoc on vanilla (one DATASET; VOCAB_FOCUS eval variants)"
         echo "  phase5_vanilla_gt   vanilla on synthetic GT (CSV benchmarks; phase4 gt_cache)"
         echo "  phase5_baselines_gt post-hoc on GT vanilla + GT loaders (after phase5_vanilla_gt)"
