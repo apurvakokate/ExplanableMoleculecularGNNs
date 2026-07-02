@@ -23,8 +23,9 @@ predicted graph label as target — a standard workaround that aligns PGExplaine
 with GNNExplainer's explanation_type='model' intent.
 
 PyG >= 2.3 requires an explicit ``explainer.algorithm.train(epoch, ...)``
-loop before ``explainer(...)`` can return edge masks; calling ``explainer``
-during training does NOT train the parametric MLP.
+loop before ``explainer(...)`` can return edge masks.  Training must use
+**one graph at a time** — batched graphs make the edge-size penalty sum over
+the whole batch while only one graph's loss is optimised, collapsing masks to 0.
 """
 
 from __future__ import annotations
@@ -170,6 +171,7 @@ def run_pgexplainer(
     task_type: str = 'BinaryClass',
     epochs: int = 30,
     max_graphs: Optional[int] = None,
+    max_train_graphs: Optional[int] = None,
     explain_model: bool = True,
 ) -> NodeScoreResult:
     """Per-motif importance scores from PGExplainer edge masks.
@@ -221,7 +223,8 @@ def run_pgexplainer(
         else:
             print('    PGExplainer target: ground-truth graph labels (phenomenon)')
         train_ok, train_fail, last_err = _train_pgexplainer(
-            explainer, wrapped, loaders, device, epochs, task_type, explain_model)
+            explainer, wrapped, loaders, device, epochs, task_type, explain_model,
+            max_train_graphs=max_train_graphs)
         if train_ok == 0:
             msg = last_err or 'no successful train steps'
             print(f'  [warn] PGExplainer training failed ({msg}); using gradient saliency fallback')
@@ -264,6 +267,18 @@ def run_pgexplainer(
         return _gradient_fallback(model, test_list, device, max_graphs)
 
 
+def _iter_train_graphs(loaders: Dict, max_graphs: Optional[int] = None):
+    """Yield individual graphs from the train loader (never batched PyG Batch)."""
+    ds = loaders['train'].dataset
+    n = len(ds)
+    if max_graphs is not None and max_graphs < n:
+        idx = torch.randperm(n)[:max_graphs].tolist()
+    else:
+        idx = list(range(n))
+    for i in idx:
+        yield ds[int(i)]
+
+
 def _train_pgexplainer(
     explainer,
     wrapped: torch.nn.Module,
@@ -272,50 +287,49 @@ def _train_pgexplainer(
     epochs: int,
     task_type: str,
     explain_model: bool,
+    max_train_graphs: Optional[int] = None,
 ) -> Tuple[int, int, Optional[str]]:
-    """Run PGExplainer.algorithm.train for every epoch (required by PyG)."""
+    """Run PGExplainer.algorithm.train for every epoch (required by PyG).
+
+    PGExplainer must be trained on **single graphs**.  Batched training applies
+    edge-size regularisation over every edge in the batch while only one graph's
+    prediction loss is optimised, which drives all edge masks to ~0.
+    """
     train_ok = 0
     train_fail = 0
     last_err: Optional[str] = None
 
     for epoch in range(epochs):
-        for batch_data in loaders['train']:
-            if batch_data.x is None:
+        for data in _iter_train_graphs(loaders, max_train_graphs):
+            if data.x is None:
                 continue
-            batch_data = batch_data.to(device)
+            data = data.to(device)
             model_kwargs = {}
-            n2m = getattr(batch_data, 'nodes_to_motifs', None)
+            n2m = getattr(data, 'nodes_to_motifs', None)
             if n2m is not None:
                 model_kwargs['nodes_to_motifs'] = n2m.to(device)
-            batch_vec = getattr(batch_data, 'batch', None)
-            if batch_vec is not None:
-                batch_vec = batch_vec.to(device)
 
+            n = data.x.size(0)
+            batch_vec = torch.zeros(n, dtype=torch.long, device=device)
             target = _pg_target(
-                wrapped, batch_data, device, task_type, explain_model,
+                wrapped, data, device, task_type, explain_model,
                 batch=batch_vec, **model_kwargs)
 
-            train_kwargs = dict(model_kwargs)
-            if batch_vec is not None:
-                train_kwargs['batch'] = batch_vec
-
-            n_graphs = int(getattr(batch_data, 'num_graphs', 1))
-            indices = range(n_graphs) if n_graphs > 1 else [None]
-            for g_idx in indices:
-                try:
-                    explainer.algorithm.train(
-                        epoch, wrapped,
-                        batch_data.x, batch_data.edge_index,
-                        target=target,
-                        index=g_idx,
-                        **train_kwargs,
-                    )
-                    train_ok += 1
-                except Exception as e:
-                    train_fail += 1
-                    last_err = str(e)
-                    if train_fail <= 2:
-                        print(f'      [warn] PGExplainer train epoch {epoch}: {e}')
+            try:
+                explainer.algorithm.train(
+                    epoch, wrapped,
+                    data.x, data.edge_index,
+                    target=target,
+                    index=None,
+                    batch=batch_vec,
+                    **model_kwargs,
+                )
+                train_ok += 1
+            except Exception as e:
+                train_fail += 1
+                last_err = str(e)
+                if train_fail <= 2:
+                    print(f'      [warn] PGExplainer train epoch {epoch}: {e}')
 
     return train_ok, train_fail, last_err
 

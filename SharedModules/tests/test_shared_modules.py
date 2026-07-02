@@ -2039,5 +2039,49 @@ class TestMutagSplits(unittest.TestCase):
         self.assertEqual(out, {'train': [0, 1], 'valid': [3], 'test': [5]})
 
 
+class TestPGExplainer(unittest.TestCase):
+    """PGExplainer must not collapse motif scores to ~0 after training."""
+
+    def test_motif_scores_not_degenerate(self):
+        import torch
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        from SharedModules.baselines.vanilla_gnn import VanillaGNN, train_vanilla_gnn
+        from SharedModules.baselines.pg_explainer import run_pgexplainer
+
+        def _graph(seed, n=6):
+            torch.manual_seed(seed)
+            x = torch.randn(n, 52)
+            ei = torch.tensor([[i, (i + 1) % n] for i in range(n)], dtype=torch.long).t()
+            ea = torch.zeros(ei.size(1), 8)
+            n2m = torch.randint(0, 3, (n,))
+            y = torch.tensor([float(seed % 2)])
+            return Data(x=x, edge_index=ei, edge_attr=ea, y=y, nodes_to_motifs=n2m)
+
+        train = [_graph(i) for i in range(60)]
+        test = [_graph(i + 50) for i in range(8)]
+        loaders = {
+            'train': DataLoader(train, batch_size=8),
+            'valid': DataLoader(test, batch_size=8),
+        }
+        model = VanillaGNN(x_dim=52, hidden_dim=32, num_layers=2,
+                         backbone='GIN', edge_dim=8)
+        device = torch.device('cpu')
+        train_vanilla_gnn(model, loaders, 'BinaryClass', device,
+                          epochs=25, verbose=False)
+
+        class _Vocab:
+            motif_list = ['a', 'b', 'c']
+
+        scores = run_pgexplainer(
+            model, loaders, test, _Vocab(), device,
+            task_type='BinaryClass', epochs=15, max_graphs=8,
+        )
+        vals = list(scores['mean'].values())
+        self.assertTrue(vals, 'expected non-empty PGExplainer motif scores')
+        self.assertGreater(max(vals), 0.05,
+                             f'scores collapsed near zero: {vals}')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
