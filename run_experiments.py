@@ -314,18 +314,21 @@ def _mutag_cli(ds: str, data_root: str, fold: int) -> list:
 
 def make_command(exp, args, ds, fold, variant, cfg, inj, epochs, syn, backbone):
     feat = cfg['features']; ln = cfg['layer_norm']; en = cfg['encoder_norm']
+    conv_norm = ln
+    if exp == 'mose':
+        conv_norm = os.environ.get('MOSE_CONV_NORMALIZE', 'none')
     w_feat, w_msg, w_read = parse_injection(inj)
     eff_fold = effective_fold(ds, int(fold))
     ds_root, proc_root = _trainer_paths(args, ds)
     node_enc = resolve_node_encoder_for_dataset(ds, feat)
     out_dir = Path(args.out_root) / config_tag(
-        exp, ds, fold, variant, feat, ln, en, inj, epochs, syn, backbone)
+        exp, ds, fold, variant, feat, conv_norm, en, inj, epochs, syn, backbone)
     script = Path(args.project) / TRAINERS[exp]
     cmd = [sys.executable, str(script),
            '--dataset', ds, '--fold', str(eff_fold),
            '--backbone', backbone, '--node_encoder', node_enc,
            '--hidden_dim', str(args.hidden_dim), '--num_layers', str(args.num_layers),
-           '--conv_normalize', ln,
+           '--conv_normalize', conv_norm,
            '--data_root', ds_root, '--vocab_root', args.vocab_root,
            '--vocab_variant', variant, '--out_dir', str(out_dir),
            '--processed_root', proc_root,

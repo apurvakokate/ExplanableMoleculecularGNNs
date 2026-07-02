@@ -454,10 +454,10 @@ def main():
     parser.add_argument('--load_weights_from', default=None,
                         help='Run dir or path to best_model.pt for --eval_only. '
                              'Defaults to the out_dir for this config.')
-    parser.add_argument('--conv_normalize', default='l2',
+    parser.add_argument('--conv_normalize', default='none',
                         choices=['l2', 'layernorm', 'none'],
-                        help='Per-conv normalization (default l2, matches '
-                             'reference; cancels motif-weight magnitude scaling).')
+                        help='Per-conv normalization (default none for MOSE; '
+                             'l2 cancels motif-weight magnitude scaling).')
     parser.add_argument('--run_multi_explanation', action='store_true',
                         help='Run multiple-explanation / co-occurrence (H0/H1/H2) '
                              'analysis after training and save multi_explanation.*')

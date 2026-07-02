@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_full_pipeline.sh — end-to-end phase 0 -> 6 for ONE dataset.
+# run_full_pipeline.sh — end-to-end phase 0 -> analyze for ONE dataset.
 #
-# HPC — BBBP full sweep (after archival, clean start):
-#   bash run_full_pipeline.sh full fresh
+# Full sweep (three separate commands):
+#   bash run_full_pipeline.sh BBBP full fresh
+#   bash run_full_pipeline.sh Alkane_Carbonyl full
+#   bash run_full_pipeline.sh mutag full
 #
-# HPC — mutag full (fold 0 only; needs phase0 export + TUDataset raw/):
-#   bash run_full_pipeline.sh mutag full fresh
+# Single dataset + SLURM:
+#   bash run_full_pipeline.sh submit BBBP full fresh
 #   bash run_full_pipeline.sh submit mutag full fresh
 #
-# Submit to SLURM (edit SLURM_* / SLURM_SETUP below first):
-#   bash run_full_pipeline.sh submit full fresh
+# fresh — force rerun (SKIP_EXISTING=0, FORCE_RERUN=1, full analyze regenerate).
 #
 # Other examples:
-#   bash run_full_pipeline.sh                     # smoke: fold 0, GIN, MOSE filtered
-#   bash run_full_pipeline.sh full                # full sweep, resume incomplete runs
-#   bash run_full_pipeline.sh hERG full fresh
+#   bash run_full_pipeline.sh                     # smoke: BBBP fold 0, GIN
+#   bash run_full_pipeline.sh full                # resume BBBP full sweep
 #
 # Logs: logs/pipeline_<dataset>_<mode>_<timestamp>.log
 # =============================================================================
@@ -28,11 +28,11 @@ cd "$_REPO"
 DATASET="${DATASET:-BBBP}"
 MODE="${MODE:-smoke}"              # smoke | full
 FRESH="${FRESH:-0}"
-# Do not pre-init FAIL_FAST / SKIP_PHASE0 — MODE block sets defaults via ${VAR:-…}
 SUBMIT=0
 
 export VOCAB_FOCUS="${VOCAB_FOCUS:-rbrics,all_fallback_bpe}"
 export RULE_INDEX="${RULE_INDEX:-0}"
+export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 
 # ── SLURM (for "submit" only) ───────────────────────────────────────────────
 SLURM_JOB_NAME="${SLURM_JOB_NAME:-bbbp_full}"
@@ -51,7 +51,6 @@ export WANDB_FLAGS="--use_wandb --wandb_project $WANDB_PROJECT"
 [ -n "$WANDB_ENTITY" ] && export WANDB_FLAGS="$WANDB_FLAGS --wandb_entity $WANDB_ENTITY"
 
 RUN_ANALYZE="${RUN_ANALYZE:-1}"
-# ANALYZE_ARGS set after CLI parses DATASET (below).
 
 # ── CLI: [submit] [dataset] [full|smoke] [fresh] ─────────────────────────────
 for _tok in "$@"; do
@@ -63,7 +62,15 @@ for _tok in "$@"; do
     esac
 done
 
-# ── MODE presets (applied after CLI) ──────────────────────────────────────────
+# ── Dataset helpers ───────────────────────────────────────────────────────────
+_is_special_dataset() {
+    case "$1" in
+        mutag|ogbg-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ── MODE presets ──────────────────────────────────────────────────────────────
 if [ "$MODE" = "full" ]; then
     FOLDS="${FOLDS:-0 1 2 3 4}"
     BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
@@ -81,14 +88,6 @@ else
 fi
 export FOLDS BACKBONES EPOCHS MOSE_BASE FAIL_FAST SKIP_PHASE0
 
-# ── Dataset-specific overrides (mutag / OGB) ─────────────────────────────────
-# mutag: fold 0 only, phase0 export required, no synthetic GT (phase4).
-_is_special_dataset() {
-    case "$1" in
-        mutag|ogbg-*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
 if _is_special_dataset "$DATASET"; then
     FOLDS="${FOLDS:-0}"
     export FOLDS
@@ -100,8 +99,11 @@ if _is_special_dataset "$DATASET"; then
     fi
 fi
 
-# Analyze scoped to pipeline DATASET (avoids scanning unrelated results on disk).
-_base_analyze="${ANALYZE_ARGS:---skip_regenerate}"
+if [ "$FRESH" = "1" ]; then
+    _base_analyze="${ANALYZE_ARGS:-}"
+else
+    _base_analyze="${ANALYZE_ARGS:---skip_regenerate}"
+fi
 if [[ "$_base_analyze" == *"--dataset"* ]]; then
     export ANALYZE_ARGS="$_base_analyze"
 else
@@ -147,7 +149,6 @@ EOF
 fi
 
 export DATASETS="$DATASET"
-# Force single-dataset scope (do not inherit a full DATASETS_CSV from the shell).
 if _is_special_dataset "$DATASET"; then
     export DATASETS_CSV=""
 else
@@ -163,14 +164,12 @@ LOG="logs/pipeline_${DATASET}_${MODE}_$(date +%Y%m%d_%H%M%S).log"
 PHASES=()
 [ "$SKIP_PHASE0" != "1" ] && PHASES+=( phase0 )
 PHASES+=( phase1 phase2 phase3 )
-# phase4 synthetic GT applies only to CSV benchmarks in GT_SUPPORTED_DATASETS.
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase4 )
 fi
 PHASES+=(
   phase5_vanilla phase5_mose phase5_gsat phase5_motifsat phase5_baselines
 )
-# GT vanilla + post-hoc baselines (CSV benchmarks with phase-4 gt_cache only).
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase5_vanilla_gt phase5_baselines_gt )
 fi
@@ -182,6 +181,7 @@ run_pipeline() {
   echo "# FULL PIPELINE — dataset=$DATASET   mode=$MODE   fresh=$FRESH"
   echo "#   VOCAB_FOCUS=$VOCAB_FOCUS  FOLDS='$FOLDS'  BACKBONES='$BACKBONES'"
   echo "#   EPOCHS=$EPOCHS  MOSE_BASE=$MOSE_BASE  RULE_INDEX=$RULE_INDEX"
+  echo "#   MOSE_CONV_NORMALIZE=$MOSE_CONV_NORMALIZE"
   echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST  DATASETS_CSV='${DATASETS_CSV:-}'"
   echo "#   SKIP_EXISTING=${SKIP_EXISTING:-?}  WANDB_MODE=$WANDB_MODE"
   echo "#   ANALYZE_ARGS=$ANALYZE_ARGS"

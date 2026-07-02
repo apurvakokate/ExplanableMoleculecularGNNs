@@ -24,7 +24,7 @@ class MOSEConfig:
     hidden_dim: int = 64
     num_layers: int = 3
     apply_layer_norm: bool = False
-    conv_normalize: str = 'l2'      # l2 | layernorm | none (per-conv norm)
+    conv_normalize: str = 'none'    # l2 | layernorm | none (per-conv norm; MOSE default none)
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     dropout: float = 0.5
     w_feat: bool = True

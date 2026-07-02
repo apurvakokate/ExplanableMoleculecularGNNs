@@ -57,6 +57,7 @@ DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 EPOCHS="${EPOCHS:-500}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
+MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
 # Optional phase4/5 subset: comma-separated short names, e.g. rbrics,all_fallback_bpe
@@ -109,7 +110,7 @@ _check_paths() {
     echo "  DATASETS   = $DATASETS"
     echo "  CSV        = $DATASETS_CSV"
     echo "  SPECIAL    = $DATASETS_SPECIAL"
-    echo "  CONV_NORM  = $CONV_NORMALIZE"
+    echo "  CONV_NORM  = $CONV_NORMALIZE  (MOSE: $MOSE_CONV_NORMALIZE)"
     echo "  FOLDS      = $FOLDS"
     echo "  BACKBONES  = $BACKBONES"
     echo "  PROCESSED  = $PROCESSED_ROOT"
@@ -589,7 +590,7 @@ run_mose() {
                     --data_root    "$ds_root" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
-                    --conv_normalize "$CONV_NORMALIZE" \
+                    --conv_normalize "$MOSE_CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -919,7 +920,7 @@ run_mose_gt() {
                     --data_root    "$DATA_ROOT" \
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
-                    --conv_normalize "$CONV_NORMALIZE" \
+                    --conv_normalize "$MOSE_CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${gt_variant}" \
                     $(_mose_extra_flags) \

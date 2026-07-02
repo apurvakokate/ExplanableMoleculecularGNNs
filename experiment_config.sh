@@ -54,8 +54,10 @@ export NODE_ENCODER="${NODE_ENCODER:-onehot}"  # onehot | linear | atom_encoder 
 export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encoder; vanilla only)
 # Phase 5 training budget (max epochs; early stopping may stop sooner).
 export EPOCHS="${EPOCHS:-500}"
-# Per-conv normalization passed to all phase5 trainers (l2 | layernorm | none)
+# Per-conv normalization for vanilla / GSAT / MotifSAT / baselines (l2 | layernorm | none)
 export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
+# MOSE uses its own default (none) — motif weights carry magnitude information.
+export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 # MOSE multi-explanation (H0/H1/H2) runs post-hoc — see phase multi_explanation.
 # Set to 1 only to run inline during MOSE training (not recommended at scale).
 export MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
@@ -122,7 +124,7 @@ echo "  OUT_ROOT   = $OUT_ROOT"
 echo "  DATASETS   = $DATASETS"
 echo "  CSV        = $DATASETS_CSV"
 echo "  SPECIAL    = $DATASETS_SPECIAL"
-echo "  CONV_NORM  = $CONV_NORMALIZE"
+echo "  CONV_NORM  = $CONV_NORMALIZE  (MOSE: $MOSE_CONV_NORMALIZE)"
 echo "  BACKBONES  = $BACKBONES"
 echo "  EPOCHS     = $EPOCHS   (phase 5 max; early stopping may finish earlier)"
 echo "  GNNEX      = max_graphs=${GNNEX_MAX_GRAPHS:-all} epochs=$GNNEX_EPOCHS"
