@@ -36,6 +36,9 @@ CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
     'rbrics_filter':                      dict(UNIFIED_FILTER_THRESHOLDS),
     'rbrics_with_struct_fallback_filter': dict(UNIFIED_FILTER_THRESHOLDS),
     'rbrics_old_filter':                  dict(UNIFIED_FILTER_THRESHOLDS),
+    # FG-protected + threshold (mutag MOSE filtered; same cutoffs until phase-2 review)
+    'rbrics_protected_filter':            dict(UNIFIED_FILTER_THRESHOLDS),
+    'all_fallback_bpe_protected_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
 }
 
 

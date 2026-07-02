@@ -738,6 +738,10 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
         for smarts, atom_set in mol_frags:
             # Flat +1.0 per fragment occurrence in train+val (see coverage_vs_threshold).
             w = 1.0
+            # atoms this motif actually OWNS (== atom_count(smarts) for normal motifs;
+            # differs only for context-labelled motifs like the protected aniline
+            # '*C(*)N', which owns just {N} but is labelled with its ipso ring C).
+            raw[smarts]['n_atoms_owned'] = len(atom_set)
             raw[smarts]['n_occurrences'] += 1
             if is_tv:
                 raw[smarts]['weighted_count'] += w
@@ -754,7 +758,7 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
     frag_to_id = {s: i for i, s in enumerate(kept)}
     motif_stats = {s: {
         **raw[s],
-        'n_atoms':        frag.atom_count(s),
+        'n_atoms':        raw[s].get('n_atoms_owned', frag.atom_count(s)),
         'ring':           frag.has_ring(s),
         'above_min_sup':  raw[s]['count'] / n >= min_sup_for_rules,
         'n_occurrences':  raw[s]['n_occurrences'],
@@ -1218,7 +1222,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 variant_suffix: str = '',
                 shatter: bool = True,
                 rule_rank: str = 'balanced',
-                preserve_typed_dummies: bool = False):
+                preserve_typed_dummies: bool = False,
+                protect: bool = False):
     """Run the full pipeline for one dataset with given settings.
 
     Args:
@@ -1385,6 +1390,34 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         print(f"    [v4] Fragmented: {n_valid - n_single}/{n_valid} "
               f"({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
               f"single-frag: {n_single}  merge_rules={len(_ruleset)}")
+
+    # ---- functional-group protection (nitro + aniline) ---------------------
+    # Engine-agnostic: carve protected toxicophores out of the tracked fragments
+    # (which both engines produce as [(smarts, {orig_atom_idx})]) so each becomes a
+    # single explicit motif. Re-keys with the engine's own canonicaliser.
+    if protect:
+        import chemfrag as _cf
+        import fg_protect as _fgp
+        if method in _LEGACY_METHODS:
+            def _keyer(m, aset):
+                sub, _ = _cf.submol_dummies(m, aset)
+                return _canonical_legacy_smarts_from_mol(sub) if sub is not None else None
+        else:
+            def _keyer(m, aset):
+                return _cf.frag_key(m, aset)
+        _carved = []
+        _n_prot = 0
+        for orig_smi, _frags in zip(smiles_all, mol_frags_tracked):
+            m = Chem.MolFromSmiles(orig_smi)
+            if m is None:
+                _carved.append(_frags); continue
+            new = _fgp.carve_protected(m, _frags, _keyer)
+            if len(_fgp.protected_atomsets(m)):
+                _n_prot += 1
+            _carved.append(new)
+        mol_frags_tracked = _carved
+        print(f"    [protect] nitro+aniline carved into explicit motifs "
+              f"in {_n_prot}/{len(smiles_all)} molecules")
 
     # ---- BEGIN LEGACY FRAGMENTATION + BPE (DISABLED) -----------------------
     # frag._CACHE.clear()
@@ -1727,6 +1760,12 @@ Examples:
                         'motif keys instead of normalizing all dummies to [*]. '
                         'Applies to rbrics, brics, and all/v4 — not rbrics_old '
                         '(plot path). Appends "_typed_dummies" to the variant name.')
+    p.add_argument('--protect', action='store_true',
+                   help='Protect functional-group toxicophores (nitro -NO2 and '
+                        'aromatic primary amine / aniline c-NH2): carve each out of '
+                        'the tracked fragments as a single explicit motif before '
+                        'vocabulary building (fg_protect.py). Pass a "_protected" '
+                        'variant name via --variant.')
     p.add_argument('--min_atoms', type=int, default=MIN_FRAG_ATOMS,
                    help=f'Min atoms for BPE fragment to stand alone (default {MIN_FRAG_ATOMS})')
     p.add_argument('--max_diam',  type=int, default=GNN_LAYERS,
@@ -1786,7 +1825,8 @@ Examples:
                            variant_suffix=_shatter_suffix + _dummy_suffix,
                            shatter=bool(args.shatter),
                            rule_rank=args.rule_rank,
-                           preserve_typed_dummies=args.preserve_typed_dummies)
+                           preserve_typed_dummies=args.preserve_typed_dummies,
+                           protect=bool(args.protect))
         meta['dataset'] = ds
         all_metas.append(meta)
 

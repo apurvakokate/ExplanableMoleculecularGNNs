@@ -30,6 +30,9 @@ MODE="${MODE:-smoke}"              # smoke | full
 FRESH="${FRESH:-0}"
 SUBMIT=0
 
+# Record whether the user explicitly set VOCAB_FOCUS *before* we apply a default,
+# so we can auto-add protected vocabs for mutag only when they didn't override it.
+_VOCAB_FOCUS_USER_SET="${VOCAB_FOCUS+set}"
 export VOCAB_FOCUS="${VOCAB_FOCUS:-rbrics,all_fallback_bpe}"
 export RULE_INDEX="${RULE_INDEX:-0}"
 export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
@@ -61,6 +64,14 @@ for _tok in "$@"; do
         *) DATASET="$_tok" ;;
     esac
 done
+
+# mutag runs the FG-protected vocabs ALONGSIDE the standard ones by default (the
+# nitro/aniline toxicophore experiment). Other datasets stay standard-only, and an
+# explicit user-set VOCAB_FOCUS is always respected.
+if [ "$DATASET" = "mutag" ] && [ -z "$_VOCAB_FOCUS_USER_SET" ]; then
+    export VOCAB_FOCUS="rbrics,all_fallback_bpe,rbrics_protected,all_fallback_bpe_protected"
+    echo "# mutag: VOCAB_FOCUS auto-set to standard + protected → $VOCAB_FOCUS"
+fi
 
 # ── Dataset helpers ───────────────────────────────────────────────────────────
 _is_special_dataset() {

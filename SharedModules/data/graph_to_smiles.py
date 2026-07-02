@@ -462,12 +462,21 @@ def apply_motif_lookup_with_index_map(
     mapped_smiles: str,
     lookup: Dict[str, Dict[int, Tuple[str, int]]],
     index_map: Dict[str, Dict[int, int]],
+    edge_index=None,
 ) -> torch.Tensor:
     """Build nodes_to_motifs tensor for a mutag graph.
 
     The lookup produced by MotifBreakdown is keyed by the mapped SMILES and
     uses *SMILES atom indices* internally.  We translate back to graph node
     indices using the index_map produced by graph_to_mapped_smiles().
+
+    mutag graphs carry EXPLICIT HYDROGEN nodes (~45% of nodes), but motifs live
+    in the heavy-atom SMILES space, so the index_map only covers heavy atoms and
+    every H node would otherwise stay ``-1`` (motif-less). When ``edge_index`` is
+    given we PROPAGATE each such H node to its bonded heavy atom's motif, so the
+    motif partition covers the whole graph (a heavy atom's H's inherit its motif,
+    e.g. an amino N's hydrogens take the aniline motif). Heavy-atom datasets
+    (BBBP / Alkane / OGB) have no H nodes, so this is a mutag-only effect.
 
     Parameters
     ----------
@@ -481,6 +490,8 @@ def apply_motif_lookup_with_index_map(
     index_map : dict
         {mapped_smiles: {graph_node_idx: smiles_atom_idx}}
         As produced by build_mutag_smiles_df().
+    edge_index : LongTensor [2, E] or None
+        Graph connectivity; enables H->heavy-neighbour motif propagation.
 
     Returns
     -------
@@ -494,5 +505,28 @@ def apply_motif_lookup_with_index_map(
         entry = smi_lookup.get(smiles_idx)
         if entry is not None:
             ntm[graph_idx] = entry[1]   # motif_id
+
+    # Propagate motifs onto the unmapped (hydrogen) nodes from their bonded heavy
+    # atom. Iterate to fixpoint so H reachable only through an H-chain still
+    # inherit a heavy atom's motif; H in a component with no heavy atom (rare,
+    # anomalous) stay -1.
+    if edge_index is not None and bool((ntm < 0).any()):
+        from collections import defaultdict
+        adj = defaultdict(list)
+        src = edge_index[0].tolist()
+        dst = edge_index[1].tolist()
+        for u, v in zip(src, dst):
+            adj[u].append(v)
+        changed = True
+        while changed:
+            changed = False
+            for h in range(n_nodes):
+                if int(ntm[h]) >= 0:
+                    continue
+                for nb in adj[h]:
+                    if int(ntm[nb]) >= 0:
+                        ntm[h] = ntm[nb]
+                        changed = True
+                        break
 
     return ntm

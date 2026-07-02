@@ -434,5 +434,45 @@ class TestEndToEndIndexConsistency(unittest.TestCase):
         self.assertEqual(set(g2s2.keys()), set(range(len(nt2))))
 
 
+class TestHPropagation(unittest.TestCase):
+    """Explicit-H graph nodes (unmapped by the heavy-atom index map) inherit their
+    bonded heavy atom's motif when edge_index is supplied — the mutag path."""
+
+    def _graph(self):
+        # heavy: node0=C(motif5), node1=N(motif7); H: 2,3 on C, 4,5 on N
+        ei = torch.tensor([[0, 1, 0, 2, 0, 3, 1, 4, 1, 5],
+                           [1, 0, 2, 0, 3, 0, 4, 1, 5, 1]])
+        key = 'CN'
+        lookup = {key: {0: ('C', 5), 1: ('N', 7)}}
+        index_map = {key: {0: 0, 1: 1}}   # only the two heavy nodes are mapped
+        return 6, key, lookup, index_map, ei
+
+    def test_without_edge_index_H_stay_minus1(self):
+        n, key, lookup, im, ei = self._graph()
+        ntm = apply_motif_lookup_with_index_map(n, key, lookup, im)
+        self.assertEqual(ntm.tolist(), [5, 7, -1, -1, -1, -1])
+
+    def test_with_edge_index_H_inherit_parent_motif(self):
+        n, key, lookup, im, ei = self._graph()
+        ntm = apply_motif_lookup_with_index_map(n, key, lookup, im, edge_index=ei)
+        self.assertEqual(ntm.tolist(), [5, 7, 5, 5, 7, 7])
+
+    def test_full_coverage_after_propagation(self):
+        n, key, lookup, im, ei = self._graph()
+        ntm = apply_motif_lookup_with_index_map(n, key, lookup, im, edge_index=ei)
+        self.assertTrue(bool((ntm >= 0).all()))
+
+    def test_isolated_H_component_stays_minus1(self):
+        # node0=C(motif5)-H(1); plus an isolated H-H pair (2-3) with no heavy atom
+        ei = torch.tensor([[0, 1, 2, 3], [1, 0, 3, 2]])
+        key = 'C'
+        ntm = apply_motif_lookup_with_index_map(
+            4, key, {key: {0: ('C', 5)}}, {key: {0: 0}}, edge_index=ei)
+        self.assertEqual(int(ntm[0]), 5)   # heavy C
+        self.assertEqual(int(ntm[1]), 5)   # its H inherits
+        self.assertEqual(int(ntm[2]), -1)  # isolated H-H: no heavy atom → -1
+        self.assertEqual(int(ntm[3]), -1)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -253,7 +253,8 @@ class MutagTUDataset(torch.utils.data.Dataset):
 
         if self._vocab is not None and mapped_smi and self._lookup:
             data.nodes_to_motifs = apply_motif_lookup_with_index_map(
-                n, mapped_smi, self._lookup, self._index_maps
+                n, mapped_smi, self._lookup, self._index_maps,
+                edge_index=getattr(data, 'edge_index', None),
             )
         else:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
