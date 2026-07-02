@@ -100,5 +100,35 @@ class TestCarve(unittest.TestCase):
         self.assertEqual(len(ring_frag), 6)
 
 
+class TestFlatMutagRepresentation(unittest.TestCase):
+    """Validate detection/carve on the ACTUAL mutag export representation:
+    atom-mapped, explicit-H, NON-aromatic single-bond SMILES (bond orders and
+    aromaticity are lost in the TUDataset graph->SMILES step). Connectivity-based
+    detection (N with >=2 O neighbours; ring-attached primary amine via IsInRing)
+    must still fire here, not just on clean aromatic SMILES."""
+
+    # a real exported mutag molecule carrying both toxicophores (nitro as N(OH)(OH),
+    # aniline as -NH2 on a saturated ring carbon; note: no aromatic atoms)
+    FLAT = ('[CH:1]1([N:4]([OH:8])[OH:9])[CH:2]([O:6][H:14])[CH:5]([H:13])'
+            '[CH:10]([H:15])[CH:7]([N:11]([H:16])[H:17])[CH:3]1[H:12]')
+
+    def test_parses_and_is_non_aromatic(self):
+        m = Chem.MolFromSmiles(self.FLAT)
+        self.assertIsNotNone(m)
+        self.assertFalse(any(a.GetIsAromatic() for a in m.GetAtoms()))
+
+    def test_both_toxicophores_detected_on_flat_smiles(self):
+        m = Chem.MolFromSmiles(self.FLAT)
+        tags = set(t for t, _, _ in F.protected_atomsets(m))
+        self.assertEqual(tags, {'nitro', 'aniline'})
+
+    def test_carve_partition_preserved_on_flat_smiles(self):
+        m = Chem.MolFromSmiles(self.FLAT)
+        whole = [(_keyer(m, set(range(m.GetNumAtoms()))), set(range(m.GetNumAtoms())))]
+        carved = F.carve_protected(m, whole, _keyer)
+        self.assertEqual(set().union(*[a for _, a in carved]), set(range(m.GetNumAtoms())))
+        self.assertEqual(sum(len(a) for _, a in carved), m.GetNumAtoms())
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

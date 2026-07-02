@@ -209,11 +209,6 @@ _vocab_focus_filtered_variants() {
     done
 }
 
-_vocab_focus_all_eval_variants() {
-    _vocab_focus_base_variants
-    _vocab_focus_filtered_variants
-}
-
 _baseline_weight_variant() {
     case "$1" in
         "$V_OLD_TH")       echo "$V_OLD" ;;
@@ -1197,8 +1192,8 @@ phase3() {
 
     echo ""
     echo "Phase 3 complete.  Vocabularies now available:"
-    echo "  No threshold: $V_OLD  $V_RBRICS  $V_RBRICS_SF  $V_ALL"
-    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_RBRICS_SF_TH  $V_ALL_TH"
+    echo "  No threshold: $V_OLD  $V_RBRICS  $V_RBRICS_SF  $V_ALL$(_want_protected && echo "  $V_RBRICS_PROT  $V_ALL_PROT")"
+    echo "  Filtered:     $V_OLD_TH  $V_RBRICS_TH  $V_RBRICS_SF_TH  $V_ALL_TH$(_want_protected && echo "  $V_RBRICS_PROT_TH  $V_ALL_PROT_TH")"
     echo ""
     echo "To change thresholds: edit CHOSEN_THRESHOLD in"
     echo "  MotifBreakdown/generate_vocab_rules.py"
@@ -1375,8 +1370,9 @@ phase5_gsat() {
 
 # =============================================================================
 # PHASE 5d — Post-hoc baselines
-#   GNNExplainer, PGExplainer, MAGE applied to each trained vanilla model,
-#   evaluated under all six vocab variants for cross-comparison.
+#   GNNExplainer, PGExplainer, MAGE on each trained vanilla checkpoint,
+#   evaluated under unfiltered base vocabs only (same as vanilla/GSAT/MotifSAT).
+#   Filtered vocabs are MOSE-only; baselines do not run on *_filter variants.
 # =============================================================================
 phase5_baselines() {
     _check_paths
@@ -1387,7 +1383,7 @@ phase5_baselines() {
     echo "══════════════════════════════════════════════════════════"
 
     local eval_variant
-    for eval_variant in $(_vocab_focus_all_eval_variants); do
+    for eval_variant in $(_vocab_focus_base_variants); do
         run_baselines "$eval_variant"
     done
 
@@ -1578,7 +1574,7 @@ case "$PHASE" in
         echo "  phase5_vanilla    vanilla GNN (exactly one DATASET; SKIP_EXISTING on by default)"
         echo "  phase5_mose       MOSE-GNN (one DATASET; filtered + base + GT per VOCAB_FOCUS)"
         echo "  phase5_gsat       base GSAT (one DATASET; VOCAB_FOCUS base + GT variants)"
-        echo "  phase5_baselines  post-hoc on vanilla (one DATASET; VOCAB_FOCUS eval variants)"
+        echo "  phase5_baselines  post-hoc on vanilla (VOCAB_FOCUS base vocabs only)"
         echo "  phase5_vanilla_gt   vanilla on synthetic GT (CSV benchmarks; phase4 gt_cache)"
         echo "  phase5_baselines_gt post-hoc on GT vanilla + GT loaders (after phase5_vanilla_gt)"
         echo "  phase5_motifsat   MotifSAT (one DATASET; VOCAB_FOCUS base + GT variants)"
