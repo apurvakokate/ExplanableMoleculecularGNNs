@@ -394,10 +394,10 @@ def main():
     if args.run_dir:
         run_dirs = [Path(args.run_dir)]
     elif args.out_root:
-        from analysis.aggregate_experiments import dataset_allowed
-        run_dirs = [p.parent for p in Path(args.out_root).rglob('summary.json')
-                    if _is_probeable_run(p)
-                    and (not datasets or dataset_allowed(p, datasets))]
+        # iter_summaries skips _archive/_trash/_old and applies the dataset filter.
+        from analysis.aggregate_experiments import iter_summaries
+        run_dirs = [p.parent for p in iter_summaries(Path(args.out_root), datasets=datasets)
+                    if _is_probeable_run(p)]
     else:
         raise SystemExit('provide --run_dir or --out_root')
 

@@ -35,7 +35,8 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from analysis.aggregate_experiments import resolve_family, dataset_allowed
+from analysis.aggregate_experiments import (
+    resolve_family, dataset_allowed, ARCHIVE_PREFIXES)
 from SharedModules.data.dataset_routing import (
     base_from_stored_processed_root,
     mutag_artifact_paths,
@@ -237,6 +238,11 @@ def main():
     allowed = set(args.families)
     datasets = set(args.dataset) if args.dataset else None
     runs = sorted({p.parent for p in out_root.rglob('best_model.pt')})
+    # Skip archived/scratch trees (matches iter_summaries) so regenerate never
+    # overwrites summaries under _archive/_trash/_old.
+    runs = [rd for rd in runs if not any(
+        part.startswith(ARCHIVE_PREFIXES)
+        for part in rd.relative_to(out_root).parts)]
     if datasets:
         runs = [rd for rd in runs if dataset_allowed(rd, datasets)]
         print(f'Dataset filter {sorted(datasets)}: {len(runs)} checkpoint(s)\n')

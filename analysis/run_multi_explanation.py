@@ -27,7 +27,8 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from analysis.aggregate_experiments import resolve_family, dataset_allowed
+from analysis.aggregate_experiments import (
+    resolve_family, dataset_allowed, iter_summaries)
 from analysis.probe_masked_nodes import _load_model_and_data, _is_probeable_run
 from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 
@@ -115,10 +116,9 @@ def main():
         run_dirs = [Path(args.run_dir)]
     elif args.out_root:
         run_dirs = []
-        for p in Path(args.out_root).rglob('summary.json'):
+        # iter_summaries skips _archive/_trash/_old and applies the dataset filter.
+        for p in iter_summaries(Path(args.out_root), datasets=datasets):
             if not _is_probeable_run(p):
-                continue
-            if datasets and not dataset_allowed(p, datasets):
                 continue
             try:
                 with open(p, encoding='utf-8') as f:

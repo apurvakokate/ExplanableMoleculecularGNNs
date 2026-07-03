@@ -141,7 +141,65 @@ class TestAnalysisInvariants(unittest.TestCase):
         out = normalize(df)
         self.assertEqual(set(out['dataset']), {'Mutagenicity', 'mutag'})
 
-    def test_results_table_separates_real_and_gt(self):
+    def test_pivot_collapses_folds_only(self):
+        """Five folds with distinct values → mean ± std; vocab axes stay separate."""
+        rows = []
+        for fold in range(5):
+            rows.append({
+                'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
+                'vocab_variant': 'rbrics', 'fold': fold,
+                'exp_dir': f'mose/BBBP/fold{fold}/rbrics/GIN',
+                'auc': 0.50 + fold * 0.01,
+            })
+            rows.append({
+                'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
+                'vocab_variant': 'rbrics_filter', 'fold': fold,
+                'exp_dir': f'mose/BBBP/fold{fold}/rbrics_filter/GIN',
+                'auc': 0.60 + fold * 0.01,
+            })
+        tbl = build(pd.DataFrame(rows), 'auc', mode='prediction')
+        self.assertEqual(len(tbl), 2)
+        self.assertIn('0.520 ± 0.016', tbl.loc[('BBBP', 'mose', 'real', 'rbrics', False), 'GIN'])
+        self.assertIn('0.620 ± 0.016', tbl.loc[('BBBP', 'mose', 'real', 'rbrics', True), 'GIN'])
+
+    def test_build_tidy_collapses_only_folds_not_configs(self):
+        """Runs in the SAME coarse cell that differ in hyperparameter config
+        (noise/info_loss_level + hp-hash in the run tag) must stay SEPARATE tidy
+        rows; only same-config runs across folds may collapse."""
+        from analysis.aggregate_experiments import (
+            build_tidy, DEFAULT_EXPERIMENT_AXES, PERF)
+        rows = []
+        # config A (IB off) across two folds
+        for f in (0, 1):
+            rows.append({
+                'exp_dir': f'motifsat/rbrics/BBBP/fold{f}/GIN_readout_onehot_'
+                           'norm-l2_wf+wm+wr_noise-none_il-none_real_ep500_'
+                           'rbrics_L3_h64_lr0.001_hp-aaaa',
+                'dataset': 'BBBP', 'backbone': 'GIN', 'fold': f,
+                'vocab_variant': 'rbrics', 'motif_method': 'readout',
+                'auc': 0.9, 'gt_roc_node_auc_mean': 0.50})
+        # config B (IB on), fold 0, SAME coarse cell
+        rows.append({
+            'exp_dir': 'motifsat/rbrics/BBBP/fold0/GIN_readout_onehot_norm-l2_'
+                       'wf+wm+wr_noise-motif_il-motif_real_ep500_rbrics_'
+                       'L3_h64_lr0.001_hp-bbbb',
+            'dataset': 'BBBP', 'backbone': 'GIN', 'fold': 0,
+            'vocab_variant': 'rbrics', 'motif_method': 'readout',
+            'auc': 0.9, 'gt_roc_node_auc_mean': 0.87})
+        tidy = build_tidy(normalize(pd.DataFrame(rows)),
+                          [PERF, 'gt_roc_node_auc_mean'], DEFAULT_EXPERIMENT_AXES)
+        ms = tidy[(tidy.family == 'motifsat') & (tidy.dataset == 'BBBP')
+                  & (tidy.backbone == 'GIN')]
+        # two distinct configs → two rows, NOT one averaged 0.685 row
+        self.assertEqual(len(ms), 2)
+        gts = sorted(round(float(v), 3)
+                     for v in ms['gt_roc_node_auc_mean__mean'])
+        self.assertEqual(gts, [0.50, 0.87])
+        # config A collapsed its two folds into one row
+        a = ms[ms['gt_roc_node_auc_mean__mean'].round(3) == 0.50].iloc[0]
+        self.assertEqual(int(a['n_folds']), 2)
+
+    def test_pivot_does_not_collapse_families_or_synthetic(self):
         df = pd.DataFrame([
             {'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
              'vocab_variant': 'rbrics', 'fold': 0, 'auc': 0.55,

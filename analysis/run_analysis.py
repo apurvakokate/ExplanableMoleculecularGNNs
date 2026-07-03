@@ -47,21 +47,43 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 ANALYSIS = REPO / 'analysis'
-DEFAULT_METRICS = ['auc', 'val_auc', 'train_auc',
-                   'rmse', 'mae', 'rmse_orig', 'mae_orig',
-                   'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
-                   'gt_roc_n_graphs',
-                   # Node attention reduced to motif level by mean / max.
-                   'gt_roc_node_mean_auc_mean', 'gt_roc_node_max_auc_mean',
-                   # Post-hoc baseline GT-ROC (node level): per explainer × agg.
-                   'gnnexplainer_mean_gt_roc_node_auc_mean',
-                   'gnnexplainer_max_gt_roc_node_auc_mean',
-                   'pgexplainer_mean_gt_roc_node_auc_mean',
-                   'pgexplainer_max_gt_roc_node_auc_mean',
-                   'mage_mean_gt_roc_node_auc_mean',
-                   'mage_max_gt_roc_node_auc_mean',
-                   'pearson', 'spearman', 'top_k_abs_disc',
-                   'score_disc_spearman']
+
+# Identity / config columns — never treat as pivot metrics.
+_NON_METRIC_COLS = frozenset({
+    'fold', 'seed', 'mutag_seed', 'num_layers', 'gt_roc_n_graphs', 'epochs',
+    'info_loss_coef', 'motif_loss_coef', 'within_node_coef', 'between_motif_coef',
+    'ent_reg', 'size_reg', 'explainer_lr', 'gnn_lr', 'hidden_dim',
+    'init_r', 'final_r', 'decay_interval', 'decay_r', 'learn_edge_att',
+    'w_feat', 'w_message', 'w_readout', 'gin_inner_bn', 'score_count',
+})
+
+
+def discover_table_metrics(df) -> list[str]:
+    """Metrics to pivot into tables: full report set + any numeric explainer cols."""
+    import pandas as pd
+    from analysis.aggregate_experiments import DEFAULT_REPORT_METRICS, PERF
+
+    metrics: list[str] = []
+    seen: set[str] = set()
+    for m in DEFAULT_REPORT_METRICS:
+        if m == PERF:
+            for col in ('auc', 'rmse_orig', 'mae_orig', 'rmse', 'mae'):
+                if col in df.columns and col not in seen:
+                    metrics.append(col)
+                    seen.add(col)
+        elif m in df.columns and m not in seen:
+            metrics.append(m)
+            seen.add(m)
+    for c in sorted(df.columns):
+        if c in seen or c in _NON_METRIC_COLS:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[c]):
+            continue
+        if (c.startswith(('gnnexplainer_', 'pgexplainer_', 'mage_'))
+                or c.startswith('score_')):
+            metrics.append(c)
+            seen.add(c)
+    return metrics
 
 
 # ── individual steps ──────────────────────────────────────────────────────────
@@ -159,7 +181,8 @@ def step_collect(args) -> int:
     df = normalize(df)
     df = collapse_redundant_folds(df)
 
-    core = [c for c in ['exp_dir', 'family', 'dataset', 'backbone', 'vocab_variant',
+    core = [c for c in ['exp_dir', 'config_sig',
+                        'family', 'dataset', 'backbone', 'vocab_variant',
                         'vocab_base', 'is_filter', 'is_relabelled', 'use_gt',
                         *ALL_AXES, 'fold',
                         'motif_method', 'noise', 'info_loss_coef',
@@ -189,7 +212,9 @@ def step_collect(args) -> int:
     seen = set(); core = [c for c in core if not (c in seen or seen.add(c))]
     extra = sorted(c for c in df.columns if c not in core and any(
         c.startswith(p) for p in ('gnnexplainer_', 'pgexplainer_', 'mage_')))
-    want = core + extra
+    seen = set(core) | set(extra)
+    rest = [c for c in df.columns if c not in seen]
+    want = core + extra + rest
     out = df[want].sort_values(['dataset', 'exp_dir'])
     dest = out_root / 'all_results.csv'
     out.to_csv(dest, index=False)
@@ -220,7 +245,7 @@ def step_table(args) -> int:
     save_dir = Path(args.save_dir) if args.save_dir else out_root / 'tables'
     save_dir.mkdir(parents=True, exist_ok=True)
     print('\n=== results tables (dataset×family×synthetic×vocab_base×filter rows) ===')
-    metrics = args.metrics or [m for m in DEFAULT_METRICS if m in df.columns]
+    metrics = args.metrics or discover_table_metrics(df)
     for metric in metrics:
         mode = 'prediction' if metric in PREDICTION_METRICS else 'explanation'
         if metric not in df.columns and mode == 'explanation':

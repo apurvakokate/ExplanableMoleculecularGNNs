@@ -268,6 +268,20 @@ def _backbone_from_path(exp_dir: str) -> str:
     return ''
 
 
+def _config_sig(exp_dir: str) -> str:
+    """Fold-invariant run signature = the run path with the ``fold<k>`` segment
+    removed. The run-dir tag encodes EVERY config axis (backbone, method, vocab,
+    noise/info_loss_level, and the hp-hash of info_loss_coef / final_r / init_r /
+    size_reg / ent_reg / num_layers / lr / dropout / … — see loader._HP_HASHED /
+    _HP_SPELLED), while ``fold`` is a separate path segment. So two runs share a
+    ``config_sig`` iff they are the SAME configuration on different folds. Adding
+    it to the aggregation key guarantees only folds are collapsed — runs that
+    differ in any hyperparameter stay separate rows instead of being averaged."""
+    parts = [p for p in str(exp_dir).split('/')
+             if p and not re.fullmatch(r'fold\d+', p)]
+    return '/'.join(parts)
+
+
 def enrich_from_exp_dir(df: pd.DataFrame) -> pd.DataFrame:
     """Fill missing dataset / backbone / fold from exp_dir (E4: both layout schemes)."""
     df = df.copy()
@@ -377,6 +391,10 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     nrm = df.apply(_norm, axis=1)
     df['norm'] = _prefer(df, 'norm', nrm)
+
+    # Fold-invariant per-run config signature. Aggregation groups that include
+    # this collapse ONLY folds; distinct hyperparameter configs stay separate.
+    df['config_sig'] = exp.map(_config_sig)
 
     return df
 
@@ -523,7 +541,15 @@ def build_tidy(df: pd.DataFrame, metrics, exp_axes) -> pd.DataFrame:
                    .agg(lambda s: sorted(set(s))).to_dict()) if inj_is_sep else {}
 
     records = []
-    grp_cols = ['_exp', '_base_exp', 'family', 'backbone', 'dataset'] + ALL_AXES
+    # config_sig is the fold-invariant run identity: including it in the group
+    # key guarantees the ONLY axis collapsed is fold. Without it, runs that share
+    # the coarse axes but differ in a hyperparameter (info_loss_coef, final_r,
+    # noise, info_loss_level, num_layers, lr, size_reg/ent_reg, …) are silently
+    # averaged into one cell.
+    if 'config_sig' not in df.columns:
+        df['config_sig'] = df.get('exp_dir', '').map(_config_sig)
+    grp_cols = ['_exp', '_base_exp', 'config_sig',
+                'family', 'backbone', 'dataset'] + ALL_AXES
     for keys, g in df.groupby(grp_cols, dropna=False):
         rec = dict(zip(grp_cols, keys))
         folds = sorted(int(f) for f in g['fold'].dropna().unique())
@@ -548,7 +574,8 @@ def build_tidy(df: pd.DataFrame, metrics, exp_axes) -> pd.DataFrame:
                 broadcast_rows.append(nr)
         if broadcast_rows:
             tidy = pd.concat([tidy, pd.DataFrame(broadcast_rows)], ignore_index=True)
-            tidy = tidy.drop_duplicates(subset=['_exp', 'family', 'backbone', 'dataset'])
+            tidy = tidy.drop_duplicates(
+                subset=['_exp', 'config_sig', 'family', 'backbone', 'dataset'])
 
     return tidy.drop(columns=['_base_exp']).rename(columns={'_exp': 'experiment'})
 

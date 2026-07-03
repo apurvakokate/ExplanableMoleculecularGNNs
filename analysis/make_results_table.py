@@ -115,9 +115,31 @@ def _ensure_synthetic(df: pd.DataFrame) -> pd.DataFrame:
     return normalize(df)
 
 
+def _warn_config_conflation(df: pd.DataFrame, metric: str, index: list) -> None:
+    """Loudly flag pivot cells that would average >1 distinct run config (not just
+    folds). ``_cell`` collapses every row sharing (index, backbone); those rows
+    should differ only in fold. If a cell spans multiple ``config_sig`` values it
+    is mixing hyperparameter configs — e.g. old IB-off and new IB-on MotifSAT."""
+    if 'config_sig' not in df.columns or metric not in df.columns:
+        return
+    sub = df[[*index, 'backbone', 'config_sig', metric]].copy()
+    sub = sub[pd.to_numeric(sub[metric], errors='coerce').notna()]
+    if sub.empty:
+        return
+    bad = sub.groupby([*index, 'backbone'], dropna=False)['config_sig'].nunique()
+    bad = bad[bad > 1]
+    if len(bad):
+        print(f'  [WARN] {len(bad)} cell(s) for metric {metric!r} average across '
+              f'MULTIPLE run configs, not just folds — filter to one config '
+              f'(e.g. --vocab_variant, or split by config_sig). First: '
+              f'{tuple(bad.index[0])}')
+
+
 def _pivot(df: pd.DataFrame, metric: str, index: list | None = None) -> pd.DataFrame:
+    index = index or PIVOT_INDEX
+    _warn_config_conflation(df, metric, index)
     piv = df.pivot_table(
-        index=index or PIVOT_INDEX, columns='backbone', values=metric, aggfunc=_cell)
+        index=index, columns='backbone', values=metric, aggfunc=_cell)
     cols = [b for b in BACKBONE_ORDER if b in piv.columns] + \
            [b for b in piv.columns if b not in BACKBONE_ORDER]
     return piv[cols]

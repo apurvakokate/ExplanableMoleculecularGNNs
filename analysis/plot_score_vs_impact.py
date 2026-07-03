@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -40,7 +41,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from analysis.aggregate_experiments import FAMILIES, resolve_family
+from analysis.aggregate_experiments import ARCHIVE_PREFIXES, FAMILIES, resolve_family
 
 _COUNT_COLOR = '#e8a24c'
 _BOX_COLOR = '#1f77b4'
@@ -48,7 +49,9 @@ _BOX_COLOR = '#1f77b4'
 # Preferred row / column order (unknown values sort alphabetically after these).
 _VARIANT_ORDER = (
     'rbrics_old', 'rbrics', 'rbrics_filter',
+    'rbrics_protected', 'rbrics_protected_filter',
     'all_fallback_bpe', 'all_fallback_bpe_filter',
+    'all_fallback_bpe_protected', 'all_fallback_bpe_protected_filter',
 )
 _BACKBONE_ORDER = ('GIN', 'GCN', 'GraphSAGE', 'SAGE', 'GAT', 'PNA')
 
@@ -64,9 +67,16 @@ _FAMILY_TITLES = {
 }
 
 
+def _path_excluded(rel_parts: tuple[str, ...]) -> bool:
+    return any(p.startswith(ARCHIVE_PREFIXES) for p in rel_parts)
+
+
 def _meta(run_dir: Path):
-    fam = dataset = backbone = variant = None
+    fam = dataset = backbone = variant = fold = None
     synthetic = 'real'
+    m = re.search(r'fold(\d+)', str(run_dir))
+    if m:
+        fold = int(m.group(1))
     for part in run_dir.parts:
         if part in FAMILIES:
             fam = 'gsat' if part == 'base_gsat' else part
@@ -84,10 +94,12 @@ def _meta(run_dir: Path):
             synthetic = 'gt' if bool(d.get('use_gt')) else 'real'
             if not fam:
                 fam = resolve_family(d, str(run_dir))
+            if d.get('fold') is not None:
+                fold = int(d['fold'])
         except Exception:
             pass
     return (fam or 'unknown', dataset or 'unknown', backbone or 'unknown',
-            variant or 'unknown', synthetic)
+            variant or 'unknown', synthetic, fold)
 
 
 def _baseline_explainers(run_dir: Path):
@@ -106,6 +118,9 @@ def collect(out_root: Path, agg: str = 'mean',
 
     recs = []
     for csv in out_root.rglob('score_vs_impact.csv'):
+        rel = csv.relative_to(out_root)
+        if _path_excluded(rel.parts):
+            continue
         if datasets and not dataset_allowed(csv.parent, datasets):
             continue
         try:
@@ -114,13 +129,16 @@ def collect(out_root: Path, agg: str = 'mean',
             continue
         if df.empty or 'score' not in df or 'impact' not in df:
             continue
-        fam, ds, bb, var, syn = _meta(csv.parent)
+        fam, ds, bb, var, syn, fold = _meta(csv.parent)
         df = df.assign(family=fam, dataset=ds, backbone=bb, variant=var,
-                       synthetic=syn, run_dir=str(csv.parent))
+                       synthetic=syn, fold=fold, run_dir=str(csv.parent))
         recs.append(df)
 
     for impact_csv in out_root.rglob('motif_impact.csv'):
         run_dir = impact_csv.parent
+        rel = impact_csv.relative_to(out_root)
+        if _path_excluded(rel.parts):
+            continue
         if datasets and not dataset_allowed(run_dir, datasets):
             continue
         explainers = _baseline_explainers(run_dir)
@@ -130,7 +148,7 @@ def collect(out_root: Path, agg: str = 'mean',
             imp = pd.read_csv(impact_csv)[['motif_id', 'impact']]
         except Exception:
             continue
-        _, ds, bb, var, syn = _meta(run_dir)
+        _, ds, bb, var, syn, fold = _meta(run_dir)
         for expl in explainers:
             score_file = run_dir / f'{expl}_motif_scores_{agg}.csv'
             if not score_file.exists():
@@ -148,7 +166,8 @@ def collect(out_root: Path, agg: str = 'mean',
             if merged.empty:
                 continue
             merged = merged.assign(family=expl, dataset=ds, backbone=bb,
-                                   variant=var, synthetic=syn, run_dir=str(run_dir))
+                                   variant=var, synthetic=syn, fold=fold,
+                                   run_dir=str(run_dir))
             recs.append(merged)
 
     return pd.concat(recs, ignore_index=True) if recs else pd.DataFrame()
@@ -306,6 +325,10 @@ def plot_algorithm_figure(
             ax = fig.add_subplot(inner[1, 0], sharex=ax_top)
             cell = fsub[(fsub['variant'] == var) & (fsub['backbone'] == bb)]
             counts = plot_cell(ax, ax_top, cell, edges)
+            cell_folds = (
+                sorted(int(f) for f in cell['fold'].dropna().unique())
+                if 'fold' in cell.columns else [])
+            fold_label = ','.join(map(str, cell_folds)) if cell_folds else ''
 
             if ri == 0:
                 ax_top.set_title(str(bb), fontsize=9, pad=2)
@@ -324,6 +347,7 @@ def plot_algorithm_figure(
                     'synthetic': synthetic,
                     'variant': var,
                     'backbone': bb,
+                    'fold': fold_label,
                     'score_bin': _bin_label(edges, b),
                     'bin_index': b,
                     'motif_count': ct,
