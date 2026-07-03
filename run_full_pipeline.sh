@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_full_pipeline.sh — end-to-end phase 0 -> analyze for ONE dataset.
+# run_full_pipeline.sh — end-to-end phase 0 -> phase 5 training for ONE dataset.
 #
 # Full sweep (three separate commands):
 #   bash run_full_pipeline.sh BBBP full fresh
 #   bash run_full_pipeline.sh Alkane_Carbonyl full
 #   bash run_full_pipeline.sh mutag full
 #
+# After all three finish, run analysis separately (see below).
+#
 # Single dataset + SLURM:
 #   bash run_full_pipeline.sh submit BBBP full fresh
 #   bash run_full_pipeline.sh submit mutag full fresh
 #
-# fresh — force rerun (SKIP_EXISTING=0, FORCE_RERUN=1, full analyze regenerate).
+# fresh — force rerun (SKIP_EXISTING=0, FORCE_RERUN=1).
+#
+# Post-hoc analysis (once BBBP + Alkane_Carbonyl + mutag are done):
+#   source experiment_config.sh
+#   bash run_experiments.sh analyze
+#   # or per-dataset: ANALYZE_ARGS="--dataset BBBP" bash run_experiments.sh analyze
 #
 # Other examples:
 #   bash run_full_pipeline.sh                     # smoke: BBBP fold 0, GIN
@@ -52,8 +59,6 @@ WANDB_PROJECT="${WANDB_PROJECT:-ChemIntuit}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 export WANDB_FLAGS="--use_wandb --wandb_project $WANDB_PROJECT"
 [ -n "$WANDB_ENTITY" ] && export WANDB_FLAGS="$WANDB_FLAGS --wandb_entity $WANDB_ENTITY"
-
-RUN_ANALYZE="${RUN_ANALYZE:-1}"
 
 # ── CLI: [submit] [dataset] [full|smoke] [fresh] ─────────────────────────────
 for _tok in "$@"; do
@@ -108,17 +113,6 @@ if _is_special_dataset "$DATASET"; then
         SLURM_JOB_NAME="${SLURM_JOB_NAME:-mutag_full}"
         SLURM_TIME="${SLURM_TIME:-48:00:00}"
     fi
-fi
-
-if [ "$FRESH" = "1" ]; then
-    _base_analyze="${ANALYZE_ARGS:-}"
-else
-    _base_analyze="${ANALYZE_ARGS:---skip_regenerate}"
-fi
-if [[ "$_base_analyze" == *"--dataset"* ]]; then
-    export ANALYZE_ARGS="$_base_analyze"
-else
-    export ANALYZE_ARGS="$_base_analyze --dataset $DATASET"
 fi
 
 if [ "$FRESH" = "1" ]; then
@@ -184,8 +178,6 @@ PHASES+=(
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase5_vanilla_gt phase5_baselines_gt )
 fi
-PHASES+=( collect )
-[ "$RUN_ANALYZE" = "1" ] && PHASES+=( analyze )
 
 run_pipeline() {
   echo "############################################################"
@@ -195,7 +187,6 @@ run_pipeline() {
   echo "#   MOSE_CONV_NORMALIZE=$MOSE_CONV_NORMALIZE"
   echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST  DATASETS_CSV='${DATASETS_CSV:-}'"
   echo "#   SKIP_EXISTING=${SKIP_EXISTING:-?}  WANDB_MODE=$WANDB_MODE"
-  echo "#   ANALYZE_ARGS=$ANALYZE_ARGS"
   echo "#   PROJECT=$PROJECT"
   echo "#   started $(date)"
   echo "############################################################"

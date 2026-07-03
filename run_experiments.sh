@@ -285,10 +285,17 @@ _all_base_variants() {
 # VOCAB_FOCUS explicitly requests a *_protected variant. Keeps BBBP/Alkane vocabs
 # untouched unless asked, and matches the mutag-focused intent.
 _want_protected() {
-    # match *prot* so the aliases (rbrics_prot) trigger it too, not just the full
-    # *_protected names. No non-protected variant token contains "prot".
-    case ",$VOCAB_FOCUS," in
-        *prot*) return 0 ;;
+    # True iff a protected variant is in the *resolved* focus. Uses the resolver
+    # (so every alias — rbrics_prot, v4_protected, … — is honoured) instead of a
+    # raw *prot* substring match, matching how _in_focus decides per-variant.
+    _in_focus "$V_RBRICS_PROT" || _in_focus "$V_ALL_PROT"
+}
+
+# Is a base variant in the resolved VOCAB_FOCUS? (empty VOCAB_FOCUS → all four).
+# Used to skip building/analyzing vocabs that phase4/5 won't use.
+_in_focus() {
+    case " $(_vocab_focus_base_variants) " in
+        *" $1 "*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -977,6 +984,7 @@ run_motifsat_gt() {
                     continue
                 fi
                 n_run=$((n_run + 1))
+                local ds_root="$(_dataset_data_root "$ds")"
                 python3 "$PROJECT/MotifSAT/run.py" \
                     --dataset         "$ds" --fold "$fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
@@ -984,15 +992,16 @@ run_motifsat_gt() {
                     --noise           none \
                     --info_loss_level none \
                     --info_loss_coef  0.0 \
-                    --w_feat --w_readout --w_message \
+                    ${MOTIFSAT_INJ} \
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                     --epochs          "$EPOCHS" \
-                    --data_root       "$DATA_ROOT" \
+                    --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --conv_normalize  "$CONV_NORMALIZE" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/motifsat/${gt_variant}" \
+                    $(_mutag_train_flags "$ds" "$fold") \
                     $WANDB_FLAGS
             done
         done
@@ -1074,33 +1083,38 @@ phase1() {
     _check_special_exports
     echo ""
     echo "══════════════════════════════════════════════════════════"
-    echo " PHASE 1 — Fragmentation (no threshold, 4 variants$(_want_protected && echo ' + 2 protected'))"
+    echo " PHASE 1 — Fragmentation (no threshold; VOCAB_FOCUS-scoped: $(_vocab_focus_base_variants))"
     echo "  DATASETS=$DATASETS"
-    _want_protected && echo "  protected variants requested → will also build $V_RBRICS_PROT, $V_ALL_PROT"
+    echo "  Only builds variants in the resolved VOCAB_FOCUS (empty → all four)"
     echo "  Skips per dataset/variant when rules.json + vocab_meta.json exist"
     echo "  (SKIP_EXISTING=1 default; FORCE_PHASE1=1 or FORCE_RERUN=1 to redo)"
     echo "══════════════════════════════════════════════════════════"
 
-    echo "1a. rbrics_old  (CreateMotifVocab plot path — BreakrBRICSBonds + ToSmiles)"
-    run_frag rbrics_old 0 0 "$V_OLD"
+    _in_focus "$V_OLD" && {
+        echo "1a. rbrics_old  (CreateMotifVocab plot path — BreakrBRICSBonds + ToSmiles)"
+        run_frag rbrics_old 0 0 "$V_OLD"; }
 
-    echo "1b. rbrics  (BreakrBRICSBonds + BRICS fallback + reBRICS)"
-    run_frag rbrics 0 0 "$V_RBRICS"
+    _in_focus "$V_RBRICS" && {
+        echo "1b. rbrics  (BreakrBRICSBonds + BRICS fallback + reBRICS)"
+        run_frag rbrics 0 0 "$V_RBRICS"; }
 
-    echo "1d. rbrics_with_struct_fallback  (rBRICS/BRICS fallback + reBRICS + structural fallback)"
-    run_frag rbrics 1 0 "$V_RBRICS_SF"
+    _in_focus "$V_RBRICS_SF" && {
+        echo "1d. rbrics_with_struct_fallback  (rBRICS/BRICS fallback + reBRICS + structural fallback)"
+        run_frag rbrics 1 0 "$V_RBRICS_SF"; }
 
-    echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
-    run_frag all 1 1 "$V_ALL"
+    _in_focus "$V_ALL" && {
+        echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
+        run_frag all 1 1 "$V_ALL"; }
 
     # functional-group-protected variants (nitro + aniline carved as explicit motifs).
-    # OPT-IN: only built when VOCAB_FOCUS names a *_protected variant (avoids building
-    # protected vocabs on BBBP/Alkane unless requested).
-    if _want_protected; then
-        echo "1e. protected variants ($V_RBRICS_PROT, $V_ALL_PROT) — nitro + aniline carved"
-        run_frag rbrics 0 0 "$V_RBRICS_PROT" 0 1
-        run_frag all 1 1 "$V_ALL_PROT" 0 1
-    fi
+    # OPT-IN + focus-scoped: built only when VOCAB_FOCUS names the protected variant
+    # (so BBBP/Alkane vocabs stay untouched unless requested).
+    _in_focus "$V_RBRICS_PROT" && {
+        echo "1e. $V_RBRICS_PROT — nitro + aniline carved"
+        run_frag rbrics 0 0 "$V_RBRICS_PROT" 0 1; }
+    _in_focus "$V_ALL_PROT" && {
+        echo "1f. $V_ALL_PROT — nitro + aniline carved"
+        run_frag all 1 1 "$V_ALL_PROT" 0 1; }
 
     # echo "1d. all_fallback_bpe_shatter  (full cascade + mild-shatter floor)"
     # run_frag all 1 1 "$V_ALL" 1   # → vocab dir all_fallback_bpe_shatter (no phase5 yet)
@@ -1127,12 +1141,10 @@ phase2() {
     local vocab_datasets="$DATASETS"
     local variant
 
-    # also sweep the protected base variants when opted in (coverage plots let you
-    # review protected thresholds instead of blindly reusing the unprotected ones)
-    local _phase2_variants="$(_all_base_variants)"
-    _want_protected && _phase2_variants="$_phase2_variants $V_RBRICS_PROT $V_ALL_PROT"
-
-    for variant in $_phase2_variants; do
+    # Only the VOCAB_FOCUS-scoped base variants (which phase1 built); includes the
+    # protected variants when requested. coverage_vs_threshold reads phase1's vocab,
+    # so this must match what phase1 produced.
+    for variant in $(_vocab_focus_base_variants); do
         if _should_skip_existing && _phase2_variant_done "$variant"; then
             echo ""
             echo "  [skip] $variant — coverage plots exist"
@@ -1171,24 +1183,22 @@ phase3() {
     echo "  Skips per dataset/variant when filtered vocab exists (SKIP_EXISTING=1)"
     echo "══════════════════════════════════════════════════════════"
 
-    echo "3a. rbrics_old_filter"
-    run_frag_thresh rbrics_old 0 0 "$V_OLD_TH"
+    # Filtered vocabs are MOSE-only; build the threshold version for each focused
+    # base variant (gated on the *base* being in VOCAB_FOCUS, matching phase1).
+    _in_focus "$V_OLD" && {
+        echo "3a. rbrics_old_filter";                run_frag_thresh rbrics_old 0 0 "$V_OLD_TH"; }
+    _in_focus "$V_RBRICS" && {
+        echo "3b. rbrics_filter";                    run_frag_thresh rbrics 0 0 "$V_RBRICS_TH"; }
+    _in_focus "$V_RBRICS_SF" && {
+        echo "3d. rbrics_with_struct_fallback_filter"; run_frag_thresh rbrics 1 0 "$V_RBRICS_SF_TH"; }
+    _in_focus "$V_ALL" && {
+        echo "3c. all_fallback_bpe_filter";          run_frag_thresh all 1 1 "$V_ALL_TH"; }
 
-    echo "3b. rbrics_filter"
-    run_frag_thresh rbrics 0 0 "$V_RBRICS_TH"
-
-    echo "3d. rbrics_with_struct_fallback_filter"
-    run_frag_thresh rbrics 1 0 "$V_RBRICS_SF_TH"
-
-    echo "3c. all_fallback_bpe_filter"
-    run_frag_thresh all 1 1 "$V_ALL_TH"
-
-    # FG-protected + threshold (opt-in, e.g. for filtered+protected MOSE on mutag)
-    if _want_protected; then
-        echo "3e. protected filtered ($V_RBRICS_PROT_TH, $V_ALL_PROT_TH)"
-        run_frag_thresh rbrics 0 0 "$V_RBRICS_PROT_TH" 1
-        run_frag_thresh all 1 1 "$V_ALL_PROT_TH" 1
-    fi
+    # FG-protected + threshold (built when the protected base is in VOCAB_FOCUS)
+    _in_focus "$V_RBRICS_PROT" && {
+        echo "3e. $V_RBRICS_PROT_TH"; run_frag_thresh rbrics 0 0 "$V_RBRICS_PROT_TH" 1; }
+    _in_focus "$V_ALL_PROT" && {
+        echo "3f. $V_ALL_PROT_TH";    run_frag_thresh all 1 1 "$V_ALL_PROT_TH" 1; }
 
     echo ""
     echo "Phase 3 complete.  Vocabularies now available:"
