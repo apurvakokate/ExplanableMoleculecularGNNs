@@ -195,7 +195,7 @@ def _aggregate_att_to_motif(
 
 def run(cfg: MotifSATConfig) -> dict:
     from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
-    from reg_config import resolve_gsat_r
+    from reg_config import resolve_gsat_r, resolve_info_loss_coef
 
     validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
     _init, _final, _dec_int, _dec_r, _from_tbl = resolve_gsat_r(
@@ -208,6 +208,15 @@ def run(cfg: MotifSATConfig) -> dict:
     cfg.final_r = _final
     cfg.decay_interval = _dec_int
     cfg.decay_r = _dec_r
+
+    # Per-dataset motif-IB strength (MotifSAT analogue of MOSE's ent/size_reg).
+    # Only applies to the motif info-loss path; an explicit --info_loss_coef
+    # (not None) always wins.
+    _coef, _coef_tbl = resolve_info_loss_coef(
+        cfg.dataset, getattr(cfg, 'info_loss_coef', None))
+    if _coef_tbl and cfg.info_loss_level == 'motif':
+        print(f'  [reg_config] {cfg.dataset}: info_loss_coef={_coef}')
+    cfg.info_loss_coef = _coef
 
     set_seed(cfg.seed)
     device = get_device()
@@ -612,7 +621,9 @@ def main():
     parser.add_argument("--deterministic_att", action="store_true",
                         help="Use soft sigmoid attention during training (no Gumbel "
                              "draw). Default off = official GSAT Concrete sampling.")
-    parser.add_argument("--info_loss_coef",  type=float, default=1.0)
+    parser.add_argument("--info_loss_coef",  type=float, default=None,
+                        help="Motif-IB strength. When omitted, resolved per "
+                             "dataset from reg_config (default 0.5).")
     parser.add_argument("--init_r",          type=float, default=None,
                         help="IB prior retention at start (default 0.9).")
     parser.add_argument("--final_r",         type=float, default=None,

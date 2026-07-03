@@ -40,10 +40,11 @@ class MotifSATConfig:
     # motif = motif MLP → sample per motif → broadcast att
     noise: str = 'none'                # none | node | motif
 
-    # IB info loss
+    # IB info loss. info_loss_coef=None → resolved per-dataset from reg_config
+    # (default 0.5, the MotifSAT sweep value); an explicit value always wins.
     info_loss_level: str = 'node'      # none | node | motif
     motif_info_size_normalize: bool = False
-    info_loss_coef: float = 1.0
+    info_loss_coef: Optional[float] = None
     motif_loss_coef: float = 0.0
     between_motif_coef: float = 0.0
     within_node_coef: float = 0.0

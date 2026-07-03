@@ -750,9 +750,8 @@ run_motifsat() {
                     --dataset         "$ds" --fold "$eff_fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    readout \
-                    --noise           none \
-                    --info_loss_level none \
-                    --info_loss_coef  0.0 \
+                    --noise           motif \
+                    --info_loss_level motif \
                     $inj_args \
                     --epochs          "$EPOCHS" \
                     --data_root       "$ds_root" \
@@ -989,9 +988,8 @@ run_motifsat_gt() {
                     --dataset         "$ds" --fold "$fold" \
                     --backbone        "$backbone" --node_encoder "$enc" \
                     --motif_method    readout \
-                    --noise           none \
-                    --info_loss_level none \
-                    --info_loss_coef  0.0 \
+                    --noise           motif \
+                    --info_loss_level motif \
                     ${MOTIFSAT_INJ} \
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                     --epochs          "$EPOCHS" \

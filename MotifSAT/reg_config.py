@@ -80,6 +80,58 @@ DEFAULT_FINAL_R = _FINAL_R_SMALL
 DEFAULT_DECAY_INTERVAL = _DECAY_INTERVAL_SMALL
 DEFAULT_DECAY_R = 0.1
 
+# ── Per-dataset information-loss coefficient (motif IB strength) ──────────────
+# Set from the MotifSAT sweep (readout + noise=motif + info_loss_level=motif):
+# a soft coefficient (0.5) jointly maximised prediction AUC, node GT-AUC and
+# score-vs-impact across datasets/backbones — a stronger 1.0 over-compressed the
+# attention, and none (IB off) left the SAGE/PNA explanations anti-explanatory.
+# This is the MotifSAT analogue of MOSE's per-dataset (ent_reg, size_reg).
+# An explicit --info_loss_coef always overrides the table.
+_INFO_LOSS_COEF_DEFAULT = 0.5
+
+INFO_LOSS_COEF_BY_DATASET = {
+    "mutag": 0.5,
+    "Mutagenicity": 0.5,
+    "BBBP": 0.5,
+    "hERG": 0.5,
+    "Benzene": 0.5,
+    "Alkane_Carbonyl": 0.5,
+    "Fluoride_Carbonyl": 0.5,
+    "Lipophilicity": 0.5,
+    "esol": 0.5,
+    "freesolv": 0.5,
+    "tox21": 0.5,
+    # OGB molecular graphs already use the wider r=0.7 floor; keep the same IB
+    # strength unless a dedicated OGB sweep says otherwise.
+    "ogbg-molhiv": 0.5,
+    "ogbg-molbace": 0.5,
+    "ogbg-molbbbp": 0.5,
+    "ogbg-moltox21": 0.5,
+    "ogbg-moltoxcast": 0.5,
+    "ogbg-molesol": 0.5,
+    "ogbg-molfreesolv": 0.5,
+    "ogbg-molclintox": 0.5,
+    "ogbg-molsider": 0.5,
+    "ogbg-mollipo": 0.5,
+}
+
+
+def resolve_info_loss_coef(
+    dataset: str,
+    info_loss_coef: Optional[float] = None,
+) -> Tuple[float, bool]:
+    """Resolve the motif-IB info_loss_coef for a run.
+
+    Explicit ``info_loss_coef`` (not None) always wins. Otherwise look up by
+    dataset, falling back to ``_INFO_LOSS_COEF_DEFAULT``. Returns
+    ``(info_loss_coef, from_table)`` where ``from_table`` is True iff the value
+    came from the lookup — mirrors ``resolve_reg`` / ``resolve_gsat_r``.
+    """
+    if info_loss_coef is not None:
+        return float(info_loss_coef), False
+    return (float(INFO_LOSS_COEF_BY_DATASET.get(dataset, _INFO_LOSS_COEF_DEFAULT)),
+            True)
+
 
 def resolve_gsat_r(
     dataset: str,
