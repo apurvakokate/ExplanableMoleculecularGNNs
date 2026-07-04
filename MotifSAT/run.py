@@ -444,7 +444,8 @@ def run(cfg: MotifSATConfig) -> dict:
                 pd.DataFrame(rows).to_csv(
                     out_dir / f"base_gsat_att_{agg}.csv", index=False)
 
-        # Run pipeline twice — once per aggregation
+        # Run pipeline twice — once per aggregation; mean run feeds summary.json
+        results = None
         for agg in ("mean", "max"):
             agg_scores = gsat_agg[agg]
             r = pipeline.run(
@@ -454,8 +455,8 @@ def run(cfg: MotifSATConfig) -> dict:
             dfs_agg = pipeline.to_dataframe(r)
             for name, df in dfs_agg.items():
                 df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
-        # Also run without motif_scores for the plain prediction result
-        results = pipeline.run(run_motif_impact=False)
+            if agg == "mean":
+                results = r
         summary_scores = gsat_agg.get("mean", {})
     else:
         # readout/motif-aware: aggregate node attention to per-motif scores so
