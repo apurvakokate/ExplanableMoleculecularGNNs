@@ -1557,10 +1557,9 @@ case "$PHASE" in
     probe_masked_nodes) probe_masked_nodes ;;
     collect)          collect_results ;;
     analyze|analysis)
-        # Single entry point for all analysis + plots. Regenerates eval metrics
-        # from checkpoints, rebuilds all_results.csv, writes pivot tables, and
-        # draws the score-vs-impact grid. Pass --skip_regenerate via ANALYZE_ARGS
-        # to use existing summaries.
+        # Collect + tables + plots from existing summaries (no model I/O by default).
+        # Opt-in eval refresh: ANALYZE_ARGS="--regenerate"
+        # Missing baselines/ → phase5_baselines, not analyze.
         python3 "$PROJECT/analysis/run_analysis.py" all \
             --out_root "$OUT_ROOT" \
             --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
@@ -1589,7 +1588,7 @@ case "$PHASE" in
         echo "  multi_explanation post-hoc H0/H1/H2 on MOSE/MotifSAT/GSAT"
         echo "  probe_masked_nodes post-hoc masked-node feature probe"
         echo "  collect           print results table"
-        echo "  analyze           regenerate eval + tables + plots (single entry point)"
+        echo "  analyze           collect + tables + plots (pass ANALYZE_ARGS=--regenerate to re-eval)"
         echo ""
         echo "Required env (set in experiment_config.sh):"
         echo "  PROJECT  DATA_ROOT  VOCAB_ROOT  OUT_ROOT"

@@ -1,38 +1,44 @@
 #!/usr/bin/env python3
 """run_analysis.py — single entry point for all ChemIntuit analysis & plots.
 
-One command to (re)generate metrics, tables, and figures from an experiment
-output tree. Wraps the individual analysis modules:
+By default, ``all`` only **collects** existing summary.json files and writes
+tables/plots — it does not load checkpoints, retrain, or regenerate metrics.
 
-  regenerate   re-run eval-only on existing checkpoints (no retraining), so the
-               new explainability metrics land in each run's summary.json + CSVs
-  multi_explanation  post-hoc H0/H1/H2 on MOSE / MotifSAT / GSAT (node-attention)
-  probe          masked-node feature-recovery probe on ante-hoc checkpoints
   collect      rebuild <out_root>/all_results.csv from all summary.json files
   table        pivot all_results.csv -> dataset×family×variant rows, backbone
                cols (mean±std), written as markdown per metric
   plots        score-vs-impact box-plot grid + per-bin motif-count table
-  all          regenerate -> collect -> table -> plots, in order
+  all          collect -> table -> plots  (default; no model I/O)
+
+Optional (explicit subcommands / flags — never run by default in ``all``):
+
+  regenerate   re-run ``--eval_only`` on existing MOSE/MotifSAT/GSAT checkpoints
+  multi_explanation  post-hoc H0/H1/H2 on MOSE / MotifSAT / GSAT
+  probe          masked-node feature-recovery probe on ante-hoc checkpoints
 
 Subcommands
 -----------
-    python analysis/run_analysis.py all \
-        --out_root results --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT \
-        [--processed_root $PROCESSED_ROOT] [--dataset mutag]
+    # Default: collect + tables + plots only
+    python analysis/run_analysis.py all --out_root results
+
+    # Opt-in: refresh eval metrics on existing ante-hoc checkpoints first
+    python analysis/run_analysis.py all --out_root results --regenerate \\
+        --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT
 
     python analysis/run_analysis.py table  --out_root results
     python analysis/run_analysis.py plots  --out_root results
-    python analysis/run_analysis.py regenerate --out_root results \
+    python analysis/run_analysis.py regenerate --out_root results \\
         --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT [--dry_run]
     python analysis/run_analysis.py collect --out_root results
 
 Notes
 -----
-* `regenerate` requires --data_root/--vocab_root (and ideally --processed_root).
-  Pair each checkpoint with the vocab it was TRAINED on.
-* `multi_explanation` and `probe` are post-hoc on saved checkpoints:
-      python analysis/run_multi_explanation.py --out_root ... --data_root ... --vocab_root ...
-      python analysis/probe_masked_nodes.py --out_root ... --data_root ... --vocab_root ...
+* ``--regenerate`` never creates missing runs or trains models. It only re-runs
+  eval on dirs that already have ``best_model.pt`` + ``summary.json``.
+  Missing baselines/ → ``bash run_experiments.sh phase5_baselines``.
+* To include vanilla/baselines in regenerate (re-fits post-hoc explainers):
+  ``--regenerate --families mose motifsat gsat vanilla baselines``
+* ``multi_explanation`` and ``probe`` are separate subcommands, not part of ``all``.
 """
 from __future__ import annotations
 
@@ -92,21 +98,28 @@ def _datasets_arg(args) -> list[str] | None:
     return getattr(args, 'dataset', None) or None
 
 
+def _regenerate_families(args) -> list[str]:
+    if getattr(args, 'families', None):
+        return list(args.families)
+    return ['mose', 'motifsat', 'gsat']
+
+
 def step_regenerate(args) -> int:
     if not (args.data_root and args.vocab_root):
         print('[regenerate] needs --data_root and --vocab_root; skipping.')
         return 1
+    fams = _regenerate_families(args)
+    print(f'  regenerate families: {fams}')
     cmd = [sys.executable, str(ANALYSIS / 'regenerate_eval.py'),
            '--out_root', args.out_root,
-           '--data_root', args.data_root, '--vocab_root', args.vocab_root]
+           '--data_root', args.data_root, '--vocab_root', args.vocab_root,
+           '--families', *fams]
     if getattr(args, 'mutag_data_root', None):
         cmd += ['--mutag_data_root', args.mutag_data_root]
     if getattr(args, 'ogb_data_root', None):
         cmd += ['--ogb_data_root', args.ogb_data_root]
     if args.processed_root:
         cmd += ['--processed_root', args.processed_root]
-    if getattr(args, 'families', None):
-        cmd += ['--families', *args.families]
     if _datasets_arg(args):
         cmd += ['--dataset', *_datasets_arg(args)]
     if getattr(args, 'dry_run', False):
@@ -343,8 +356,10 @@ def main():
         p.add_argument('--ogb_data_root', default=os.environ.get('OGB_DATA_ROOT'))
         p.add_argument('--vocab_root', default=None)
         p.add_argument('--processed_root', default=None)
-        p.add_argument('--families', nargs='*',
-                       default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
+        p.add_argument('--families', nargs='*', default=None,
+                       help='regenerate: checkpoint families (default when '
+                            '--regenerate: mose motifsat gsat). Add vanilla '
+                            'baselines to re-fit post-hoc explainers.')
         p.add_argument('--dry_run', action='store_true')
         if with_dataset:
             filter_args(p)
@@ -378,19 +393,19 @@ def main():
     p_pl.add_argument('--score_max', type=float, default=None)
 
     p_all = sub.add_parser('all',
-                           help='regenerate -> multi_explanation -> probe -> collect -> table -> plots')
+                           help='collect -> table -> plots (default; no model I/O)')
     collect_args(p_all, with_dataset=False)
     train_args(p_all, with_dataset=False)
     filter_args(p_all)
+    p_all.add_argument('--regenerate', action='store_true',
+                       help='Before collect: re-run eval-only on existing '
+                            'MOSE/MotifSAT/GSAT checkpoints (requires '
+                            '--data_root and --vocab_root). Default off.')
     p_all.add_argument('--csv', default=None)
     p_all.add_argument('--metrics', nargs='*', default=None)
     p_all.add_argument('--nbins', type=int, default=6)
     p_all.add_argument('--score_min', type=float, default=None)
     p_all.add_argument('--score_max', type=float, default=None)
-    p_all.add_argument('--skip_regenerate', action='store_true',
-                       help='Use existing summaries; do not re-run eval.')
-    p_all.add_argument('--skip_multi_explanation', action='store_true')
-    p_all.add_argument('--skip_probe', action='store_true')
 
     args = ap.parse_args()
 
@@ -408,18 +423,12 @@ def main():
         sys.exit(step_plots(args))
     if args.command == 'all':
         rc = 0
-        if not args.skip_regenerate:
+        if getattr(args, 'regenerate', False):
             if args.data_root and args.vocab_root:
                 rc |= step_regenerate(args)
             else:
-                print('[all] no --data_root/--vocab_root; skipping regenerate '
-                      '(using existing summaries).')
-        if not getattr(args, 'skip_multi_explanation', False):
-            if args.data_root and args.vocab_root:
-                rc |= step_multi_explanation(args)
-        if not getattr(args, 'skip_probe', False):
-            if args.data_root and args.vocab_root:
-                rc |= step_probe(args)
+                print('[all] --regenerate requires --data_root and --vocab_root.')
+                rc |= 1
         rc |= step_collect(args)
         rc |= step_table(args)
         rc |= step_plots(args)

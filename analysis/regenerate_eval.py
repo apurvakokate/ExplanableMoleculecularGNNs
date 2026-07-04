@@ -9,13 +9,19 @@ WITHOUT retraining.
 
 It reconstructs each run's CLI flags from its summary.json (dataset, fold,
 backbone, vocab_variant, motif_method, w_feat/w_message/w_readout, node_encoder).
-Vanilla/baseline runs use the existing --epochs 0 --load_weights_from path.
+Vanilla/baseline dirs (when included via ``--families vanilla baselines``) reload
+the GNN checkpoint with ``--epochs 0`` but still **re-fit post-hoc explainers**
+(PGExplainer/GNNExplainer/MAGE). They do NOT create missing ``baselines/`` runs —
+use ``bash run_experiments.sh phase5_baselines`` for that.
+
+Default ``--families``: ante-hoc only (mose, motifsat, gsat) with true ``--eval_only``.
 
 Usage
 -----
     python analysis/regenerate_eval.py --out_root results \
         --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT \
-        [--processed_root $PROCESSED_ROOT] [--families mose motifsat gsat vanilla baselines] \
+        [--processed_root $PROCESSED_ROOT] \
+        [--families mose motifsat gsat] \
         [--dry_run]
 
 IMPORTANT: pair each checkpoint with the vocab it was TRAINED on. If you
@@ -222,7 +228,11 @@ def main():
     ap.add_argument('--vocab_root', required=True)
     ap.add_argument('--processed_root', default=None)
     ap.add_argument('--families', nargs='*',
-                    default=['mose', 'motifsat', 'gsat', 'vanilla', 'baselines'])
+                    default=['mose', 'motifsat', 'gsat'],
+                    help='Run dirs to re-evaluate (default: ante-hoc only). '
+                         'Add vanilla baselines to re-fit GNNExplainer/PGExplainer/MAGE '
+                         'on existing vanilla/baselines checkpoints — does NOT create '
+                         'missing baselines/ runs (use phase5_baselines for that).')
     ap.add_argument('--dataset', nargs='*', default=None,
                     help='only regenerate runs for these dataset(s), e.g. --dataset mutag')
     ap.add_argument('--dry_run', action='store_true',

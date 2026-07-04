@@ -18,7 +18,8 @@
 # Post-hoc analysis (once BBBP + Alkane_Carbonyl + mutag are done):
 #   source experiment_config.sh
 #   bash run_experiments.sh analyze
-#   # or per-dataset: ANALYZE_ARGS="--dataset BBBP" bash run_experiments.sh analyze
+#   # optional re-eval on existing checkpoints (default is collect/plot only):
+#   ANALYZE_ARGS="--regenerate" bash run_experiments.sh analyze
 #
 # Other examples:
 #   bash run_full_pipeline.sh                     # smoke: BBBP fold 0, GIN
