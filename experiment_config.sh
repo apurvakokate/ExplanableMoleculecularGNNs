@@ -20,7 +20,7 @@ _CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT="$_CFG_DIR"           # repo root: MOSE-GNN/, MotifSAT/, etc.
 export DATA_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/"
 export VOCAB_ROOT="$_CFG_DIR/vocab_output"    # phase1 writes here
-export OUT_ROOT="$_CFG_DIR/results"           # model training writes here
+export OUT_ROOT="${OUT_ROOT:-$_CFG_DIR/results}"   # override before run: export OUT_ROOT=$PROJECT/results_motifsat_ib
 export PROCESSED_ROOT="$_CFG_DIR/processed"   # PyG processed .pt cache
 # mutag TUDataset exports (mutag_<fold>.csv under MUTAG_DATA_ROOT; TUDataset in mutag/)
 export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data}"
