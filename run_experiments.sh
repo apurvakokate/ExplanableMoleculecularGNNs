@@ -1390,8 +1390,11 @@ phase5_baselines() {
     echo " PHASE 5d — Post-hoc baselines (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
+    # Explainers operate on the (vocab-independent) vanilla model, evaluated
+    # against BOTH the full/base vocab AND the filtered vocab (item 10). The
+    # filtered eval reuses the base-variant weights via _baseline_weight_variant.
     local eval_variant
-    for eval_variant in $(_vocab_focus_base_variants); do
+    for eval_variant in $(_vocab_focus_base_variants) $(_vocab_focus_filtered_variants); do
         run_baselines "$eval_variant"
     done
 
@@ -1524,8 +1527,14 @@ collect_results() {
     echo "══════════════════════════════════════════════════════════"
     echo " Collecting results (run_analysis.py collect)"
     echo "══════════════════════════════════════════════════════════"
+    local _extra=()
+    if [ -n "${ANALYZE_EXTRA_OUT_ROOTS:-}" ]; then
+        # shellcheck disable=SC2206
+        _extra=(--extra_out_root ${ANALYZE_EXTRA_OUT_ROOTS})
+    fi
     python3 "$PROJECT/analysis/run_analysis.py" collect \
-        --out_root "$OUT_ROOT"
+        --out_root "$OUT_ROOT" \
+        "${_extra[@]}"
 }
 
 # Superseded inline collector (no config.json merge / axis normalization):
@@ -1559,9 +1568,18 @@ case "$PHASE" in
     analyze|analysis)
         # Collect + tables + plots from existing summaries (no model I/O by default).
         # Opt-in eval refresh: ANALYZE_ARGS="--regenerate"
+        # Merge extra trees (e.g. IB MotifSAT): ANALYZE_EXTRA_OUT_ROOTS="$PROJECT/results_motifsat_ib"
         # Missing baselines/ → phase5_baselines, not analyze.
+        # NOTE: top-level case branch (not a function) — `local` would error
+        # ("can only be used in a function") and, under `set -e`, abort analyze.
+        _extra=()
+        if [ -n "${ANALYZE_EXTRA_OUT_ROOTS:-}" ]; then
+            # shellcheck disable=SC2206
+            _extra=(--extra_out_root ${ANALYZE_EXTRA_OUT_ROOTS})
+        fi
         python3 "$PROJECT/analysis/run_analysis.py" all \
             --out_root "$OUT_ROOT" \
+            "${_extra[@]}" \
             --data_root "$DATA_ROOT" --vocab_root "$VOCAB_ROOT" \
             --mutag_data_root "$MUTAG_DATA_ROOT" \
             --ogb_data_root "$OGB_DATA_ROOT" \

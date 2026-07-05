@@ -352,7 +352,8 @@ def run(cfg: VanillaConfig) -> dict:
     # score, so we correlate each against the same mask-based impact / the
     # label-aware discriminativeness computed in eval_results.
     from SharedModules.evaluation.motif_eval import (
-        score_impact_correlation, top_motifs_discriminative_check)
+        score_impact_correlation, top_motifs_discriminative_check,
+        compute_motif_impact, _impact_values)
     from SharedModules.evaluation.metrics import motif_score_stats
     _impacts = eval_results.get('motif_impact', {})
     _disc    = eval_results.get('discriminativeness', {})
@@ -362,16 +363,78 @@ def run(cfg: VanillaConfig) -> dict:
     # them to motif level by both mean and max over the motif's atoms. Report
     # correlation/discriminativeness/score-stats for BOTH aggregations so the
     # baselines are directly comparable to the motif-aware models.
+    #
+    # We report TWO impact definitions for every explainer (only the impact y
+    # differs; the score x is always the explainer's own per-motif attribution):
+    #   'agnostic' — the ORIGINAL MOSE-GNN baseline impact: inject UNIFORM
+    #                weights (all ones) into the vanilla model and zero only the
+    #                target motif's atoms. Shared across explainers (depends on
+    #                the model, not the explainer). Reproduces the original.
+    #   'own'      — each explainer's OWN leave-one-out: inject the explainer's
+    #                attribution as the weight vector W, then zero the target
+    #                motif. Differs per explainer; more faithful to what that
+    #                explainer attends to.
+    # Metric keys: '{pfx}_pearson' / '_spearman' are the 'own' definition
+    # (unchanged); '{pfx}_pearson_agnostic' / '_spearman_agnostic' are the
+    # original. The per-explainer score_vs_impact.csv carries both as long-form
+    # rows tagged by a 'method' column.
+    _uniform_impacts = {}
+    if cfg.run_motif_impact:
+        def _ones_node_att_fn(_d):
+            return torch.ones(_d.num_nodes)
+        try:
+            _uniform_impacts = compute_motif_impact(
+                model, test_list, vocab, device, split='test',
+                task_type=task_type, max_motifs=cfg.max_motifs_eval,
+                base_att_fn=_ones_node_att_fn)
+        except Exception as _e:
+            print(f'  [warn] agnostic (uniform-weight) impact failed ({_e}).')
+
     for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
         for _agg in ('mean', 'max'):
             _sc = results.get(f'{_ex}_{_agg}', {})
             if not _sc:
                 continue
             _pfx = f'{_ex}_{_agg}'   # e.g. gnnexplainer_mean, gnnexplainer_max
-            if _impacts:
-                _c = score_impact_correlation(_sc, _impacts)
-                explainer_metrics[f'{_pfx}_pearson']  = _c.get('pearson', float('nan'))
-                explainer_metrics[f'{_pfx}_spearman'] = _c.get('spearman', float('nan'))
+            _ex_impacts = _impacts
+            if cfg.run_motif_impact:
+                try:
+                    _ex_impacts = compute_motif_impact(
+                        model, test_list, vocab, device, split='test',
+                        task_type=task_type, max_motifs=cfg.max_motifs_eval,
+                        base_att_fn=_motif_score_node_att_fn(_sc))
+                except Exception as _e:
+                    print(f'  [warn] {_pfx} own-LOO impact failed ({_e}); '
+                          f'falling back to removal impact.')
+
+            # Both impact definitions: correlation metrics + long-form rows.
+            _svi_rows = []
+            for _kind, _imp in (('own', _ex_impacts), ('agnostic', _uniform_impacts)):
+                if not _imp:
+                    continue
+                _c = score_impact_correlation(_sc, _imp)
+                _suffix = '' if _kind == 'own' else '_agnostic'  # 'own' = legacy keys
+                explainer_metrics[f'{_pfx}_pearson{_suffix}']  = _c.get('pearson', float('nan'))
+                explainer_metrics[f'{_pfx}_spearman{_suffix}'] = _c.get('spearman', float('nan'))
+                if cfg.run_motif_impact:
+                    for _mid in sorted(set(_sc) & set(_imp)):
+                        _stats = _imp[_mid]
+                        for _val in _impact_values(_stats):
+                            _svi_rows.append({
+                                'motif_id':     _mid,
+                                'score':        float(_sc[_mid]),
+                                'impact':       _val,          # per-graph
+                                'method':       _kind,         # 'own' | 'agnostic'
+                                'impact_mean':  _stats.get('impact'),
+                                'masking_without_removal': _stats.get('masking_without_removal'),
+                                'abs_disc':     _disc.get(_mid, {}).get('abs_disc'),
+                                'presence_auc': _disc.get(_mid, {}).get('presence_auc'),
+                                'motif_smarts': _stats.get('motif_smarts'),
+                            })
+            if _svi_rows:
+                import pandas as _pd
+                _pd.DataFrame(_svi_rows).to_csv(
+                    out_dir / f'{_pfx}_score_vs_impact.csv', index=False)
             if _disc:
                 _t = top_motifs_discriminative_check(_sc, _disc, k=_topk)
                 explainer_metrics[f'{_pfx}_top_k_abs_disc']      = _t.get('top_k_abs_disc', float('nan'))

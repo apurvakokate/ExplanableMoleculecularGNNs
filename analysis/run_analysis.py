@@ -19,7 +19,8 @@ Optional (explicit subcommands / flags — never run by default in ``all``):
 Subcommands
 -----------
     # Default: collect + tables + plots only
-    python analysis/run_analysis.py all --out_root results
+    python analysis/run_analysis.py all --out_root results \\
+        --extra_out_root results_motifsat_ib
 
     # Opt-in: refresh eval metrics on existing ante-hoc checkpoints first
     python analysis/run_analysis.py all --out_root results --regenerate \\
@@ -134,6 +135,23 @@ def step_regenerate(args) -> int:
 # _CONFIG_EXTRA = ['schema', 'encoder_norm', 'weight_vocab_variant', 'seed']
 
 
+def _out_roots(args) -> list[Path]:
+    """Primary --out_root plus optional --extra_out_root trees (e.g. results_motifsat_ib)."""
+    roots = [Path(args.out_root)]
+    extra = getattr(args, 'extra_out_root', None) or []
+    for p in extra:
+        ep = Path(p)
+        if ep not in roots:
+            roots.append(ep)
+    return roots
+
+
+def _collect_args_extra(p):
+    p.add_argument('--extra_out_root', nargs='*', default=None,
+                   help='additional result trees to merge into collect/plots '
+                        '(e.g. results_motifsat_ib for IB MotifSAT reruns)')
+
+
 def step_collect(args) -> int:
     """Rebuild all_results.csv from summary.json files.
 
@@ -147,34 +165,35 @@ def step_collect(args) -> int:
     from analysis.aggregate_experiments import normalize, ALL_AXES, iter_summaries
     from SharedModules.data.dataset_routing import collapse_redundant_folds
     out_root = Path(args.out_root)
+    roots = _out_roots(args)
     print('\n=== collect summaries -> all_results.csv ===')
     rows = []
     n_cfg = 0
     datasets = _datasets_arg(args)
     if datasets:
         print(f'  dataset filter: {sorted(set(datasets))}')
-    for p in iter_summaries(out_root, getattr(args, 'exclude', None), datasets):
-        try:
-            with open(p, encoding='utf-8') as f:
-                d = json.load(f)
-        except Exception as e:
-            print(f'  [warn] skip corrupt summary {p}: {e}')
-            continue
-        # Merge the sibling config.json (canonical axes) without letting it clobber
-        # the measured metrics in summary.json.
-        cfg_path = p.parent / 'config.json'
-        if cfg_path.exists():
+    for root in roots:
+        print(f'  scanning {root}')
+        for p in iter_summaries(root, getattr(args, 'exclude', None), datasets):
             try:
-                with open(cfg_path, encoding='utf-8') as f:
-                    cfg = json.load(f)
-                for k, v in cfg.items():
-                    d.setdefault(k, v)
-                n_cfg += 1
+                with open(p, encoding='utf-8') as f:
+                    d = json.load(f)
             except Exception as e:
-                print(f'  [warn] skip corrupt config {cfg_path}: {e}')
-                pass
-        d['exp_dir'] = str(p.parent.relative_to(out_root))
-        rows.append(d)
+                print(f'  [warn] skip corrupt summary {p}: {e}')
+                continue
+            cfg_path = p.parent / 'config.json'
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, encoding='utf-8') as f:
+                        cfg = json.load(f)
+                    for k, v in cfg.items():
+                        d.setdefault(k, v)
+                    n_cfg += 1
+                except Exception as e:
+                    print(f'  [warn] skip corrupt config {cfg_path}: {e}')
+            d['results_root'] = str(root)
+            d['exp_dir'] = str(p.parent.relative_to(root))
+            rows.append(d)
     if not rows:
         print('  no summary.json files found.')
         return 1
@@ -194,7 +213,7 @@ def step_collect(args) -> int:
     df = normalize(df)
     df = collapse_redundant_folds(df)
 
-    core = [c for c in ['exp_dir', 'config_sig',
+    core = [c for c in ['results_root', 'exp_dir', 'config_sig',
                         'family', 'dataset', 'backbone', 'vocab_variant',
                         'vocab_base', 'is_filter', 'is_relabelled', 'use_gt',
                         *ALL_AXES, 'fold',
@@ -312,6 +331,9 @@ def step_plots(args) -> int:
     cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
            '--out_root', args.out_root,
            '--nbins', str(args.nbins)]
+    extra = getattr(args, 'extra_out_root', None) or []
+    if extra:
+        cmd += ['--extra_out_root', *extra]
     if getattr(args, 'score_min', None) is not None:
         cmd += ['--score_min', str(args.score_min)]
     if getattr(args, 'score_max', None) is not None:
@@ -341,6 +363,7 @@ def main():
 
     def collect_args(p, *, with_dataset: bool = True):
         path_args(p)
+        _collect_args_extra(p)
         p.add_argument('--exclude', nargs='*', default=None,
                        help='extra directory-name prefixes to skip when walking '
                             '--out_root (archive/scratch dirs are always skipped).')
@@ -387,6 +410,7 @@ def main():
 
     p_pl = sub.add_parser('plots', help='score-vs-impact grid + counts')
     path_args(p_pl)
+    _collect_args_extra(p_pl)
     filter_args(p_pl)
     p_pl.add_argument('--nbins', type=int, default=6)
     p_pl.add_argument('--score_min', type=float, default=None)

@@ -39,7 +39,6 @@ def _motif_to_node_weights(
     unk_param: Optional[nn.Parameter] = None,
     unk_value: float = 0.5,
     ignore_unknowns: bool = False,
-    masked_motif: Optional[int] = None,
     global_to_param: Optional[Tensor] = None,
 ) -> Tensor:
     """Vectorised: map each node to its sigmoid weight per class.
@@ -57,7 +56,6 @@ def _motif_to_node_weights(
     unk_param : nn.Parameter (scalar) or None  — used when unk_mode='learnable_shared'
     unk_value : float  — used when unk_mode='fixed'
     ignore_unknowns : bool  — if True unknown nodes get weight 0
-    masked_motif : int or None  — global id whose weight is set to 0 (for impact eval)
     global_to_param : Tensor [num_global_motifs] or None
         Maps each global motif id → compact parameter row, with -1 for motifs
         that have no parameter (below-threshold / unknown).  None ⇒ identity
@@ -75,9 +73,6 @@ def _motif_to_node_weights(
         gp = global_to_param.to(node_to_motifs.device)
         g = node_to_motifs
         node_to_motifs = torch.where(g >= 0, gp[g.clamp(min=0)], g)
-        if masked_motif is not None and masked_motif >= 0:
-            mm = int(gp[masked_motif].item()) if masked_motif < gp.numel() else -1
-            masked_motif = mm if mm >= 0 else None
 
     n_classes = motif_params.size(1) if motif_params.dim() == 2 else 1
 
@@ -97,9 +92,6 @@ def _motif_to_node_weights(
         known_idx = node_to_motifs[known_mask]
         p = motif_params if motif_params.dim() == 2 else motif_params.unsqueeze(-1)
         weights[known_mask] = p[known_idx].sigmoid()
-
-    if masked_motif is not None:
-        weights[node_to_motifs == masked_motif] = 0.0
 
     return weights  # [N, C]
 
@@ -226,12 +218,15 @@ class SingleChannelGNN(nn.Module):
         nodes_to_motifs: Optional[Tensor] = None,
         edge_attr: Optional[Tensor] = None,
         ignore_unknowns: bool = False,
-        masked_motif: Optional[int] = None,
+        node_weights: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
-        if self.motif_params is None or nodes_to_motifs is None:
+        if node_weights is not None:
+            # already the [N,1] float node attention (prepared by the evaluator)
+            node_att = node_weights.to(x.device).float().view(-1, 1)
+        elif self.motif_params is None or nodes_to_motifs is None:
             node_att = None
         else:
             node_att = _motif_to_node_weights(
@@ -242,7 +237,6 @@ class SingleChannelGNN(nn.Module):
                 unk_param=self.unk_param,
                 unk_value=self.unk_value,
                 ignore_unknowns=ignore_unknowns,
-                masked_motif=masked_motif,
                 global_to_param=self.global_to_param,
             )  # [N, 1]
 
@@ -390,7 +384,7 @@ class MultiChannelGNN(nn.Module):
         nodes_to_motifs: Optional[Tensor] = None,
         edge_attr=None,
         ignore_unknowns: bool = False,
-        masked_motif: Optional[int] = None,
+        node_weights: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
@@ -399,7 +393,12 @@ class MultiChannelGNN(nn.Module):
         # (MultiChannelGNN bypasses BaseGNN.get_embedding so must null here)
         edge_attr = None
 
-        if self.motif_params is None or nodes_to_motifs is None:
+        if node_weights is not None:
+            # already the [N,1] float node attention (prepared by the evaluator)
+            node_att = node_weights.to(x.device).float().view(-1, 1)
+            if self.num_classes > 1:
+                node_att = node_att.expand(-1, self.num_classes)
+        elif self.motif_params is None or nodes_to_motifs is None:
             node_att = None
         else:
             node_att = _motif_to_node_weights(
@@ -410,7 +409,6 @@ class MultiChannelGNN(nn.Module):
                 unk_param=self.unk_param,
                 unk_value=self.unk_value,
                 ignore_unknowns=ignore_unknowns,
-                masked_motif=masked_motif,
                 global_to_param=self.global_to_param,
             )  # [N, C]
 

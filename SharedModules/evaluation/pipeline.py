@@ -29,6 +29,7 @@ from .motif_eval import (
     motif_broadcast_att_fn,
     motif_class_discriminativeness,
     top_motifs_discriminative_check,
+    _impact_values,
 )
 
 
@@ -189,7 +190,6 @@ class EvalPipeline:
                 self.model, self.test_list, self.vocab, self.device,
                 split='test', task_type=self.task_type,
                 max_motifs=self.max_motifs_eval,
-                index_maps=self.index_maps,
             )
 
         has_scores  = motif_scores is not None
@@ -220,7 +220,6 @@ class EvalPipeline:
                 split='test',
                 task_type=self.task_type,
                 threshold=self.correct_pred_threshold,
-                index_maps=self.index_maps,
             )
 
         # 7. Class-discriminativeness of motifs (label-aware, model-free).
@@ -269,7 +268,12 @@ class EvalPipeline:
             dfs['gt_roc_edge'] = pd.DataFrame([results['gt_roc_edge']])
 
         if 'motif_impact' in results:
-            rows = [{'motif_id': mid, **stats}
+            # motif_impact.csv stays one scalar row per motif — strip the
+            # per-graph ``*_values`` lists (used only for instance-level plots /
+            # correlation) so they don't get stringified into cells.
+            rows = [{'motif_id': mid,
+                     **{k: v for k, v in stats.items()
+                        if not k.endswith('_values')}}
                     for mid, stats in results['motif_impact'].items()]
             if rows:
                 dfs['motif_impact'] = (
@@ -277,27 +281,42 @@ class EvalPipeline:
                     .sort_values('impact', ascending=False)
                     .reset_index(drop=True)
                 )
+                if any('masking_without_removal' in stats for stats in results['motif_impact'].values()):
+                    dfs['masking_without_removal'] = (
+                        pd.DataFrame(rows)
+                        .sort_values('masking_without_removal', ascending=False)
+                        .reset_index(drop=True)
+                    )
 
         if 'correlation' in results:
             dfs['correlation'] = pd.DataFrame([results['correlation']])
 
-        # Joined per-motif score↔impact(↔discriminativeness) table — the direct
-        # input for score-vs-impact scatter plots.
+        # Joined score↔impact(↔discriminativeness) table — the direct input for
+        # score-vs-impact scatter plots. Emitted *instance-level*: one row per
+        # (motif, graph), with the motif's score repeated across its graphs and
+        # ``impact`` holding that graph's faithful-LOO value (the same per-graph
+        # values the instance-level Pearson correlates — masking-without-removal
+        # when available, else graph-removal). Matches the original MOSE-GNN,
+        # which does NOT average a motif's impact across graphs before plotting.
         motif_scores = results.get('_motif_scores')
         if motif_scores is not None and 'motif_impact' in results and results['motif_impact']:
             imp = results['motif_impact']
             disc = results.get('discriminativeness', {})
             rows = []
             for mid in sorted(set(motif_scores) & set(imp)):
-                rows.append({
-                    'motif_id':     mid,
-                    'score':        float(motif_scores[mid]),
-                    'impact':       imp[mid].get('impact'),
-                    'impact_std':   imp[mid].get('impact_std'),
-                    'abs_disc':     disc.get(mid, {}).get('abs_disc'),
-                    'presence_auc': disc.get(mid, {}).get('presence_auc'),
-                    'motif_smarts': imp[mid].get('motif_smarts'),
-                })
+                stats = imp[mid]
+                per_graph = _impact_values(stats)   # per-(motif,graph) impacts
+                for val in per_graph:
+                    rows.append({
+                        'motif_id':     mid,
+                        'score':        float(motif_scores[mid]),
+                        'impact':       val,                       # per-graph
+                        'impact_mean':  stats.get('impact'),       # per-motif mean (ref)
+                        'masking_without_removal': stats.get('masking_without_removal'),
+                        'abs_disc':     disc.get(mid, {}).get('abs_disc'),
+                        'presence_auc': disc.get(mid, {}).get('presence_auc'),
+                        'motif_smarts': stats.get('motif_smarts'),
+                    })
             if rows:
                 dfs['score_vs_impact'] = pd.DataFrame(rows)
 

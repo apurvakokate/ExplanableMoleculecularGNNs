@@ -1374,5 +1374,34 @@ class TestV4Integration(unittest.TestCase):
         self.assertEqual(X.shape, (n, len(ml)))
 
 
+class TestValidatePartition(unittest.TestCase):
+    """Fail-fast partition guard shared by rbrics / rbrics_old / protected."""
+
+    def test_valid_partition_passes(self):
+        gvr.validate_partition([{0, 1}, {2, 3}], 4, 'ok')            # no raise
+
+    def test_whole_molecule_single_fragment_passes(self):
+        gvr.validate_partition([{0, 1, 2, 3}], 4, 'whole')          # no raise
+
+    def test_missing_atom_raises(self):
+        with self.assertRaises(ValueError):
+            gvr.validate_partition([{0, 1}, {2}], 4, 'missing')
+
+    def test_overlap_raises(self):
+        with self.assertRaises(ValueError):
+            gvr.validate_partition([{0, 1}, {1, 2, 3}], 4, 'overlap')
+
+    def test_violations_helper(self):
+        missing, overlap = gvr.partition_violations([{0, 1}, {1, 2}], 4)
+        self.assertEqual(missing, {3})
+        self.assertEqual(overlap, {1})
+
+    def test_rbrics_fragmentation_is_a_partition(self):
+        m = Chem.MolFromSmiles('c1ccccc1[N+](=O)[O-]')   # nitrobenzene
+        pieces = gvr.fragment_molecule_tracked(m, 'c1ccccc1[N+](=O)[O-]',
+                                               False, 'rbrics')
+        gvr.validate_partition([a for _, a in pieces], m.GetNumAtoms(), 'nb')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

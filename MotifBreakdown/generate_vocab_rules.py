@@ -190,6 +190,13 @@ def _canonical_legacy_smarts_from_mol(mol: Chem.Mol) -> str:
         if a.GetAtomicNum() == 0 and frag.normalize_dummy_wildcards():
             a.SetIsotope(0)
         a.SetAtomMapNum(0)
+    # We emit stereo-free canonical SMILES (isomericSmiles=False), so any bond
+    # stereo is discarded anyway. Clear it first: a fragment RWMol can carry a
+    # STEREOANY double bond that trips RDKit's canonicaliser
+    # ("bad bond stereo") on newer RDKit — clearing is a no-op for the output.
+    for b in rw.GetBonds():
+        if b.GetStereo() != Chem.BondStereo.STEREONONE:
+            b.SetStereo(Chem.BondStereo.STEREONONE)
     smi = Chem.MolToSmiles(rw.GetMol(), canonical=True, isomericSmiles=False)
     return frag.strip(smi) if frag.normalize_dummy_wildcards() else smi
 
@@ -512,6 +519,40 @@ def _bond_indices_for(mol: Chem.Mol, cut_fn) -> List[int]:
 #     return leaves if leaves else [(smarts, orig_set)]
 
 
+def partition_violations(atomsets, n_atoms: int):
+    """Return ``(missing, overlap)`` atom-index sets for a list of atomsets.
+
+    ``missing`` = atoms in ``range(n_atoms)`` not covered by any set;
+    ``overlap`` = atoms covered by more than one set. A valid partition has both
+    empty. Pure inspection (no raise) so callers can audit before enforcing.
+    """
+    covered: Set[int] = set()
+    overlap: Set[int] = set()
+    for s in atomsets:
+        s = {int(a) for a in s}
+        overlap |= (s & covered)
+        covered |= s
+    missing = set(range(n_atoms)) - covered
+    return missing, overlap
+
+
+def validate_partition(atomsets, n_atoms: int, context: str) -> None:
+    """Fail fast if ``atomsets`` is not an exact partition of ``range(n_atoms)``.
+
+    Shared by every legacy fragmenter (rbrics / rbrics_old) and the protected
+    carve, mirroring the v4 tokenizer's guarantee. Raises rather than silently
+    absorbing orphan atoms into fragment 0 — a partition violation means the
+    atom→motif map (and thus every downstream mask / node_label) would be wrong.
+    """
+    missing, overlap = partition_violations(atomsets, n_atoms)
+    if missing or overlap:
+        raise ValueError(
+            f"fragmentation produced an invalid atom partition for {context!r} "
+            f"({n_atoms} atoms): missing={sorted(missing)} overlap={sorted(overlap)}. "
+            f"Refusing to emit a silently-patched atom->motif map (fail fast)."
+        )
+
+
 def fragment_rbrics_old_tracked(mol: Chem.Mol,
                                 orig_smi: str
                                 ) -> List[Tuple[str, Set[int]]]:
@@ -551,16 +592,15 @@ def fragment_rbrics_old_tracked(mol: Chem.Mol,
         if atom_idxs:
             out.append((smi, atom_idxs))
 
-    covered = {a for _, atoms in out for a in atoms}
-    missing = set(range(n)) - covered
-    if missing and out:
-        out[0] = (out[0][0], out[0][1] | missing)
-    elif missing:
+    # Exact atom partition (fail fast) — whole molecule when nothing was cut.
+    if not out:
         rw = Chem.RWMol(mol)
         for a in rw.GetAtoms():
             a.SetAtomMapNum(0)
         smi = Chem.MolToSmiles(rw.GetMol(), isomericSmiles=False, canonical=True)
         out = [(smi, set(range(n)))]
+    else:
+        validate_partition([atoms for _, atoms in out], n, orig_smi)
 
     return out
 
@@ -680,16 +720,16 @@ def fragment_molecule_tracked(mol: Chem.Mol,
     if use_fallback:
         all_pieces = _apply_structural_fallback(mol, orig_smi, all_pieces)
 
-    # Guarantee: every atom is covered exactly once.
-    covered = {a for _, atoms in all_pieces for a in atoms}
-    missing = set(range(n)) - covered
-    if missing and all_pieces:
-        all_pieces[0] = (all_pieces[0][0], all_pieces[0][1] | missing)
-    elif missing:
+    # Exact atom partition. A molecule with no breakable bonds is a single
+    # whole-molecule motif (legitimate). Otherwise the pieces MUST partition the
+    # atoms — fail fast (no silent orphan-absorb into fragment 0).
+    if not all_pieces:
         rw = Chem.RWMol(mol)
         for atom in rw.GetAtoms():
             atom.SetAtomMapNum(atom.GetIdx() + 1)
         all_pieces = [(_canonical_legacy_smarts_from_mol(rw.GetMol()), set(range(n)))]
+    else:
+        validate_partition([atoms for _, atoms in all_pieces], n, orig_smi)
 
     return [(_canonical_legacy_smarts(s), atoms) for s, atoms in all_pieces]
 
@@ -1412,6 +1452,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             if m is None:
                 _carved.append(_frags); continue
             new = _fgp.carve_protected(m, _frags, _keyer)
+            # Protection must preserve the exact atom partition (fail fast).
+            validate_partition([atoms for _, atoms in new],
+                               m.GetNumAtoms(), f"{orig_smi} [protected]")
             if len(_fgp.protected_atomsets(m)):
                 _n_prot += 1
             _carved.append(new)

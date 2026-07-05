@@ -102,73 +102,70 @@ def _meta(run_dir: Path):
             variant or 'unknown', synthetic, fold)
 
 
-def _baseline_explainers(run_dir: Path):
-    """List explainer prefixes present in a baseline run dir, by score files."""
-    names = set()
-    for f in run_dir.glob('*_motif_scores_*.csv'):
-        stem = f.name.rsplit('_motif_scores_', 1)[0]
-        names.add(stem)
-    return sorted(names)
+def collect(out_root: Path | list[Path], agg: str = 'mean',
+            datasets: set[str] | None = None,
+            impact_kind: str = 'own') -> pd.DataFrame:
+    """Gather per-(motif, graph) (score, impact) rows for every model family.
 
-
-def collect(out_root: Path, agg: str = 'mean',
-            datasets: set[str] | None = None) -> pd.DataFrame:
-    """Gather per-motif (score, impact) rows for every model family."""
+    ``impact_kind`` selects which baseline impact to plot when a per-explainer
+    table carries both (``method`` column): ``'own'`` = the explainer's own
+    leave-one-out, ``'agnostic'`` = the original uniform-weight impact. Motif-
+    aware models (MOSE/MotifSAT) have a single impact and are unaffected."""
     from analysis.aggregate_experiments import dataset_allowed
 
+    roots = [out_root] if isinstance(out_root, Path) else list(out_root)
     recs = []
-    for csv in out_root.rglob('score_vs_impact.csv'):
-        rel = csv.relative_to(out_root)
-        if _path_excluded(rel.parts):
-            continue
-        if datasets and not dataset_allowed(csv.parent, datasets):
-            continue
-        try:
-            df = pd.read_csv(csv)
-        except Exception:
-            continue
-        if df.empty or 'score' not in df or 'impact' not in df:
-            continue
-        fam, ds, bb, var, syn, fold = _meta(csv.parent)
-        df = df.assign(family=fam, dataset=ds, backbone=bb, variant=var,
-                       synthetic=syn, fold=fold, run_dir=str(csv.parent))
-        recs.append(df)
-
-    for impact_csv in out_root.rglob('motif_impact.csv'):
-        run_dir = impact_csv.parent
-        rel = impact_csv.relative_to(out_root)
-        if _path_excluded(rel.parts):
-            continue
-        if datasets and not dataset_allowed(run_dir, datasets):
-            continue
-        explainers = _baseline_explainers(run_dir)
-        if not explainers:
-            continue
-        try:
-            imp = pd.read_csv(impact_csv)[['motif_id', 'impact']]
-        except Exception:
-            continue
-        _, ds, bb, var, syn, fold = _meta(run_dir)
-        for expl in explainers:
-            score_file = run_dir / f'{expl}_motif_scores_{agg}.csv'
-            if not score_file.exists():
+    for root in roots:
+        root = Path(root)
+        for csv in root.rglob('score_vs_impact.csv'):
+            rel = csv.relative_to(root)
+            if _path_excluded(rel.parts):
+                continue
+            if datasets and not dataset_allowed(csv.parent, datasets):
                 continue
             try:
-                sc = pd.read_csv(score_file)
+                df = pd.read_csv(csv)
             except Exception:
                 continue
-            score_col = f'score_{agg}' if f'score_{agg}' in sc else (
-                'score' if 'score' in sc else None)
-            if score_col is None or 'motif_id' not in sc:
+            if df.empty or 'score' not in df or 'impact' not in df:
                 continue
-            merged = sc[['motif_id', score_col]].merge(imp, on='motif_id', how='inner')
-            merged = merged.rename(columns={score_col: 'score'})
-            if merged.empty:
-                continue
-            merged = merged.assign(family=expl, dataset=ds, backbone=bb,
-                                   variant=var, synthetic=syn, fold=fold,
-                                   run_dir=str(run_dir))
-            recs.append(merged)
+            fam, ds, bb, var, syn, fold = _meta(csv.parent)
+            df = df.assign(family=fam, dataset=ds, backbone=bb, variant=var,
+                           synthetic=syn, fold=fold, run_dir=str(csv.parent),
+                           results_root=str(root))
+            recs.append(df)
+
+        # Baselines: each post-hoc explainer writes its OWN instance-level
+        # score-vs-impact table (its attribution used as the LOO weight vector
+        # W → the explainer's own per-graph impact), one file per (explainer,
+        # agg). Read the file matching the requested agg so the plotted impact
+        # is the explainer's own LOO impact — NOT the vanilla model's shared,
+        # explainer-agnostic motif_impact.csv (graph-removal) it used to reuse.
+        for expl in ('gnnexplainer', 'pgexplainer', 'mage'):
+            for svi in root.rglob(f'{expl}_{agg}_score_vs_impact.csv'):
+                run_dir = svi.parent
+                rel = svi.relative_to(root)
+                if _path_excluded(rel.parts):
+                    continue
+                if datasets and not dataset_allowed(run_dir, datasets):
+                    continue
+                try:
+                    df = pd.read_csv(svi)
+                except Exception:
+                    continue
+                if df.empty or 'score' not in df or 'impact' not in df:
+                    continue
+                # Long-form file carries both impact definitions tagged by
+                # 'method'; keep only the requested one.
+                if 'method' in df.columns:
+                    df = df[df['method'] == impact_kind]
+                    if df.empty:
+                        continue
+                _, ds, bb, var, syn, fold = _meta(run_dir)
+                df = df.assign(family=expl, dataset=ds, backbone=bb, variant=var,
+                               synthetic=syn, fold=fold, run_dir=str(run_dir),
+                               results_root=str(root))
+                recs.append(df)
 
     return pd.concat(recs, ignore_index=True) if recs else pd.DataFrame()
 
@@ -249,11 +246,17 @@ def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray):
     sub['_bin'] = _assign_bins(sub['score'].values, edges)
     data, pos = [], []
     counts = []
+    has_mid = 'motif_id' in sub.columns
     for b in range(nbin):
-        vals = sub.loc[sub['_bin'] == b, 'impact'].values
+        in_bin = sub['_bin'] == b
+        # Boxplot is instance-level: every (motif, graph) impact is a point.
+        vals = sub.loc[in_bin, 'impact'].values
         data.append(vals if len(vals) else [np.nan])
         pos.append(float(b))
-        counts.append(int((sub['_bin'] == b).sum()))
+        # Count strip stays a *motif* count (unique motifs in the bin), not the
+        # per-graph instance count, so the label remains accurate.
+        counts.append(int(sub.loc[in_bin, 'motif_id'].nunique()) if has_mid
+                      else int(in_bin.sum()))
 
     bp = ax.boxplot(data, positions=pos, widths=0.55,
                     patch_artist=True, showfliers=True,
@@ -307,6 +310,7 @@ def plot_algorithm_figure(
     save_dir: Path,
     agg: str,
     count_rows: list[dict],
+    impact_kind: str = 'own',
 ) -> Path | None:
     """Render one (dataset × algorithm × label-regime) grid and return the path."""
     variants = _ordered(fsub['variant'].unique(), _VARIANT_ORDER)
@@ -355,12 +359,15 @@ def plot_algorithm_figure(
 
     lo, hi = float(edges[0]), float(edges[-1])
     _reg = {'real': 'real labels', 'gt': 'relabelled / GT'}.get(synthetic, synthetic)
+    _kind = {'own': "explainer's own LOO",
+             'agnostic': 'uniform-weight (original)'}.get(impact_kind, impact_kind)
     fig.suptitle(
-        f'{ds} — {_family_title(family)}  ({_reg})\n'
+        f'{ds} — {_family_title(family)}  ({_reg}) — impact: {_kind}\n'
         f'motif impact by equal-width score bins [{lo:.3g}, {hi:.3g}]',
         fontsize=11, y=1.01,
     )
-    out = save_dir / f'score_vs_impact_{ds}_{_safe_slug(family)}_{synthetic}_{agg}.png'
+    out = (save_dir /
+           f'score_vs_impact_{ds}_{_safe_slug(family)}_{synthetic}_{agg}_{impact_kind}.png')
     fig.savefig(out, dpi=140, bbox_inches='tight')
     plt.close(fig)
     return out
@@ -405,10 +412,22 @@ def write_demo_runs(out_root: Path) -> None:
                     }).to_csv(run_dir / 'motif_impact.csv', index=False)
 
                     if opts.get('baseline'):
-                        pd.DataFrame({
-                            'motif_id': motif_ids,
-                            'score_mean': scores,
-                        }).to_csv(run_dir / f'{fam}_motif_scores_mean.csv', index=False)
+                        # Per-explainer instance-level score-vs-impact (one file
+                        # per agg), long-form with both impact definitions tagged
+                        # by 'method', matching what run_vanilla.py now emits.
+                        for _agg in ('mean', 'max'):
+                            _own = pd.DataFrame({
+                                'motif_id': motif_ids, 'score': scores,
+                                'impact': impacts, 'method': 'own',
+                                'abs_disc': rng.uniform(0, 0.5, n)})
+                            _agn = pd.DataFrame({
+                                'motif_id': motif_ids, 'score': scores,
+                                'impact': 0.10 * scores + rng.normal(0, 0.05, n),
+                                'method': 'agnostic',
+                                'abs_disc': rng.uniform(0, 0.5, n)})
+                            pd.concat([_own, _agn], ignore_index=True).to_csv(
+                                run_dir / f'{fam}_{_agg}_score_vs_impact.csv',
+                                index=False)
                     else:
                         pd.DataFrame({
                             'motif_id': motif_ids,
@@ -421,6 +440,8 @@ def write_demo_runs(out_root: Path) -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out_root', required=True)
+    ap.add_argument('--extra_out_root', nargs='*', default=None,
+                    help='additional result trees to include (e.g. results_motifsat_ib)')
     ap.add_argument('--save_dir', default=None)
     ap.add_argument('--counts_table', default=None)
     ap.add_argument('--nbins', type=int, default=6)
@@ -433,6 +454,11 @@ def main():
                          "explainers are not crushed; pass 1 to force full [0,1]).")
     ap.add_argument('--agg', default='mean', choices=['mean', 'max'],
                     help='Baseline node-score aggregation (mean|max).')
+    ap.add_argument('--impact_kind', default='own', choices=['own', 'agnostic'],
+                    help="Baseline impact to plot: 'own' (each explainer's own "
+                         "leave-one-out) or 'agnostic' (original uniform-weight "
+                         'impact, shared across explainers). Motif-aware models '
+                         'are unaffected.')
     ap.add_argument('--dataset', nargs='*', default=None,
                     help='Only plot these dataset(s), e.g. --dataset mutag BBBP')
     ap.add_argument('--demo', action='store_true',
@@ -447,11 +473,17 @@ def main():
         out_root = demo_root
         print('wrote demo runs under', demo_root)
 
-    save_dir = Path(args.save_dir) if args.save_dir else out_root / 'plots'
+    save_dir = Path(args.save_dir) if args.save_dir else Path(args.out_root) / 'plots'
     save_dir.mkdir(parents=True, exist_ok=True)
 
     datasets = set(args.dataset) if args.dataset else None
-    df = collect(out_root, agg=args.agg, datasets=datasets)
+    roots = [out_root]
+    for p in args.extra_out_root or []:
+        ep = Path(p)
+        if ep not in roots:
+            roots.append(ep)
+    df = collect(roots, agg=args.agg, datasets=datasets,
+                 impact_kind=args.impact_kind)
     if df.empty:
         print('No score_vs_impact.csv (or baseline score files) found under',
               out_root)
@@ -479,6 +511,7 @@ def main():
             save_dir=save_dir,
             agg=args.agg,
             count_rows=count_rows,
+            impact_kind=args.impact_kind,
         )
         if out is not None:
             written.append(out)

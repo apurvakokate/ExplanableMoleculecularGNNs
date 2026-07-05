@@ -557,37 +557,73 @@ class TestMotifEval(unittest.TestCase):
                 data_list.append(d)
         return vocab, model, data_list
 
-    def test_compute_motif_impact_returns_dict(self):
+    @staticmethod
+    def _ones_att(d):
+        # A vanilla GNN has no intrinsic node attention, so supply an explicit
+        # per-node weight vector (as a post-hoc explainer would). Impact is now
+        # the zero-weight faithful LOO, which requires some W.
+        return torch.ones(d.num_nodes)
+
+    def test_compute_motif_impact_works_without_vocab_mask_cache(self):
+        """Masks come from nodes_to_motifs (attached by build_graph), so no
+        vocab mask-cache pickle is needed — single path, no fallback."""
         vocab, model, data_list = self._make_eval_setup()
-        # Build cache manually
-        smiles = [SMILES['benzene'], SMILES['nitrobenzene']]
-        groups = ['test'] * 2
-        vocab.mask_cache['test'] = compute_mask_cache(
-            smiles, groups, vocab.lookup_train
-        ).get('test', {})
+        vocab.mask_cache = {}   # ensure the pickle path is NOT used
         results = compute_motif_impact(
             model, data_list, vocab, DEVICE,
             split='test', task_type='BinaryClass',
+            base_att_fn=self._ones_att,
+        )
+        self.assertIsInstance(results, dict)
+        self.assertGreater(len(results), 0)
+
+    def test_compute_motif_impact_returns_dict(self):
+        vocab, model, data_list = self._make_eval_setup()
+        results = compute_motif_impact(
+            model, data_list, vocab, DEVICE,
+            split='test', task_type='BinaryClass',
+            base_att_fn=self._ones_att,
         )
         self.assertIsInstance(results, dict)
         for mid, info in results.items():
             self.assertIn('impact', info)
             self.assertIn('n_graphs', info)
             self.assertGreaterEqual(info['impact'], 0.0)
+            # impact IS the zero-weight faithful LOO now (removal disabled)
+            self.assertIn('masking_without_removal', info)
+            self.assertAlmostEqual(info['impact'], info['masking_without_removal'])
 
-    def test_compute_motif_impact_mutag_index_remap(self):
-        """SMILES-space masks must remap to graph nodes when H adds extra nodes."""
+    def test_compute_motif_impact_empty_without_weights(self):
+        """No node attention and no base_att_fn → no impact (removal disabled)."""
+        vocab, model, data_list = self._make_eval_setup()
+        results = compute_motif_impact(
+            model, data_list, vocab, DEVICE,
+            split='test', task_type='BinaryClass',
+        )
+        self.assertEqual(results, {})
+
+    def test_build_graph_mask_cache_from_nodes_to_motifs(self):
+        """Masks are derived from nodes_to_motifs (graph-node space, all
+        datasets), motif -1 excluded, length always == num_nodes."""
         from torch_geometric.data import Data
-        from SharedModules.evaluation.motif_eval import _remap_smiles_mask_to_graph
+        from SharedModules.evaluation.motif_eval import build_graph_mask_cache
 
-        smi = 'C[N:2]O'
-        g2s = {0: 0, 1: 1, 2: 2, 3: 2}  # graph node 3 = H, maps to same heavy atom
-        smiles_mask = torch.tensor([True, False, False])
-        graph_mask = _remap_smiles_mask_to_graph(smiles_mask, 4, g2s)
-        self.assertIsNotNone(graph_mask)
-        self.assertEqual(int(graph_mask.sum()), 1)
-        self.assertTrue(graph_mask[0])
-        self.assertFalse(graph_mask[3])
+        d = Data(
+            x=torch.randn(4, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
+            y=torch.tensor([0.0]),
+            smiles='C[N:2]O',
+            nodes_to_motifs=torch.tensor([0, 0, 1, -1], dtype=torch.long),
+        )
+        cache = build_graph_mask_cache([d])
+        self.assertEqual(set(cache.keys()), {0, 1})   # -1 excluded
+        self.assertEqual(cache[0]['C[N:2]O'].numel(), 4)
+        self.assertTrue(bool(cache[0]['C[N:2]O'][0]) and bool(cache[0]['C[N:2]O'][1]))
+        self.assertTrue(bool(cache[1]['C[N:2]O'][2]))
+
+    def test_compute_motif_impact_derives_masks_from_graph(self):
+        """compute_motif_impact uses nodes_to_motifs (no vocab mask cache)."""
+        from torch_geometric.data import Data
 
         vocab = _make_fake_vocab()
         model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
@@ -596,21 +632,31 @@ class TestMotifEval(unittest.TestCase):
             x=torch.randn(4, NUM_ATOM_TYPES),
             edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
             y=torch.tensor([0.0]),
-            smiles=smi,
+            smiles='C[N:2]O',
+            nodes_to_motifs=torch.tensor([0, 0, 1, 1], dtype=torch.long),
         )
-        vocab.lookup_test = {smi: {0: ('[*]C', 0), 1: ('[*]N', 1), 2: ('[*]O', 2)}}
-        vocab.mask_cache['test'] = {
-            0: {smi: smiles_mask},
-            1: {smi: torch.tensor([False, True, False])},
-        }
         results = compute_motif_impact(
             model, [d], vocab, DEVICE,
             split='test', task_type='BinaryClass',
-            index_maps={smi: g2s},
+            base_att_fn=self._ones_att,
         )
-        self.assertGreaterEqual(len(results), 2)
+        self.assertEqual(set(results.keys()), {0, 1})
         for info in results.values():
             self.assertGreaterEqual(info['n_graphs'], 1)
+
+    def test_build_graph_mask_cache_fails_fast_without_annotations(self):
+        """Fail fast (no fallback) when a graph lacks nodes_to_motifs."""
+        from torch_geometric.data import Data
+        from SharedModules.evaluation.motif_eval import build_graph_mask_cache
+
+        d = Data(
+            x=torch.randn(4, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
+            y=torch.tensor([0.0]),
+            smiles='C[N:2]O',
+        )
+        with self.assertRaises(ValueError):
+            build_graph_mask_cache([d])
 
     def test_score_impact_correlation_shape(self):
         scores = {0: 0.8, 1: 0.3, 2: 0.1}
@@ -915,13 +961,9 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
                             or result[subset]['gt_mean_score'] != result[subset]['gt_mean_score'])
 
     def _setup_index_remap(self):
-        """A graph (4 nodes incl. an explicit-H) whose mask cache is in
-        SMILES space (length 3). Without index_maps remapping, every ablation
-        is skipped and GT impact is NaN; with it, impacts are computed."""
+        """A 4-node graph whose masks are derived from nodes_to_motifs."""
         from torch_geometric.data import Data
         smi = 'C[N:2]O_remap'
-        # graph node 3 = explicit H, folds onto heavy atom 2
-        g2s = {0: 0, 1: 1, 2: 2, 3: 2}
         vocab = _make_fake_vocab()
         model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
         model.eval()
@@ -930,38 +972,24 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
             y=torch.tensor([1.0]),
             smiles=smi,
+            nodes_to_motifs=torch.tensor([0, 0, 1, 1], dtype=torch.long),
         )
-        # No nodes_to_motifs → _resolve_mask_cache falls back to vocab.mask_cache,
-        # which is SMILES-space (length 3, shorter than the 4-node graph).
-        vocab.mask_cache['test'] = {
-            0: {smi: torch.tensor([True, False, False])},
-            1: {smi: torch.tensor([False, True, False])},
-        }
         scores  = {0: 0.9, 1: 0.2}
         impacts = {0: {'impact': 0.7, 'motif_smarts': 's0'},
                    1: {'impact': 0.1, 'motif_smarts': 's1'}}
-        return model, vocab, [d], scores, impacts, {0}, {smi: g2s}
+        return model, vocab, [d], scores, impacts, {0}
 
-    def test_mutag_style_mask_remapped_with_index_maps(self):
-        """With index_maps, GT impact is computed (not silently NaN'd)."""
-        model, vocab, data_list, scores, impacts, gt_ids, idx = \
+    def test_mutag_style_mask_with_matching_length(self):
+        """Zero-weight GT impact is computed (vanilla → supply explainer W)."""
+        model, vocab, data_list, scores, impacts, gt_ids = \
             self._setup_index_remap()
         result = gt_vs_outside_gt_eval(
             scores, impacts, gt_ids, data_list, model, vocab,
-            DEVICE, task_type='BinaryClass', index_maps=idx,
+            DEVICE, task_type='BinaryClass',
+            base_att_fn=lambda d: torch.ones(d.num_nodes),
         )
         self.assertFalse(np.isnan(result['all']['gt_mean_impact']))
 
-    def test_mutag_style_mask_nan_without_index_maps(self):
-        """Without index_maps, the length-mismatched mask can't be applied, so
-        GT impact falls through to NaN — confirms the remap is what fixes it."""
-        model, vocab, data_list, scores, impacts, gt_ids, _ = \
-            self._setup_index_remap()
-        result = gt_vs_outside_gt_eval(
-            scores, impacts, gt_ids, data_list, model, vocab,
-            DEVICE, task_type='BinaryClass',  # index_maps omitted
-        )
-        self.assertTrue(np.isnan(result['all']['gt_mean_impact']))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1942,11 +1970,9 @@ class TestMultiExplanation(unittest.TestCase):
     # ── build_per_graph_impact_df_from_masks (mutag-style remap) ──────────────
 
     def _setup_mask_df(self):
-        """A 4-node graph (one explicit-H) with SMILES-space masks of length 3,
-        so the builder must remap via index_maps (mirrors compute_motif_impact)."""
+        """A 4-node graph whose masks are derived from nodes_to_motifs."""
         from torch_geometric.data import Data
         smi = 'C[N:2]O_me'
-        g2s = {0: 0, 1: 1, 2: 2, 3: 2}  # graph node 3 = H → heavy atom 2
         vocab = _make_fake_vocab()
         model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
         model.eval()
@@ -1955,39 +1981,25 @@ class TestMultiExplanation(unittest.TestCase):
             edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long),
             y=torch.tensor([1.0]),
             smiles=smi,
+            nodes_to_motifs=torch.tensor([0, 0, 1, 1], dtype=torch.long),
         )
-        # No nodes_to_motifs → falls back to vocab.mask_cache (SMILES space, len 3).
-        vocab.mask_cache['test'] = {
-            0: {smi: torch.tensor([True, False, False])},
-            1: {smi: torch.tensor([False, True, False])},
-        }
         scores = {0: 0.9, 1: 0.2}
-        return model, vocab, [d], scores, {smi: g2s}
+        return model, vocab, [d], scores
 
-    def test_build_df_from_masks_remaps_with_index_maps(self):
+    def test_build_df_from_masks_with_matching_length(self):
         from SharedModules.evaluation.multi_explanation import (
             build_per_graph_impact_df_from_masks,
         )
-        model, vocab, data_list, scores, idx = self._setup_mask_df()
+        model, vocab, data_list, scores = self._setup_mask_df()
         df = build_per_graph_impact_df_from_masks(
             model, data_list, vocab, DEVICE, scores,
-            split='test', task_type='BinaryClass', index_maps=idx,
+            split='test', task_type='BinaryClass',
+            base_att_fn=lambda d: torch.ones(d.num_nodes),
         )
-        # Both motifs produce a (graph, motif) row; impacts are finite.
         self.assertEqual(set(df['motif_id']), {0, 1})
+        # impact IS the zero-weight faithful LOO now (removal disabled)
         self.assertTrue(np.isfinite(df['impact']).all())
-
-    def test_build_df_from_masks_empty_without_index_maps(self):
-        from SharedModules.evaluation.multi_explanation import (
-            build_per_graph_impact_df_from_masks,
-        )
-        model, vocab, data_list, scores, _ = self._setup_mask_df()
-        df = build_per_graph_impact_df_from_masks(
-            model, data_list, vocab, DEVICE, scores,
-            split='test', task_type='BinaryClass',  # index_maps omitted
-        )
-        # Length-3 masks can't be applied to the 4-node graph → all skipped.
-        self.assertTrue(df.empty)
+        self.assertTrue((df['impact'] == df['masking_without_removal']).all())
 
 
 class TestMutagSplits(unittest.TestCase):

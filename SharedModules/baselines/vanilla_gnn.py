@@ -76,9 +76,24 @@ class VanillaGNN(nn.Module):
         batch: Optional[torch.Tensor] = None,
         nodes_to_motifs: Optional[torch.Tensor] = None,
         edge_attr: Optional[torch.Tensor] = None,
+        node_weights: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, None]:
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        if node_weights is not None:
+            # already the [N,1] float node attention (prepared by the evaluator)
+            nw = node_weights.to(x.device).float().view(-1, 1)
+            # Match the original DomainDrivenGlobalExpl vanilla (use_ones) masking
+            # channels: scale features before the conv stack (w_feat) and node
+            # embeddings before pooling (w_readout), but do NOT gate messages
+            # (w_message). The vanilla GNN is trained with no injection, so this
+            # keeps the counterfactual a pure node drop-out at the two points the
+            # original applied ``x = x * node_weights``.
+            graph_emb, _ = self.backbone_net.get_embedding(
+                x, edge_index, edge_attr=edge_attr, node_att=nw,
+                w_feat=True, w_message=False, w_readout=True, batch=batch,
+            )
+            return self.backbone_net.classify(graph_emb), None
         graph_emb, _ = self.backbone_net.get_embedding(
             x, edge_index, edge_attr=edge_attr, batch=batch
         )

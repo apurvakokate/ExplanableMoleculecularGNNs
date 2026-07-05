@@ -161,30 +161,35 @@ def build_per_graph_impact_df_from_masks(
     split: str = "test",
     task_type: str = "BinaryClass",
     max_motifs: Optional[int] = None,
-    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
+    base_att_fn=None,
 ) -> pd.DataFrame:
     """Build a per-graph, per-motif impact DataFrame with true per-graph impacts.
 
-    This is the correct input for H1/H2 analysis. For each (graph, motif) pair,
-    the impact is |p(graph) - p(graph with motif masked)|, computed fresh.
+    This is the correct input for H1/H2 analysis. For each (graph, motif) pair
+    the impact is the faithful zero-weight leave-one-out
+    ``|p(g;W) - p(g;W\\m)|`` — the graph-removal path is DISABLED (commented out).
 
-    Uses the SAME ablation path as ``compute_motif_impact``: SMILES-space masks
-    are remapped to graph-node indices (``index_maps``, required for mutag's
-    explicit-H atoms) and the ablation mirrors the model's injection point
-    (node features and/or incident edges via ``_injection_modes``). Without this
-    the impacts here would disagree with the EvalPipeline impacts, and on mutag
-    a length-mismatched mask could broadcast-crash instead of being skipped.
+    Masks come from the SAME single source as every other eval step
+    (``build_graph_mask_cache`` — derived from ``nodes_to_motifs``), and the
+    impact reuses the SAME shared helper as ``compute_motif_impact``
+    (``build_faithful_loo_baseline`` + ``loo_impact``), so ``impact`` /
+    ``masking_without_removal`` here match the pipeline exactly.
     """
     from .motif_eval import (
-        _resolve_mask_cache, _get_probs, _single_prob,
-        _injection_modes, _remap_smiles_mask_to_graph, _ablate_motif,
+        build_graph_mask_cache, _get_probs, _single_prob,
+        _injection_modes, _ablate_motif,  # kept for the (commented) removal path
+        build_faithful_loo_baseline, loo_impact,
     )
 
     model.eval()
-    mask_cache = _resolve_mask_cache(vocab, data_list, split)
+    mask_cache = build_graph_mask_cache(data_list)
     smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
-    mask_nodes, mask_edges = _injection_modes(model)
+    # mask_nodes, mask_edges = _injection_modes(model)   # removal impact disabled
+    # Shared faithful-LOO baseline (model's own attention, or explainer weights
+    # via base_att_fn) — same definition as the pipeline / compute_motif_impact.
+    base_W, p_full_W = build_faithful_loo_baseline(
+        model, data_list, device, task_type, base_att_fn=base_att_fn)
     motif_ids = sorted(mask_cache.keys())
     if max_motifs is not None:
         motif_ids = motif_ids[:max_motifs]
@@ -195,38 +200,42 @@ def build_per_graph_impact_df_from_masks(
         score = motif_scores.get(mid, float("nan"))
         smarts = (vocab.motif_list[mid]
                   if vocab.motif_list and mid < len(vocab.motif_list) else str(mid))
-        for smi, bool_mask in mask_cache[mid].items():
+        for smi, graph_mask in mask_cache[mid].items():
             d = smi_to_data.get(smi)
             orig_p = orig_probs.get(smi)
             if d is None or orig_p is None:
                 continue
-            graph_mask = _remap_smiles_mask_to_graph(
-                bool_mask, d.num_nodes, (index_maps or {}).get(smi))
-            if graph_mask is None:
+            # ── Removal-based (graph-ablation) impact — COMMENTED OUT ─────────
+            # Impact is the zero-weight faithful LOO only (never node/edge removal).
+            # masked = _ablate_motif(d, graph_mask, mask_nodes, mask_edges)
+            # if masked is None:
+            #     n_skipped += 1
+            #     continue
+            # masked_p = _single_prob(model, masked, device, task_type)
+
+            nw = loo_impact(model, d, graph_mask, base_W, p_full_W, device, task_type)
+            if nw is None:
                 n_skipped += 1
                 continue
-            masked = _ablate_motif(d, graph_mask, mask_nodes, mask_edges)
-            if masked is None:
-                n_skipped += 1
-                continue
-            masked_p = _single_prob(model, masked.to(device), device, task_type)
             label = float(d.y.view(-1)[0].item()) if d.y is not None else float("nan")
-            rows.append({
+            row = {
                 "graph_id":           smi + f"_{split}",
                 "smiles":             smi,
                 "motif_id":           int(mid),
                 "motif":              smarts,
                 "sigmoid_importance": float(score),
-                "impact":             abs(float(orig_p) - float(masked_p)),
+                # ``impact`` IS the zero-weight faithful LOO now (removal disabled).
+                "impact":                  float(nw),
+                "masking_without_removal": float(nw),
                 "original_logit":     float(torch.logit(torch.tensor(orig_p)).item())
                                       if 0 < orig_p < 1 else float("nan"),
                 "class_label":        label,
-            })
+            }
+            rows.append(row)
 
     if n_skipped:
-        print(f"  [multi_explanation] skipped {n_skipped} (graph, motif) "
-              f"ablations with unmappable masks "
-              f"(missing index_maps or mask/graph length mismatch).")
+        print(f"  [multi_explanation] skipped {n_skipped} (graph, motif) rows "
+              f"with no node-weight baseline W (model lacks node attention).")
     return pd.DataFrame(rows)
 
 
@@ -610,7 +619,6 @@ class MultiExplanationAnalysis:
             split=self.split,
             task_type=self.task_type,
             max_motifs=self.max_motifs,
-            index_maps=self.index_maps,
         )
         n = len(self._raw_df)
         print(f"  {n} (graph, motif) rows for "

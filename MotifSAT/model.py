@@ -365,6 +365,7 @@ class GSAT(nn.Module):
         edge_attr: Optional[Tensor] = None,
         epoch: int = 0,
         motif_lengths: Optional[list] = None,
+        node_weights: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor], Dict]:
         """Forward pass.
 
@@ -372,9 +373,28 @@ class GSAT(nn.Module):
 
         aux_dict contains tensors needed for loss computation:
           node_att, motif_att (if applicable), inv_idx, motif_batch
+
+        When ``node_weights`` is set (eval counterfactual), the graph is left
+        intact and the bool/float mask is injected as ``node_att`` directly.
         """
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+
+        if node_weights is not None:
+            # node_weights is already the [N,1] float node attention (prepared by
+            # the evaluator); apply it directly through the injection channels.
+            nw = node_weights.to(x.device).float().view(-1, 1)
+            graph_emb, node_emb_final = self.clf.get_embedding(
+                x, edge_index,
+                edge_attr=edge_attr,
+                node_att=nw,
+                w_feat=self.w_feat,
+                w_message=self.w_message,
+                w_readout=self.w_readout,
+                batch=batch,
+            )
+            logits = self.clf.classify(graph_emb)
+            return logits, nw, {'node_att': nw, 'node_att_soft': nw}
 
         if self.motif_method == 'readout' and nodes_to_motifs is None:
             raise ValueError(

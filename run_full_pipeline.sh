@@ -92,7 +92,9 @@ if [ "$MODE" = "full" ]; then
     FOLDS="${FOLDS:-0 1 2 3 4}"
     BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
     EPOCHS="${EPOCHS:-500}"
-    MOSE_BASE="${MOSE_BASE:-1}"
+    # MOSE runs on FILTERED vocab only (matches MOSE-GNN). MOSE_BASE=1 would also
+    # train MOSE on the unfiltered/full base variants — override explicitly to opt in.
+    MOSE_BASE="${MOSE_BASE:-0}"
     FAIL_FAST="${FAIL_FAST:-1}"
     SKIP_PHASE0="${SKIP_PHASE0:-1}"
 else

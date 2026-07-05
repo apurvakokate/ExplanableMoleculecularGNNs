@@ -566,25 +566,29 @@ def build_impact_cache_from_eval(
 
     This is the 'ground truth' impact for colouring — run every N epochs.
     """
-    from .motif_eval import _resolve_mask_cache, _get_probs, _single_prob
+    from .motif_eval import (
+        build_graph_mask_cache, _get_probs,
+        build_faithful_loo_baseline, loo_impact,
+    )
 
     model.eval()
-    mask_cache = _resolve_mask_cache(vocab, data_list, split)
+    mask_cache = build_graph_mask_cache(data_list)
     smi_to_data = {d.smiles: d for d in data_list}
     orig_probs  = _get_probs(model, data_list, device, task_type)
+    # Same faithful zero-weight LOO as compute_motif_impact (shared helpers).
+    base_W, p_full_W = build_faithful_loo_baseline(model, data_list, device, task_type)
 
     cache: Dict[int, Dict[str, float]] = {}
     for mid, motif_masks in mask_cache.items():
         per_smi: Dict[str, float] = {}
-        for smi, bool_mask in motif_masks.items():
+        for smi, graph_mask in motif_masks.items():
             d = smi_to_data.get(smi)
             op = orig_probs.get(smi)
             if d is None or op is None:
                 continue
-            masked = d.clone()
-            masked.x = masked.x * (~bool_mask.to(device)).float().unsqueeze(-1)
-            mp = _single_prob(model, masked.to(device), device, task_type)
-            per_smi[smi] = abs(float(op) - float(mp))
+            nw = loo_impact(model, d, graph_mask, base_W, p_full_W, device, task_type)
+            if nw is not None:
+                per_smi[smi] = nw
         if per_smi:
             cache[mid] = per_smi
 

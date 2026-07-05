@@ -142,7 +142,23 @@ def evaluate_predictions(
         }
 
 
-def _model_forward(model, data) -> torch.Tensor:
+def _node_att_from_weights(nw: torch.Tensor) -> torch.Tensor:
+    """Eval-side conversion of a masking argument to a node-attention tensor
+    ``[N, 1]``. This lives in the evaluator (NOT the model) so models stay pure
+    — they simply apply whatever node attention they are handed.
+
+    Semantics:
+      * bool mask — ``True`` marks the motif's atoms → weight 0 (suppressed),
+        everything else weight 1;
+      * float weights — used as-is (already the per-node weight vector, e.g. the
+        model's learned attention or an explainer's scores with the target
+        motif zeroed).
+    """
+    nw = (~nw).float() if nw.dtype == torch.bool else nw.float()
+    return nw.view(-1, 1)
+
+
+def _model_forward(model, data, node_weights=None) -> torch.Tensor:
     """Dispatch to the model's forward and return the raw logit tensor.
 
     Selects the calling convention from the forward *signature* (rather than
@@ -151,6 +167,12 @@ def _model_forward(model, data) -> torch.Tensor:
 
     Uses out[0] (not `out, _ = ...`) so models returning 2-tuples (MOSE-GNN,
     VanillaGNN) and 3-tuples (GSAT/MotifSAT) both work without raising.
+
+    Parameters
+    ----------
+    node_weights : Tensor [N] or [N, 1] (bool or float) or None
+        When provided, passed to models that accept ``node_weights`` in forward
+        (motif masking without graph removal).
     """
     import inspect
 
@@ -161,6 +183,10 @@ def _model_forward(model, data) -> torch.Tensor:
         nodes_to_motifs=getattr(data, 'nodes_to_motifs', None),
         edge_attr=getattr(data, 'edge_attr', None),
     )
+    if node_weights is not None:
+        # Convert mask/weights → node attention HERE, so the model receives a
+        # ready-to-apply [N,1] float and needs no mask-interpretation logic.
+        candidate['node_weights'] = _node_att_from_weights(node_weights)
 
     try:
         params = inspect.signature(model.forward).parameters

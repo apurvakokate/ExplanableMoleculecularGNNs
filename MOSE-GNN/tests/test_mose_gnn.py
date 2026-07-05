@@ -2,7 +2,7 @@
 """test_mose_gnn.py — tests for MOSE-GNN models and training utilities.
 
 Tests:
-  - _motif_to_node_weights: shape, unknown handling, masked_motif
+  - _motif_to_node_weights: shape, unknown handling, global_to_param remap
   - SingleChannelGNN: forward shape, unk_modes, w_feat/w_readout flags
   - MultiChannelGNN: forward shape, per-class independence
   - mask_regularisation: size_reg + ent_reg values
@@ -94,14 +94,6 @@ class TestMotifToNodeWeights(unittest.TestCase):
         self.assertAlmostEqual(float(w[1, 0]), 0.0)
         self.assertGreater(float(w[2, 0]), 0.5)
 
-    def test_masked_motif(self):
-        ntm = torch.tensor([0, 0, 1, 2])
-        p = nn.Parameter(torch.zeros(3, 1))
-        w = _motif_to_node_weights(ntm, p, 4, DEVICE, masked_motif=0)
-        self.assertEqual(float(w[0, 0]), 0.0)
-        self.assertEqual(float(w[1, 0]), 0.0)
-        self.assertNotEqual(float(w[2, 0]), 0.0)
-
     def test_known_values_are_sigmoid(self):
         ntm = torch.tensor([0, 1])
         p = nn.Parameter(torch.tensor([[2.0], [-2.0]]))
@@ -132,17 +124,6 @@ class TestMotifToNodeWeights(unittest.TestCase):
                                float(torch.sigmoid(torch.tensor(-2.0))), places=5)
         self.assertAlmostEqual(float(w[2, 0]), 0.5)  # below-threshold → unk
         self.assertAlmostEqual(float(w[3, 0]), 0.5)  # unknown → unk
-
-    def test_global_to_param_masked_motif_global_id(self):
-        """masked_motif is a GLOBAL id; it is remapped before masking."""
-        g2p = torch.tensor([-1, 0, 1], dtype=torch.long)
-        p = nn.Parameter(torch.zeros(2, 1))
-        ntm = torch.tensor([1, 2, 1])
-        w = _motif_to_node_weights(ntm, p, 3, DEVICE, masked_motif=1,
-                                   global_to_param=g2p)
-        self.assertEqual(float(w[0, 0]), 0.0)  # global id 1 masked
-        self.assertEqual(float(w[2, 0]), 0.0)
-        self.assertNotEqual(float(w[1, 0]), 0.0)  # global id 2 untouched
 
 
 # ── SingleChannelGNN ─────────────────────────────────────────────────────────
@@ -216,17 +197,19 @@ class TestSingleChannelGNN(unittest.TestCase):
         out, att = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)
         self.assertEqual(out.shape, (2, 1))
 
-    def test_masked_motif(self):
+    def test_node_weights_override(self):
+        """Eval-time masking: node_weights overrides the learned attention and
+        is applied directly (the evaluator zeros the target motif's atoms)."""
         m = self._model()
         m.motif_params.data.fill_(2.0)
         b = _batch(2, 8, 5)
-        out1, att1 = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs)
-        out2, att2 = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs,
-                       masked_motif=0)
-        # att must differ where motif == 0
+        nw = torch.ones(b.x.size(0))
+        nw[b.nodes_to_motifs == 0] = 0.0        # zero motif 0's atoms in W
+        out, att = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs,
+                     node_weights=nw)
         mask = b.nodes_to_motifs == 0
         if mask.any():
-            self.assertTrue((att2[mask] == 0.0).all())
+            self.assertTrue((att[mask] == 0.0).all())
 
     def test_get_motif_scores(self):
         m = self._model()

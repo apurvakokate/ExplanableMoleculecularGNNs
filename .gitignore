@@ -34,8 +34,8 @@ env/
 *.pth
 *.pickle
 *.ckpt
-data/mutag/processed/
-data/mutag/raw/Mutagenicity.pkl
+# Whole data folder (datasets are downloaded/regenerated, not versioned).
+data/
 
 # ── Design retrospective (report/deck + exported source chats; not for GitHub) ─
 reports/

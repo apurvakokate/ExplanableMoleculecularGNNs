@@ -32,7 +32,9 @@ DATASET_COLUMN: Dict[str, Optional[str]] = {
     # instead of a short 'esol' alias.
     'esol':              'measured log solubility in mols per litre',
     'tox21':             'tox21',
-    'freesolv':          'freesolv',
+    # FreeSolv fold exports use the experimental hydration free energy column
+    # ('expt'); the 'calc' column is the computed value (not the target).
+    'freesolv':          'expt',
     # synthetic / benchmark datasets — generic 'label' column
     'Benzene':           'label',
     'Alkane_Carbonyl':   'label',
