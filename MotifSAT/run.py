@@ -520,6 +520,8 @@ def run(cfg: MotifSATConfig) -> dict:
     sstats = motif_score_stats(summary_scores)
     summary = {
         "model_type":       "MotifSAT",
+        # base GSAT (motif_method='none') vs motif-aware MotifSAT (readout/loss)
+        "family":           "motifsat" if cfg.motif_method in ("readout", "loss") else "gsat",
         "dataset":          cfg.dataset,
         "fold":             cfg.fold,
         "backbone":         cfg.backbone,

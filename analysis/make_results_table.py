@@ -71,50 +71,6 @@ def _cell(g: pd.Series) -> str:
     return f'{g.mean():.3f} ± {g.std():.3f}'
 
 
-def _ensure_family(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill ``family`` only when missing — never overwrite path-derived labels."""
-    from analysis.aggregate_experiments import _family, resolve_family
-
-    df = df.copy()
-    if 'family' in df.columns:
-        fam = df['family'].fillna('').astype(str).str.strip()
-        if fam.ne('').all():
-            return df
-        need = fam.eq('')
-    else:
-        need = pd.Series(True, index=df.index)
-        df['family'] = ''
-
-    exp = df.get('exp_dir', pd.Series([''] * len(df))).astype(str)
-    for idx in df.index[need]:
-        row = df.loc[idx]
-        meta = row.to_dict()
-        df.at[idx, 'family'] = resolve_family(meta, exp.at[idx])
-
-    still = df['family'].fillna('').astype(str).str.strip().eq('')
-    if still.any() and 'motif_method' in df.columns:
-        mm = df.loc[still, 'motif_method'].fillna('none').astype(str)
-        df.loc[still, 'family'] = mm.map(
-            lambda m: 'mose' if m == 'mose'
-            else ('motifsat' if m in ('readout', 'loss') else 'vanilla'))
-
-    if 'exp_dir' in df.columns:
-        blank = df['family'].fillna('').astype(str).str.strip().eq('')
-        df.loc[blank, 'family'] = df.loc[blank, 'exp_dir'].map(_family)
-
-    return df
-
-
-def _ensure_synthetic(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure ``synthetic`` is ``real`` or ``gt`` via central ``normalize()``."""
-    from analysis.aggregate_experiments import normalize
-
-    df = df.copy()
-    if 'exp_dir' not in df.columns:
-        df['exp_dir'] = ''
-    return normalize(df)
-
-
 def _warn_config_conflation(df: pd.DataFrame, metric: str, index: list) -> None:
     """Loudly flag pivot cells that would average >1 distinct run config (not just
     folds). ``_cell`` collapses every row sharing (index, backbone); those rows
@@ -161,8 +117,10 @@ def build(df: pd.DataFrame, metric: str, *, mode: str = 'auto') -> pd.DataFrame:
     if mode == 'auto':
         mode = 'prediction' if metric in PREDICTION_METRICS else 'explanation'
 
-    df = _ensure_family(df)
-    df = _ensure_synthetic(df)
+    # Single field-based normalizer — sets family/synthetic/every axis from the
+    # run's summary fields and fails fast on anything missing (no path fallback).
+    from analysis.aggregate_experiments import normalize
+    df = normalize(df)
 
     if mode == 'prediction':
         df = filter_prediction_rows(df)

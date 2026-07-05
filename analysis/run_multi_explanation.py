@@ -64,15 +64,9 @@ def _run_one(run_dir: Path, data_root: str, vocab_root: str, device, local_filte
     from SharedModules.data.vocab import load_vocab
     vocab = load_vocab(vocab_root, meta['dataset'], meta.get('vocab_variant', ''))
 
-    # Mutag needs SMILES→graph index maps to remap motif masks (explicit-H
-    # atoms make masks shorter than the graph); without them every mutag
-    # ablation would be skipped.
-    _index_maps = None
-    if meta.get('dataset') == 'mutag':
-        from SharedModules.data.dataset_routing import load_mutag_eval_index_maps
-        _index_maps = load_mutag_eval_index_maps(
-            data_root, int(meta.get('fold', 0)))
-
+    # Masks are derived from each graph's nodes_to_motifs (graph-node space,
+    # mutag's explicit H already folded in at load) — no SMILES→graph index
+    # maps are needed.
     agg_fn = _att_aggregate_fn() if fam in ('gsat', 'motifsat') else None
     ok = run_multi_explanation_posthoc(
         model, vocab, test_list, device, task_type, run_dir,
@@ -80,7 +74,6 @@ def _run_one(run_dir: Path, data_root: str, vocab_root: str, device, local_filte
         att_aggregate_fn=agg_fn,
         max_motifs=meta.get('max_motifs_eval'),
         local_filter=local_filter,
-        index_maps=_index_maps,
     )
     if ok:
         meta['run_multi_explanation'] = True
@@ -141,7 +134,11 @@ def main():
             else:
                 skip += 1
         except Exception as e:
+            # Print the full traceback so a real bug is diagnosable (not hidden);
+            # the batch continues to the next independent run.
+            import traceback
             print(f'  [fail] {rd}: {e}')
+            traceback.print_exc()
             fail += 1
 
     print(f'\nDone. succeeded={ok} skipped={skip} failed={fail}')

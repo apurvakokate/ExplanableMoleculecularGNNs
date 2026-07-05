@@ -22,6 +22,19 @@ from analysis.aggregate_experiments import (
 from analysis.make_results_table import build
 
 
+def _run(**kw) -> dict:
+    """A complete run summary with every field normalize() now requires
+    (analysis reads axes from fields, no path fallback). Override per test."""
+    base = dict(
+        family='mose', dataset='BBBP', backbone='GIN', fold=0,
+        vocab_variant='rbrics', node_encoder='onehot', conv_normalize='none',
+        use_gt=False, epochs=500, w_feat=True, w_message=False, w_readout=True,
+        exp_dir='mose/BBBP/fold0/rbrics/GIN_tag',
+    )
+    base.update(kw)
+    return base
+
+
 def _collapse_redundant_folds(df: pd.DataFrame) -> pd.DataFrame:
     """Mirror SharedModules.data.dataset_routing.collapse_redundant_folds."""
     single = {'mutag'} | {f'ogbg-{n}' for n in (
@@ -45,17 +58,42 @@ class TestAnalysisInvariants(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertEqual(set(out['dataset']), {'mutag', 'BBBP'})
 
-    def test_normalize_preserves_family_from_path(self):
-        df = pd.DataFrame([{
-            'exp_dir': 'mose/BBBP/fold0/all_fallback_bpe/enc-onehot_norm-l2_real',
-            'dataset': 'BBBP',
-            'backbone': 'GIN',
-            'vocab_variant': 'all_fallback_bpe',
-            'conv_normalize': 'l2',
-            'motif_method': 'mose',
-        }])
-        out = normalize(df)
-        self.assertEqual(out.iloc[0]['family'], 'mose')
+    def test_axes_read_from_fields(self):
+        """Every axis is read directly from the run's summary fields."""
+        out = normalize(pd.DataFrame([_run(
+            family='mose', node_encoder='onehot', conv_normalize='l2',
+            use_gt=False, epochs=500, w_feat=True, w_message=False, w_readout=True)]))
+        r = out.iloc[0]
+        self.assertEqual(r['family'], 'mose')
+        self.assertEqual(r['features'], 'onehot')
+        self.assertEqual(r['norm'], 'l2')
+        self.assertEqual(r['synthetic'], 'real')
+        self.assertEqual(r['injection'], '101')   # w_feat/w_readout on, w_message off
+
+    def test_features_from_node_encoder_not_path(self):
+        """features = authoritative node_encoder, even if the path token differs."""
+        out = normalize(pd.DataFrame([_run(
+            dataset='ogbg-molhiv', node_encoder='atom_encoder',
+            exp_dir='mose/ogbg-molhiv/fold0/rbrics/bb-GIN_enc-onehot')]))
+        self.assertEqual(out.iloc[0]['features'], 'atom_encoder')
+
+    def test_injection_na_for_vanilla(self):
+        out = normalize(pd.DataFrame([_run(family='vanilla',
+                                           w_feat=False, w_message=False, w_readout=False)]))
+        self.assertEqual(out.iloc[0]['injection'], 'na')
+
+    def test_normalize_fails_fast_without_node_encoder(self):
+        """No path fallback: a summary missing node_encoder must raise."""
+        row = _run()
+        del row['node_encoder']
+        with self.assertRaises(ValueError):
+            normalize(pd.DataFrame([row]))
+
+    def test_normalize_fails_fast_without_family(self):
+        row = _run()
+        del row['family']
+        with self.assertRaises(ValueError):
+            normalize(pd.DataFrame([row]))
 
     def test_resolve_family_mose(self):
         meta = {'model_type': 'MOSE-GNN', 'motif_method': 'mose'}
@@ -80,15 +118,10 @@ class TestAnalysisInvariants(unittest.TestCase):
         self.assertEqual(out.iloc[0]['backbone'], 'GIN')
         self.assertEqual(out.iloc[0]['fold'], 1)
 
-    def test_synthetic_from_use_gt_not_path(self):
-        """E2: vanilla GT runs use summary use_gt when path has no gt token."""
-        df = pd.DataFrame([{
-            'exp_dir': 'baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot',
-            'vocab_variant': 'rbrics',
-            'use_gt': True,
-            'auc': 0.99,
-        }])
-        out = normalize(df)
+    def test_synthetic_from_use_gt_field(self):
+        """synthetic comes from the recorded use_gt field, not the path."""
+        out = normalize(pd.DataFrame([_run(family='baselines', use_gt=True,
+                        exp_dir='baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot')]))
         self.assertEqual(out.iloc[0]['synthetic'], 'gt')
 
     def test_parse_vocab_variant_splits_filter_and_relabel(self):
@@ -109,18 +142,14 @@ class TestAnalysisInvariants(unittest.TestCase):
 
     def test_expand_posthoc_explainer_rows(self):
         """E5: GNNExplainer metrics become explainer-family rows."""
-        df = pd.DataFrame([{
-            'family': 'baselines',
-            'dataset': 'BBBP',
-            'backbone': 'GIN',
-            'fold': 0,
-            'vocab_variant': 'rbrics',
-            'exp_dir': 'baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot',
-            'pearson': float('nan'),
-            'gnnexplainer_mean_pearson': 0.41,
-            'gnnexplainer_mean_gt_roc_node_auc_mean': 0.55,
-            'pgexplainer_mean_pearson': 0.33,
-        }])
+        df = pd.DataFrame([_run(
+            family='baselines',
+            exp_dir='baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot',
+            pearson=float('nan'),
+            gnnexplainer_mean_pearson=0.41,
+            gnnexplainer_mean_gt_roc_node_auc_mean=0.55,
+            pgexplainer_mean_pearson=0.33,
+        )])
         out = expand_posthoc_explainer_rows(normalize(df))
         fams = set(out['family'])
         self.assertIn('gnnexplainer', fams)
@@ -131,12 +160,10 @@ class TestAnalysisInvariants(unittest.TestCase):
 
     def test_mutagenicity_vs_mutag_paths_differ(self):
         df = pd.DataFrame([
-            {'exp_dir': 'mose/Mutagenicity/fold0/x', 'dataset': 'Mutagenicity',
-             'vocab_variant': 'all_fallback_bpe', 'conv_normalize': 'l2',
-             'motif_method': 'mose', 'loader_kind': 'csv'},
-            {'exp_dir': 'mose/mutag/fold0/x', 'dataset': 'mutag',
-             'vocab_variant': 'all_fallback_bpe', 'conv_normalize': 'l2',
-             'motif_method': 'mose', 'loader_kind': 'tudataset_mutag'},
+            _run(dataset='Mutagenicity', vocab_variant='all_fallback_bpe',
+                 exp_dir='mose/Mutagenicity/fold0/x'),
+            _run(dataset='mutag', vocab_variant='all_fallback_bpe',
+                 exp_dir='mose/mutag/fold0/x'),
         ])
         out = normalize(df)
         self.assertEqual(set(out['dataset']), {'Mutagenicity', 'mutag'})
@@ -145,18 +172,12 @@ class TestAnalysisInvariants(unittest.TestCase):
         """Five folds with distinct values → mean ± std; vocab axes stay separate."""
         rows = []
         for fold in range(5):
-            rows.append({
-                'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
-                'vocab_variant': 'rbrics', 'fold': fold,
-                'exp_dir': f'mose/BBBP/fold{fold}/rbrics/GIN',
-                'auc': 0.50 + fold * 0.01,
-            })
-            rows.append({
-                'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
-                'vocab_variant': 'rbrics_filter', 'fold': fold,
-                'exp_dir': f'mose/BBBP/fold{fold}/rbrics_filter/GIN',
-                'auc': 0.60 + fold * 0.01,
-            })
+            rows.append(_run(vocab_variant='rbrics', fold=fold,
+                             exp_dir=f'mose/BBBP/fold{fold}/rbrics/GIN',
+                             auc=0.50 + fold * 0.01))
+            rows.append(_run(vocab_variant='rbrics_filter', fold=fold,
+                             exp_dir=f'mose/BBBP/fold{fold}/rbrics_filter/GIN',
+                             auc=0.60 + fold * 0.01))
         tbl = build(pd.DataFrame(rows), 'auc', mode='prediction')
         self.assertEqual(len(tbl), 2)
         self.assertIn('0.520 ± 0.016', tbl.loc[('BBBP', 'mose', 'real', 'rbrics', False), 'GIN'])
@@ -171,21 +192,19 @@ class TestAnalysisInvariants(unittest.TestCase):
         rows = []
         # config A (IB off) across two folds
         for f in (0, 1):
-            rows.append({
-                'exp_dir': f'motifsat/rbrics/BBBP/fold{f}/GIN_readout_onehot_'
-                           'norm-l2_wf+wm+wr_noise-none_il-none_real_ep500_'
-                           'rbrics_L3_h64_lr0.001_hp-aaaa',
-                'dataset': 'BBBP', 'backbone': 'GIN', 'fold': f,
-                'vocab_variant': 'rbrics', 'motif_method': 'readout',
-                'auc': 0.9, 'gt_roc_node_auc_mean': 0.50})
-        # config B (IB on), fold 0, SAME coarse cell
-        rows.append({
-            'exp_dir': 'motifsat/rbrics/BBBP/fold0/GIN_readout_onehot_norm-l2_'
-                       'wf+wm+wr_noise-motif_il-motif_real_ep500_rbrics_'
-                       'L3_h64_lr0.001_hp-bbbb',
-            'dataset': 'BBBP', 'backbone': 'GIN', 'fold': 0,
-            'vocab_variant': 'rbrics', 'motif_method': 'readout',
-            'auc': 0.9, 'gt_roc_node_auc_mean': 0.87})
+            rows.append(_run(
+                family='motifsat', motif_method='readout',
+                exp_dir=f'motifsat/rbrics/BBBP/fold{f}/GIN_readout_onehot_'
+                        'norm-l2_wf+wm+wr_noise-none_il-none_real_ep500_'
+                        'rbrics_L3_h64_lr0.001_hp-aaaa',
+                fold=f, auc=0.9, gt_roc_node_auc_mean=0.50))
+        # config B (IB on), fold 0, SAME coarse cell (different run dir → separate)
+        rows.append(_run(
+            family='motifsat', motif_method='readout',
+            exp_dir='motifsat/rbrics/BBBP/fold0/GIN_readout_onehot_norm-l2_'
+                    'wf+wm+wr_noise-motif_il-motif_real_ep500_rbrics_'
+                    'L3_h64_lr0.001_hp-bbbb',
+            fold=0, auc=0.9, gt_roc_node_auc_mean=0.87))
         tidy = build_tidy(normalize(pd.DataFrame(rows)),
                           [PERF, 'gt_roc_node_auc_mean'], DEFAULT_EXPERIMENT_AXES)
         ms = tidy[(tidy.family == 'motifsat') & (tidy.dataset == 'BBBP')
@@ -201,13 +220,10 @@ class TestAnalysisInvariants(unittest.TestCase):
 
     def test_pivot_does_not_collapse_families_or_synthetic(self):
         df = pd.DataFrame([
-            {'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
-             'vocab_variant': 'rbrics', 'fold': 0, 'auc': 0.55,
-             'exp_dir': 'mose/BBBP/fold0/rbrics/GIN_onehot_norm-l2_real_rbrics'},
-            {'dataset': 'BBBP', 'family': 'mose', 'backbone': 'GIN',
-             'vocab_variant': 'rbrics_relabelled', 'fold': 0, 'auc': 0.98,
-             'exp_dir': 'mose/BBBP/fold0/rbrics_relabelled/GIN_onehot_norm-l2_gt_rbrics',
-             'use_gt': True},
+            _run(vocab_variant='rbrics', auc=0.55,
+                 exp_dir='mose/BBBP/fold0/rbrics/GIN_onehot_norm-l2_real_rbrics'),
+            _run(vocab_variant='rbrics_relabelled', auc=0.98, use_gt=True,
+                 exp_dir='mose/BBBP/fold0/rbrics_relabelled/GIN_onehot_norm-l2_gt_rbrics'),
         ])
         tbl = build(df, 'auc', mode='prediction')
         self.assertEqual(len(tbl), 2)
@@ -219,13 +235,10 @@ class TestAnalysisInvariants(unittest.TestCase):
 
     def test_explanation_table_includes_posthoc(self):
         df = pd.DataFrame([
-            {'dataset': 'BBBP', 'family': 'vanilla', 'backbone': 'GIN',
-             'vocab_variant': 'rbrics', 'fold': 0, 'pearson': 0.2,
-             'exp_dir': 'vanilla/BBBP/fold0/rbrics/bb-GIN_enc-onehot'},
-            {'dataset': 'BBBP', 'family': 'baselines', 'backbone': 'GIN',
-             'vocab_variant': 'rbrics', 'fold': 0,
-             'exp_dir': 'baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot',
-             'gnnexplainer_mean_pearson': 0.45},
+            _run(family='vanilla', pearson=0.2,
+                 exp_dir='vanilla/BBBP/fold0/rbrics/bb-GIN_enc-onehot'),
+            _run(family='baselines', gnnexplainer_mean_pearson=0.45,
+                 exp_dir='baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot'),
         ])
         tbl = build(df, 'pearson', mode='explanation')
         fams = {idx[1] for idx in tbl.index}

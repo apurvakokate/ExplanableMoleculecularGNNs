@@ -581,7 +581,6 @@ class MultiExplanationAnalysis:
         task_type: str = "BinaryClass",
         max_motifs: Optional[int] = None,
         min_graphs: int = 5,
-        index_maps: Optional[Dict[str, Dict[int, int]]] = None,
     ):
         self.model        = model
         self.vocab        = vocab
@@ -592,7 +591,6 @@ class MultiExplanationAnalysis:
         self.task_type    = task_type
         self.max_motifs   = max_motifs
         self.min_graphs   = min_graphs
-        self.index_maps   = index_maps
 
         self._raw_df:     Optional[pd.DataFrame] = None
         self.ratios_df:   Optional[pd.DataFrame] = None

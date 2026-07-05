@@ -159,74 +159,6 @@ def _fold(exp_dir: str):
 #     return synthetic, norm
 
 
-def _features(exp_dir: str) -> str:
-    s = str(exp_dir)
-    m = re.search(r'enc-([A-Za-z_]+?)_', s)
-    if m:
-        return m.group(1)
-    for tok in ('atom_encoder', 'onehot', 'linear'):
-        if re.search(rf'_{tok}_', s) or s.endswith(f'_{tok}'):
-            return tok
-    return 'onehot'
-
-
-def _injection(exp_dir: str, family: str) -> str:
-    s = str(exp_dir)
-    m = re.search(r'inj(\d{3})', s)
-    if m:
-        return m.group(1)
-    # derive from variant-tag injection token: wf / wm / wr joined by '+'
-    bits = ['0', '0', '0']
-    if re.search(r'(^|_)wf(\+|_)', s):
-        bits[0] = '1'
-    if re.search(r'\+wm(\+|_)', s) or re.search(r'(^|_)wm(\+|_)', s):
-        bits[1] = '1'
-    if re.search(r'\+wr(\+|_)', s) or re.search(r'(^|_)wr(\+|_)', s):
-        bits[2] = '1'
-    if bits != ['0', '0', '0']:
-        return ''.join(bits)
-    if family in INJECTION_AGNOSTIC:
-        return 'na'
-    return 'na'
-
-
-def _synthetic(exp_dir: str) -> str:
-    s = str(exp_dir)
-    if re.search(r'(^|[_/])gt([_/]|$)', s):
-        return 'gt'
-    return 'real'
-
-
-def _epochs(exp_dir: str):
-    m = re.search(r'ep(\d+)', str(exp_dir))
-    return int(m.group(1)) if m else None
-
-
-def _norm(row) -> str:
-    v = str(row.get('conv_normalize', '') or '').strip()
-    if v and v.lower() != 'nan':
-        return v
-    s = str(row.get('exp_dir', ''))
-    m = re.search(r'norm-([A-Za-z0-9]+)', s)
-    if m:
-        return m.group(1)
-    if 'noLN' in s:
-        return 'none'
-    return ''
-
-
-def _prefer(df: pd.DataFrame, col: str, parsed: pd.Series) -> pd.Series:
-    """Use an EXISTING explicit column (e.g. merged from config.json) wherever it
-    is present, falling back to the path-parsed value otherwise. This lets new
-    canonical runs (which carry real axis columns) bypass the legacy regex
-    parsing while old runs are still decoded from their paths."""
-    if col not in df.columns:
-        return parsed
-    existing = df[col]
-    has = existing.notna() & (existing.astype(str).str.strip().ne(''))
-    return existing.where(has, parsed)
-
-
 def _truthy(v) -> bool:
     if v is True:
         return True
@@ -305,19 +237,6 @@ def enrich_from_exp_dir(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _synthetic_from_row(row, exp_dir: str) -> str:
-    """real vs gt: summary use_gt beats path (E2 vanilla/baselines GT runs)."""
-    if _truthy(row.get('use_gt')):
-        return 'gt'
-    vv = str(row.get('vocab_variant') or '')
-    _, _, relabel = parse_vocab_variant(vv)
-    if relabel:
-        return 'gt'
-    if _synthetic(exp_dir) == 'gt':
-        return 'gt'
-    return 'real'
-
-
 def resolve_family(meta: dict, exp_dir: str = '') -> str:
     """Resolve model family from path first; never merge GSAT into MotifSAT via model_type (E3)."""
     fam = _family(exp_dir) if exp_dir else ''
@@ -344,57 +263,96 @@ def resolve_family(meta: dict, exp_dir: str = '') -> str:
     return mm or 'unknown'
 
 
+# Every run.py writes these to summary.json (family + training_summary_extras).
+# Analysis reads them DIRECTLY — no path-token parsing, no silent fallback.
+REQUIRED_SUMMARY_FIELDS = (
+    'family', 'dataset', 'backbone', 'fold', 'vocab_variant',
+    'node_encoder', 'conv_normalize', 'use_gt', 'epochs',
+    'w_feat', 'w_message', 'w_readout',
+)
+
+
+def _require_field(df: pd.DataFrame, col: str) -> pd.Series:
+    """Return df[col], failing fast if the column is absent or any value is
+    blank/null. No path fallback — a run missing it is a broken summary."""
+    if col not in df.columns:
+        raise ValueError(
+            f"normalize: required field '{col}' is absent from the collected "
+            f"summaries. Every run.py writes it to summary.json (family + "
+            f"training_summary_extras); re-collect from complete summaries. "
+            f"No path fallback.")
+    s = df[col]
+    # Real nulls (NaN/None) are caught by isna(); the string 'none' is NOT blank
+    # — it is a valid value (e.g. conv_normalize='none' = no normalization).
+    blank = s.isna() | s.astype(str).str.strip().str.lower().isin(('', 'nan', 'null'))
+    if blank.any():
+        ex = df.loc[blank, 'exp_dir'].iloc[0] if 'exp_dir' in df.columns else '?'
+        raise ValueError(
+            f"normalize: field '{col}' is blank/missing for {int(blank.sum())} "
+            f"run(s) (e.g. exp_dir={ex!r}). Fix the summary or re-run — '{col}' "
+            f"has no fallback.")
+    return s
+
+
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Add normalized axis columns derived from summary fields + exp_dir parsing."""
+    """Add normalized axis columns read DIRECTLY from summary fields.
+
+    No path-token parsing and no fallback: every axis value comes from an
+    explicit field that every run.py records in summary.json. A run missing a
+    field fails loudly (see ``_require_field``) rather than being guessed. Only
+    ``config_sig`` uses the run's own directory — as its unique storage identity
+    (the merge key), never to infer an axis value.
+    """
     df = df.copy()
     if 'exp_dir' not in df.columns:
         df['exp_dir'] = ''
-    df = enrich_from_exp_dir(df)
-    exp = df['exp_dir'].astype(str)
 
-    # E3: path-derived family wins over stale summary.json model_type.
-    path_fam = exp.map(_family)
-    df['family'] = path_fam
-    blank_fam = path_fam.eq('')
-    if blank_fam.any():
-        for idx in df.index[blank_fam]:
-            df.at[idx, 'family'] = resolve_family(
-                df.loc[idx].to_dict(), exp.at[idx])
+    for col in REQUIRED_SUMMARY_FIELDS:
+        _require_field(df, col)
 
-    df['fold'] = _prefer(df, 'fold', exp.map(_fold))
+    # family (authoritative field; base_gsat normalised to gsat)
+    df['family'] = df['family'].astype(str).map(
+        lambda s: 'gsat' if s == 'base_gsat' else s)
 
-    vv = df.get('vocab_variant', pd.Series([''] * len(df))).fillna('').astype(str)
+    # fold (numeric)
+    df['fold'] = pd.to_numeric(df['fold'], errors='coerce').astype('Int64')
+
+    # vocab_variant → base + filter/relabel flags (parsing a FIELD, not the path)
+    vv = df['vocab_variant'].astype(str)
     parsed = vv.map(parse_vocab_variant)
     df['vocab_base'] = parsed.map(lambda t: t[0])
     df['is_filter'] = parsed.map(lambda t: t[1])
     df['is_relabelled'] = parsed.map(lambda t: t[2])
-    df['threshold'] = _prefer(
-        df, 'threshold',
-        df['is_filter'].map(lambda x: 'on' if x else 'off'))
-    df['fragmentation'] = _prefer(df, 'fragmentation', df['vocab_base'])
+    df['threshold'] = df['is_filter'].map(lambda x: 'on' if x else 'off')
+    df['fragmentation'] = df['vocab_base']
 
-    syn = pd.Series(
-        [_synthetic_from_row(df.loc[i], exp.at[i]) for i in df.index],
-        index=df.index,
-    )
-    df['synthetic'] = _prefer(df, 'synthetic', syn)
-    if 'use_gt' not in df.columns:
-        df['use_gt'] = df['synthetic'].eq('gt')
-    else:
-        df['use_gt'] = df['use_gt'].apply(_truthy) | df['synthetic'].eq('gt')
+    # synthetic = the recorded use_gt (relabelled vocab implies gt too)
+    use_gt = df['use_gt'].apply(_truthy) | df['is_relabelled']
+    df['synthetic'] = use_gt.map(lambda g: 'gt' if g else 'real')
+    df['use_gt'] = use_gt.values
 
-    df['features'] = _prefer(df, 'features', exp.map(_features))
-    inj = pd.Series([_injection(e, f) for e, f in zip(exp, df['family'])],
-                    index=df.index)
-    df['injection'] = _prefer(df, 'injection', inj)
-    df['epochs'] = _prefer(df, 'epochs', exp.map(_epochs))
+    # features = the recorded node_encoder
+    df['features'] = df['node_encoder'].astype(str).str.strip()
 
-    nrm = df.apply(_norm, axis=1)
-    df['norm'] = _prefer(df, 'norm', nrm)
+    # norm = the recorded conv_normalize
+    df['norm'] = df['conv_normalize'].astype(str).str.strip()
 
-    # Fold-invariant per-run config signature. Aggregation groups that include
-    # this collapse ONLY folds; distinct hyperparameter configs stay separate.
-    df['config_sig'] = exp.map(_config_sig)
+    # epochs = the recorded epochs
+    df['epochs'] = pd.to_numeric(df['epochs'], errors='coerce').astype('Int64')
+
+    # injection = the recorded w_feat/w_message/w_readout as a 3-bit string;
+    # 'na' for injection-agnostic families (vanilla/baselines have no injection).
+    def _inj(row):
+        if row['family'] in INJECTION_AGNOSTIC:
+            return 'na'
+        return ''.join('1' if _truthy(row.get(c)) else '0'
+                       for c in ('w_feat', 'w_message', 'w_readout'))
+    df['injection'] = df.apply(_inj, axis=1)
+
+    # config_sig = the run's own directory minus the fold segment: a unique,
+    # fold-invariant identity that guarantees distinct configs never merge and
+    # only folds collapse. This is the run's storage key, not a parsed axis value.
+    df['config_sig'] = df['exp_dir'].astype(str).map(_config_sig)
 
     return df
 

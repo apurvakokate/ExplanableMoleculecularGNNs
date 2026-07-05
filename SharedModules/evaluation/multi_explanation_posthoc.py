@@ -61,9 +61,12 @@ def run_multi_explanation_posthoc(
     att_aggregate_fn: Optional[Callable] = None,
     max_motifs: Optional[int] = None,
     local_filter: str = 'p75',
-    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
 ) -> bool:
-    """Run H0/H1/H2 analysis and write ``multi_explanation_*.csv`` into *out_dir*."""
+    """Run H0/H1/H2 analysis and write ``multi_explanation_*.csv`` into *out_dir*.
+
+    Fails fast: any error in the analysis propagates (no broad swallow), so a
+    real bug surfaces with its traceback rather than a silent ``False``.
+    """
     if learn_edge_att:
         print('  [skip multi_explanation] learn_edge_att=True (edge scores, not motif-level)')
         return False
@@ -78,18 +81,13 @@ def run_multi_explanation_posthoc(
         print('  [skip multi_explanation] no motif scores available')
         return False
 
-    try:
-        print('\n  Running multi-explanation analysis (post-hoc) ...')
-        analysis = MultiExplanationAnalysis(
-            model, vocab, test_list, device,
-            motif_scores=scores,
-            task_type=task_type,
-            max_motifs=max_motifs,
-            index_maps=index_maps,
-        )
-        analysis.run(local_filter=local_filter)
-        analysis.save(str(out_dir / 'multi_explanation'))
-        return True
-    except Exception as e:
-        print(f'  [warn] Multi-explanation failed: {e}')
-        return False
+    print('\n  Running multi-explanation analysis (post-hoc) ...')
+    analysis = MultiExplanationAnalysis(
+        model, vocab, test_list, device,
+        motif_scores=scores,
+        task_type=task_type,
+        max_motifs=max_motifs,
+    )
+    analysis.run(local_filter=local_filter)
+    analysis.save(str(out_dir / 'multi_explanation'))
+    return True

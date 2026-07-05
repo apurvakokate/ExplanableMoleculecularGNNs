@@ -480,6 +480,10 @@ def run(cfg: VanillaConfig) -> dict:
         'node_encoder':     cfg.node_encoder,
         'apply_layer_norm': cfg.apply_layer_norm,
         'model_type':       'VanillaGNN',
+        # A vanilla training run vs a post-hoc baselines eval run (same model,
+        # different role). The run records its own role from its output location
+        # so analysis never has to guess it from the path.
+        'family':           'baselines' if 'baselines' in str(out_dir).lower() else 'vanilla',
         'motif_method':     'none',
         'auc':              pred.get('auc', pred.get('auc_mean', float('nan'))),
         'rmse':             pred.get('rmse', float('nan')),

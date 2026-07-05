@@ -373,70 +373,6 @@ def plot_algorithm_figure(
     return out
 
 
-def write_demo_runs(out_root: Path) -> None:
-    """Create a tiny synthetic run tree for smoke-testing the plot layout."""
-    rng = np.random.default_rng(0)
-    datasets = ('BBBP', 'mutag')
-    families = {
-        'mose': {'score_scale': 1.0},
-        'motifsat': {'score_scale': 1.0},
-        'gnnexplainer': {'score_scale': 1.0, 'baseline': True},
-    }
-    variants = ('rbrics', 'all_fallback_bpe')
-    backbones = ('GIN', 'GCN')
-
-    for ds in datasets:
-        for fam, opts in families.items():
-            for var in variants:
-                for bb in backbones:
-                    run_dir = out_root / fam / ds / 'fold0' / var / f'{bb}_demo'
-                    run_dir.mkdir(parents=True, exist_ok=True)
-                    summary = {
-                        'dataset': ds,
-                        'backbone': bb,
-                        'vocab_variant': var,
-                        'motif_method': (
-                            'mose' if fam == 'mose'
-                            else 'readout' if fam == 'motifsat'
-                            else 'none'),
-                    }
-                    (run_dir / 'summary.json').write_text(json.dumps(summary))
-
-                    n = 120
-                    scores = rng.uniform(0, opts['score_scale'], n)
-                    impacts = 0.15 * scores + rng.normal(0, 0.04, n)
-                    motif_ids = np.arange(n)
-                    pd.DataFrame({
-                        'motif_id': motif_ids,
-                        'impact': impacts,
-                    }).to_csv(run_dir / 'motif_impact.csv', index=False)
-
-                    if opts.get('baseline'):
-                        # Per-explainer instance-level score-vs-impact (one file
-                        # per agg), long-form with both impact definitions tagged
-                        # by 'method', matching what run_vanilla.py now emits.
-                        for _agg in ('mean', 'max'):
-                            _own = pd.DataFrame({
-                                'motif_id': motif_ids, 'score': scores,
-                                'impact': impacts, 'method': 'own',
-                                'abs_disc': rng.uniform(0, 0.5, n)})
-                            _agn = pd.DataFrame({
-                                'motif_id': motif_ids, 'score': scores,
-                                'impact': 0.10 * scores + rng.normal(0, 0.05, n),
-                                'method': 'agnostic',
-                                'abs_disc': rng.uniform(0, 0.5, n)})
-                            pd.concat([_own, _agn], ignore_index=True).to_csv(
-                                run_dir / f'{fam}_{_agg}_score_vs_impact.csv',
-                                index=False)
-                    else:
-                        pd.DataFrame({
-                            'motif_id': motif_ids,
-                            'score': scores,
-                            'impact': impacts,
-                            'abs_disc': rng.uniform(0, 0.5, n),
-                        }).to_csv(run_dir / 'score_vs_impact.csv', index=False)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out_root', required=True)
@@ -461,17 +397,9 @@ def main():
                          'are unaffected.')
     ap.add_argument('--dataset', nargs='*', default=None,
                     help='Only plot these dataset(s), e.g. --dataset mutag BBBP')
-    ap.add_argument('--demo', action='store_true',
-                    help='Write synthetic demo runs under out_root/demo_runs '
-                         'and plot from there (smoke test).')
     args = ap.parse_args()
 
     out_root = Path(args.out_root)
-    if args.demo:
-        demo_root = out_root / 'demo_runs'
-        write_demo_runs(demo_root)
-        out_root = demo_root
-        print('wrote demo runs under', demo_root)
 
     save_dir = Path(args.save_dir) if args.save_dir else Path(args.out_root) / 'plots'
     save_dir.mkdir(parents=True, exist_ok=True)

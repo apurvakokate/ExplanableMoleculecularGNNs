@@ -316,6 +316,7 @@ def run(cfg: MOSEConfig) -> dict:
     sstats = motif_score_stats(flat_scores)
     summary = {
         'model_type':    'MOSE-GNN',
+        'family':        'mose',
         'motif_method':  'mose',
         'dataset':       cfg.dataset,
         'fold':          cfg.fold,
