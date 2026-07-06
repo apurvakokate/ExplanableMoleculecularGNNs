@@ -55,8 +55,8 @@ export ENCODER_NORM="${ENCODER_NORM:-off}"    # off | on (LayerNorm after encode
 # Phase 5 training budget (max epochs; early stopping may stop sooner).
 export EPOCHS="${EPOCHS:-500}"
 # Per-conv normalization for vanilla / GSAT / MotifSAT / baselines (l2 | layernorm | none)
-export CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
-# MOSE uses its own default (none) — motif weights carry magnitude information.
+export CONV_NORMALIZE="${CONV_NORMALIZE:-none}"
+# MOSE uses the same default (none) — motif weights carry magnitude information.
 export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 # MOSE multi-explanation (H0/H1/H2) runs post-hoc — see phase multi_explanation.
 # Set to 1 only to run inline during MOSE training (not recommended at scale).
@@ -89,8 +89,8 @@ export RULE_INDEX="${RULE_INDEX:-}"          # e.g. 0
 # Example: export VOCAB_FOCUS=rbrics,all_fallback_bpe
 export VOCAB_FOCUS="${VOCAB_FOCUS:-}"
 # MOSE phase5_mose runs filtered variants (*_filter) before base variants.
-# Set MOSE_BASE=0 to skip unfiltered MOSE runs (filtered-only sweep).
-export MOSE_BASE="${MOSE_BASE:-1}"
+# Set MOSE_BASE=1 to also train MOSE on unfiltered base vocabs (opt-in ablation).
+export MOSE_BASE="${MOSE_BASE:-0}"
 
 # ── Phase 0–5 resume ──────────────────────────────────────────────────────────
 # Skip work when expected artifacts already exist (default on).

@@ -207,6 +207,7 @@ def training_summary_extras(cfg) -> Dict:
         'hidden_dim': getattr(cfg, 'hidden_dim', None),
         'num_layers': getattr(cfg, 'num_layers', None),
         'gin_inner_bn': getattr(cfg, 'gin_inner_bn', True),
+        'self_gate': bool(getattr(cfg, 'self_gate', False)),
         'info_loss_level': getattr(cfg, 'info_loss_level', None),
         'learn_edge_att': getattr(cfg, 'learn_edge_att', None),
         'processed_root': getattr(cfg, 'processed_root', None),

@@ -52,12 +52,19 @@ class GINConv(BaseGINConv):
     """GIN with optional edge-attention scaling in the message step."""
 
     def forward(self, x, edge_index, edge_attr=None,
-                edge_atten: OptTensor = None) -> Tensor:
+                edge_atten: OptTensor = None,
+                node_self_gate: OptTensor = None) -> Tensor:
         if isinstance(x, Tensor):
             x = (x, x)
         out = self.propagate(edge_index, x=x, edge_atten=edge_atten)
         x_r = x[1]
         if x_r is not None:
+            # Optional self-term gating (enabled by BaseGNN self_gate=True): scale
+            # a node's own contribution by its attention so the w_message gate
+            # controls ALL of its signal — parity with GCN/GAT (no self-loop).
+            # node_self_gate is None by default → behaviour unchanged.
+            if node_self_gate is not None:
+                x_r = x_r * node_self_gate.view(-1, 1)
             out += (1 + self.eps) * x_r
         return self.nn(out)
 
@@ -106,7 +113,10 @@ class GCNConvWithAtten(MessagePassing):
 
     def forward(self, x: Tensor, edge_index: Adj,
                 edge_attr: OptTensor = None,
-                edge_atten: OptTensor = None) -> Tensor:
+                edge_atten: OptTensor = None,
+                node_self_gate: OptTensor = None) -> Tensor:
+        # node_self_gate accepted for a uniform conv interface; GCN has no
+        # self-loop, so all signal is already gated — nothing to do here.
         x = self.lin(x)
 
         row, col = edge_index
@@ -185,7 +195,10 @@ class GATConvWithAtten(MessagePassing):
 
     def forward(self, x: Tensor, edge_index: Adj,
                 edge_attr: OptTensor = None,
-                edge_atten: OptTensor = None) -> Tensor:
+                edge_atten: OptTensor = None,
+                node_self_gate: OptTensor = None) -> Tensor:
+        # node_self_gate accepted for a uniform conv interface; GAT uses no
+        # ungated self-loop (add_self_loops=False), so nothing to do here.
         H, C = self.heads, self.out_channels
 
         # Linear transform: [N, in] → [N, H, C]
@@ -252,13 +265,19 @@ class SAGEConvWithAtten(MessagePassing):
 
     def forward(self, x, edge_index: Adj,
                 edge_attr: OptTensor = None,
-                edge_atten: OptTensor = None) -> Tensor:
+                edge_atten: OptTensor = None,
+                node_self_gate: OptTensor = None) -> Tensor:
         if isinstance(x, Tensor):
             x = (x, x)
         out = self.propagate(edge_index, x=x, edge_atten=edge_atten)
         out = self.lin_l(out)
         x_r = x[1]
         if x_r is not None:
+            # Optional self-term gating (BaseGNN self_gate=True): scale the root
+            # term by node attention so the w_message gate controls ALL of a
+            # node's signal. node_self_gate is None by default → unchanged.
+            if node_self_gate is not None:
+                x_r = x_r * node_self_gate.view(-1, 1)
             out = out + self.lin_r(x_r)
         if self.normalize:
             out = F.normalize(out, p=2.0, dim=-1)
@@ -328,7 +347,10 @@ class PNAConvSimple(MessagePassing):
 
     def forward(self, x: Tensor, edge_index: Adj,
                 edge_attr: OptTensor = None,
-                edge_atten: OptTensor = None) -> Tensor:
+                edge_atten: OptTensor = None,
+                node_self_gate: OptTensor = None) -> Tensor:
+        # node_self_gate accepted for a uniform conv interface; PNA has no
+        # explicit self-term (aggregators only), so nothing to do here.
         out = self.propagate(edge_index, x=x, edge_atten=edge_atten)
         return self.post_nn(out)
 

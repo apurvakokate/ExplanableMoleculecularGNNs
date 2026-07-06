@@ -56,7 +56,7 @@ class VanillaConfig:
     hidden_dim: int       = 64
     num_layers: int       = 3
     apply_layer_norm: bool = False
-    conv_normalize: str = 'l2'
+    conv_normalize: str = 'none'
     gin_inner_bn: bool = True
     dropout: float        = 0.5
     epochs: int           = 100
@@ -103,7 +103,7 @@ class VanillaConfig:
         enc = self.node_encoder
         # Effective inter-layer norm (none|l2|layernorm). apply_layer_norm=True
         # forces layernorm. Encoded so none/l2/layernorm runs never collide.
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
         # NOTE: epochs is deliberately NOT in the tag. A baseline/explainer run
         # uses --epochs 0 to LOAD the checkpoint trained at epochs>0; if epochs
         # were in the tag the load would look in the wrong directory.
@@ -194,7 +194,7 @@ def run(cfg: VanillaConfig) -> dict:
         x_dim=meta.x_dim, hidden_dim=cfg.hidden_dim, num_layers=cfg.num_layers,
         backbone=cfg.backbone, node_encoder=_node_encoder,
         apply_layer_norm=cfg.apply_layer_norm, dropout=cfg.dropout,
-        conv_normalize=getattr(cfg,'conv_normalize','l2'),
+        conv_normalize=getattr(cfg,'conv_normalize','none'),
         gin_inner_bn=getattr(cfg,'gin_inner_bn',True),
         num_classes=num_classes,
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
@@ -222,7 +222,7 @@ def run(cfg: VanillaConfig) -> dict:
     # training run wrote to), except the vocab variant may differ when a post-hoc
     # baseline evaluates under a filtered vocab but loads weights trained on the
     # unfiltered one. Keep this in lockstep with variant_tag().
-    _norm = 'layernorm' if cfg.apply_layer_norm else getattr(cfg, 'conv_normalize', 'l2')
+    _norm = 'layernorm' if cfg.apply_layer_norm else getattr(cfg, 'conv_normalize', 'none')
     _gt = 'gt' if getattr(cfg, 'use_gt', False) else 'real'
     try:
         from SharedModules.data.loader import hp_suffix as _hp_suffix
@@ -590,7 +590,7 @@ def main():
     parser.add_argument('--backbone',        default='GIN')
     parser.add_argument('--node_encoder',    default='onehot')
     parser.add_argument('--apply_layer_norm', action='store_true')
-    parser.add_argument('--conv_normalize', default='l2', choices=['l2','layernorm','none'])
+    parser.add_argument('--conv_normalize', default='none', choices=['l2','layernorm','none'])
     parser.add_argument('--no_gin_inner_bn', dest='gin_inner_bn', action='store_false')
     parser.set_defaults(gin_inner_bn=True)
     parser.add_argument('--hidden_dim',      type=int, default=64)

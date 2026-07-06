@@ -176,8 +176,9 @@ class SingleChannelGNN(nn.Module):
         dropout: float = 0.5,
         deg=None,
         edge_dim: Optional[int] = None,
-        conv_normalize: str = 'l2',
+        conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
+        self_gate: bool = False,
     ):
         super().__init__()
         self.w_feat = w_feat
@@ -192,6 +193,7 @@ class SingleChannelGNN(nn.Module):
             apply_layer_norm=apply_layer_norm, dropout=dropout,
             deg=deg, edge_dim=edge_dim,
             conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
+            self_gate=self_gate,
         )
         self.backbone.lin2 = nn.Linear(hidden_dim, 1)
 
@@ -287,10 +289,18 @@ class MultiChannelGNN(nn.Module):
         dropout: float = 0.5,
         deg=None,
         edge_dim: Optional[int] = None,
-        conv_normalize: str = 'l2',
+        conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
+        self_gate: bool = False,
     ):
         super().__init__()
+        if self_gate:
+            # MultiChannelGNN (MultiLabel) uses per-class conv stacks with its own
+            # message-injection path, not BaseGNN, so self_gate is not wired here.
+            # Fail loudly rather than silently ignore the flag.
+            raise NotImplementedError(
+                "self_gate is not supported for MultiChannelGNN (MultiLabel). "
+                "It applies to the single-channel GIN/SAGE self-term only.")
         self.num_classes = num_classes
         self.w_feat = w_feat
         self.w_message = w_message

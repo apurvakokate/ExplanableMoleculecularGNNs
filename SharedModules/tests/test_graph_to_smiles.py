@@ -330,15 +330,15 @@ class TestApplyMotifLookup(unittest.TestCase):
                 self.assertEqual(int(ntm[graph_idx]), 1,
                                  f"graph node {graph_idx} (N/O) should be motif 1")
 
-    def test_missing_smiles_gives_all_minus_one(self):
+    def test_missing_smiles_raises(self):
         n, smiles, lookup, index_map, nt = self._setup()
-        ntm = apply_motif_lookup_with_index_map(n, 'WRONG_SMILES', lookup, index_map)
-        self.assertTrue((ntm == -1).all())
+        with self.assertRaises(KeyError):
+            apply_motif_lookup_with_index_map(n, 'WRONG_SMILES', lookup, index_map)
 
-    def test_empty_lookup_gives_all_minus_one(self):
+    def test_empty_lookup_raises(self):
         n, smiles, lookup, index_map, nt = self._setup()
-        ntm = apply_motif_lookup_with_index_map(n, smiles, {}, index_map)
-        self.assertTrue((ntm == -1).all())
+        with self.assertRaises(KeyError):
+            apply_motif_lookup_with_index_map(n, smiles, {}, index_map)
 
     def test_no_unknown_nodes_in_fully_mapped_graph(self):
         """When every atom is in the lookup, no -1 should remain."""

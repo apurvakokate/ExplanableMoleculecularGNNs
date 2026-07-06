@@ -251,11 +251,23 @@ class MutagTUDataset(torch.utils.data.Dataset):
         # same attribute keys; always attach smiles (empty when unmapped).
         data.smiles = mapped_smi if mapped_smi else ''
 
-        if self._vocab is not None and mapped_smi and self._lookup:
+        if self._vocab is not None and mapped_smi:
+            if not self._lookup:
+                raise ValueError(
+                    f"mutag graph {idx}: vocab set but lookup for split "
+                    f"{self._split!r} is empty.")
             data.nodes_to_motifs = apply_motif_lookup_with_index_map(
                 n, mapped_smi, self._lookup, self._index_maps,
                 edge_index=getattr(data, 'edge_index', None),
             )
+            from .graph_to_smiles import validate_nodes_to_motifs
+            validate_nodes_to_motifs(
+                data.nodes_to_motifs, smiles=mapped_smi,
+                apply_threshold=getattr(self._vocab, 'apply_threshold', False),
+            )
+        elif self._vocab is not None:
+            raise ValueError(
+                f"mutag graph {idx}: vocab set but mapped SMILES is missing.")
         else:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
         return data
@@ -283,6 +295,7 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         self._ds = ogb_dataset
         self._indices = list(indices)
         self._lookup = vocab.lookup_for_split(split) if vocab else {}
+        self._apply_threshold = getattr(vocab, 'apply_threshold', False) if vocab else False
         self._label_mean = float(label_mean)
         self._label_std = float(label_std) if float(label_std) != 0.0 else 1.0
         self._normalize_labels = normalize_labels
@@ -317,6 +330,14 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         if self._lookup and smiles:
             data.nodes_to_motifs = apply_motif_lookup_canonical(
                 n, smiles, self._lookup)
+            from .graph_to_smiles import validate_nodes_to_motifs
+            validate_nodes_to_motifs(
+                data.nodes_to_motifs, smiles=str(smiles),
+                apply_threshold=self._apply_threshold,
+            )
+        elif self._lookup and self._require_smiles:
+            raise ValueError(
+                f"OGB graph index {i} has no SMILES; cannot attach motif annotations.")
         else:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
         if self._normalize_labels and data.y is not None:
@@ -827,6 +848,9 @@ def apply_gt_loaders(
     num_workers: int = 0,
     relabel: bool = True,
     verbose: bool = True,
+    gt_vocab_variant: Optional[str] = None,
+    refresh_vocab: Optional[VocabData] = None,
+    refresh_index_maps: Optional[Dict] = None,
 ) -> Tuple[Dict[str, DataLoader], object]:
     """Swap train/valid/test loaders for the GT-relabelled graphs cached by
     ``SharedModules/data/apply_gt.py`` (Phase 4).
@@ -867,14 +891,24 @@ def apply_gt_loaders(
     -------
     (loaders, test_ds) with GT-backed entries substituted.
     """
-    gt_base = (Path(gt_cache) / dataset / f'fold{fold}' / vocab_variant
+    gt_base = (Path(gt_cache) / dataset / f'fold{fold}'
+               / (gt_vocab_variant or vocab_variant)
                / ('relabel1' if relabel else 'relabel0'))
     gt_loaded: Dict[str, list] = {}
     gt_missing: List[str] = []
+    _lookup_split = {'train': 'training', 'valid': 'valid', 'test': 'test'}
     for split in ('train', 'valid', 'test'):
         gt_path = gt_base / f'{split}_with_gt.pt'
         if gt_path.exists():
             gt_loaded[split] = torch.load(gt_path, weights_only=False)
+            if refresh_vocab is not None and gt_vocab_variant and gt_vocab_variant != vocab_variant:
+                from .graph_to_smiles import refresh_motif_annotations_on_graphs
+                refresh_motif_annotations_on_graphs(
+                    gt_loaded[split],
+                    refresh_vocab.lookup_for_split(_lookup_split[split]),
+                    index_maps=refresh_index_maps,
+                    apply_threshold=getattr(refresh_vocab, 'apply_threshold', False),
+                )
             if verbose:
                 print(f'  GT {split}: {len(gt_loaded[split])} graphs '
                       f'← {gt_path.name}')
@@ -886,7 +920,7 @@ def apply_gt_loaders(
             "use_gt=True but the ground-truth cache is incomplete. Missing:\n  "
             + "\n  ".join(gt_missing)
             + f"\nRun phase-4 relabelling (SharedModules/data/apply_gt.py) for "
-              f"dataset={dataset} fold={fold} variant={vocab_variant} first, "
+              f"dataset={dataset} fold={fold} variant={gt_vocab_variant or vocab_variant} first, "
               f"or unset --use_gt.")
 
     for split, shuffle in (('train', True), ('valid', False), ('test', False)):

@@ -24,8 +24,9 @@ class MotifSATConfig:
     hidden_dim: int = 64
     num_layers: int = 3
     apply_layer_norm: bool = False
-    conv_normalize: str = 'l2'      # l2 | layernorm | none (per-conv norm)
+    conv_normalize: str = 'none'      # l2 | layernorm | none (per-conv norm)
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
+    self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
     dropout: float = 0.3
 
     # Motif method (orthogonal to noise and info loss)
@@ -129,7 +130,7 @@ class MotifSATConfig:
     def variant_tag(self) -> str:
         """Unique tag encoding all axes of variation — no two different configs can collide."""
         enc  = self.node_encoder
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
         ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',

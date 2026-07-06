@@ -419,6 +419,23 @@ class TestBaseGNN(unittest.TestCase):
                                      node_att=att, w_message=False, batch=batch.batch)
         self.assertFalse(torch.allclose(g_wm, g_no))
 
+    def test_self_gate_gin_scales_self_term(self):
+        """With self_gate=True, low attention should shrink GIN self-term contribution."""
+        batch = _mini_batch(2, 6)
+        gnn_off = self._make_gnn(backbone='GIN', self_gate=False)
+        gnn_on = self._make_gnn(backbone='GIN', self_gate=True)
+        att = torch.full((batch.x.size(0), 1), 0.01)
+        gnn_off.eval()
+        gnn_on.eval()
+        with torch.no_grad():
+            _, h_off = gnn_off.get_embedding(
+                batch.x, batch.edge_index, node_att=att,
+                w_message=True, batch=batch.batch)
+            _, h_on = gnn_on.get_embedding(
+                batch.x, batch.edge_index, node_att=att,
+                w_message=True, batch=batch.batch)
+        self.assertFalse(torch.allclose(h_off, h_on))
+
     def test_w_readout_flag(self):
         batch = _mini_batch(2, 6)
         gnn = self._make_gnn()
@@ -447,10 +464,13 @@ class TestBaseGNN(unittest.TestCase):
         out = gnn.classify(g)
         self.assertEqual(out.shape, (4, 1))
 
-    def test_conv_normalize_l2_is_default_unit_norm(self):
-        # Default conv_normalize='l2' → node embeddings have unit L2 norm.
-        batch = _mini_batch(2, 6)
+    def test_conv_normalize_none_is_default(self):
         gnn = self._make_gnn()
+        self.assertEqual(gnn.conv_normalize, 'none')
+
+    def test_conv_normalize_l2_unit_norm(self):
+        batch = _mini_batch(2, 6)
+        gnn = self._make_gnn(conv_normalize='l2')
         self.assertEqual(gnn.conv_normalize, 'l2')
         gnn.eval()
         _, h = gnn.get_embedding(batch.x, batch.edge_index, batch=batch.batch)

@@ -651,16 +651,14 @@ def _rbrics_pass1_tracked(mol: Chem.Mol,
 
     covered = {a for _, os, _ in result for a in os}
     missing = set(range(n)) - covered
-    if missing and result:
-        s, os, im = result[0]
-        result[0] = (s, os | missing, im)
-    elif missing or not result:
-        rw = Chem.RWMol(mol)
-        for atom in rw.GetAtoms():
-            atom.SetAtomMapNum(atom.GetIdx() + 1)
-        mol_mapped = rw.GetMol()
-        return [(_canonical_legacy_smarts_from_mol(mol_mapped), set(range(n)),
-                 {i: i for i in range(n)})]
+    if missing or not result:
+        if not result:
+            raise ValueError(
+                f"rBRICS pass-1 produced no fragments for {orig_smi!r} "
+                f"({n} atoms) — refusing silent whole-molecule fallback.")
+        raise ValueError(
+            f"rBRICS pass-1 partition error for {orig_smi!r} ({n} atoms): "
+            f"missing atoms {sorted(missing)}. Refusing silent orphan patch.")
 
     return result
 
@@ -1380,9 +1378,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         for orig_smi in smiles_all:
             mol = Chem.MolFromSmiles(orig_smi)
             if mol is None:
-                mol_frags_tracked.append([('[INVALID]', {0})])
-                # mol_frags_plain.append(['[INVALID]'])
-                continue
+                raise ValueError(
+                    f"Invalid SMILES during vocab build: {orig_smi!r}")
             mol_frags_tracked.append(
                 fragment_molecule_tracked(mol, orig_smi, use_fallback, _legacy_method))
             # mol_frags_plain.append(
@@ -1421,8 +1418,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         mol_frags_tracked = []
         for orig_smi in smiles_all:
             if Chem.MolFromSmiles(orig_smi) is None:
-                mol_frags_tracked.append([('[INVALID]', {0})])
-                continue
+                raise ValueError(
+                    f"Invalid SMILES during vocab build: {orig_smi!r}")
             mol_frags_tracked.append(
                 _v4.fragment_tracked_v4(orig_smi, _ruleset, _index, shatter=shatter))
         n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))

@@ -71,8 +71,9 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         logit_clamp=getattr(cfg, 'logit_clamp', None),
         deterministic_att=getattr(cfg, 'deterministic_att', False),
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
-        conv_normalize=getattr(cfg, 'conv_normalize', 'l2'),
+        conv_normalize=getattr(cfg, 'conv_normalize', 'none'),
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
+        self_gate=getattr(cfg, 'self_gate', False),
     )
 
 
@@ -688,13 +689,17 @@ def main():
     parser.add_argument("--run_multi_explanation", action="store_true",
                         help="Run H0/H1/H2 multi-explanation inline after eval "
                              "(default: post-hoc via analysis/run_multi_explanation.py).")
-    parser.add_argument("--conv_normalize", default="l2",
+    parser.add_argument("--conv_normalize", default="none",
                         choices=["l2", "layernorm", "none"],
                         help="Per-conv normalization (default l2).")
     parser.add_argument("--no_gin_inner_bn", dest="gin_inner_bn",
                         action="store_false",
                         help="Disable BatchNorm inside the GIN MLP (default on).")
     parser.set_defaults(gin_inner_bn=True)
+    parser.add_argument("--self_gate", action="store_true",
+                        help="EXPERIMENTAL (default off): gate GIN/SAGE self-term "
+                             "by node attention so the w_message gate controls all "
+                             "of a node's signal. No-op for GCN/GAT/PNA.")
     args = parser.parse_args()
 
     if args.config:
@@ -748,6 +753,7 @@ def main():
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,
             gin_inner_bn=args.gin_inner_bn,
+            self_gate=args.self_gate,
             run_multi_explanation=args.run_multi_explanation,
         )
     run(cfg)

@@ -511,6 +511,14 @@ class TestRegConfig(unittest.TestCase):
         # explicit override wins
         self.assertEqual(resolve_num_layers('BBBP', num_layers=5), (5, False))
 
+    def test_multilabel_dataset_rejected(self):
+        from run import build_model
+        from config import MOSEConfig
+        cfg = MOSEConfig(dataset='ogbg-moltox21')
+        meta = type('M', (), {'x_dim': 9, 'deg': None})()
+        with self.assertRaises(ValueError):
+            build_model(cfg, num_motifs=10, task_type='MultiLabel', meta=meta)
+
 
 if __name__ == '__main__':
     unittest.main()

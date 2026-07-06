@@ -164,7 +164,7 @@ class GSAT(nn.Module):
         task_type: str = 'BinaryClass',
         deg=None,
         edge_dim: Optional[int] = None,
-        conv_normalize: str = 'l2',
+        conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
         # ── Motif method ──
         motif_method: str = 'none',
@@ -192,6 +192,7 @@ class GSAT(nn.Module):
         within_node_coef: float = 0.0,
         logit_clamp: Optional[float] = None,
         deterministic_att: bool = False,
+        self_gate: bool = False,
     ):
         super().__init__()
 
@@ -258,6 +259,7 @@ class GSAT(nn.Module):
             apply_layer_norm=apply_layer_norm, dropout=dropout,
             deg=deg, edge_dim=edge_dim,
             conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
+            self_gate=self_gate,
         )
         self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
 

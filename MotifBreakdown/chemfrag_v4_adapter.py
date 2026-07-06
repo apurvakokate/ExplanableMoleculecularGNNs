@@ -99,11 +99,13 @@ def fragment_tracked_v4(orig_smi: str,
     if entry is None:
         m = Chem.MolFromSmiles(str(orig_smi))
         if m is None:
-            return [('[INVALID]', {0})]
+            raise ValueError(f"Invalid SMILES for v4 fragmentation: {orig_smi!r}")
         try:
             Chem.SanitizeMol(m)
-        except Exception:
-            return [('[INVALID]', {0})]
+        except Exception as exc:
+            raise ValueError(
+                f"Unsanitizable SMILES for v4 fragmentation: {orig_smi!r}"
+            ) from exc
         tree = _tree(m, shatter)
         for nd in M.all_nodes(tree):
             nd['key'] = C.frag_key(m, nd['atomset'])

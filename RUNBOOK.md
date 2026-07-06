@@ -343,27 +343,23 @@ The runner applies all four vocab variants automatically for cross-evaluation.
 
 ## Step 7 — MOSE-GNN
 
-Trains MOSE-GNN with motif feature injection (w_feat) and readout injection
-(w_readout) across all three thresholded vocabulary variants.
+Trains MOSE-GNN with motif feature injection (`w_feat`) and readout injection
+(`w_readout`) on **thresholded (`*_filter`) vocabs only** by default
+(`MOSE_BASE=0` in `run_full_pipeline.sh` / `experiment_config.sh`).
+
+Synthetic GT MOSE (`*_filter_relabelled`) runs when phase-4 `gt_cache` exists and
+`MOSE_BASE=0`. GT loaders are read from the **base** variant cache and motif
+annotations are refreshed for the filter vocab.
+
+OGB **multi-label** datasets (e.g. `ogbg-moltox21`) are **not supported** — MOSE
+raises at startup.
 
 ```bash
-for ds in $DATASETS; do
-  for fold in $FOLDS; do
-    for variant in rbrics_filter all_fallback_bpe_filter all_fallback_bpe; do
-      python3 $PROJECT/MOSE-GNN/run.py \
-        --dataset $ds --fold $fold \
-        --backbone $BACKBONE --node_encoder $NODE_ENCODER \
-        --w_feat --w_readout \
-        --epochs $EPOCHS \
-        --data_root $DATA_ROOT \
-        --vocab_root $VOCAB_ROOT \
-        --vocab_variant $variant \
-        --out_dir $OUT_ROOT/mose/$variant
-    done
-  done
-done
+# Via runner (recommended):
+bash run_experiments.sh phase5_mose
 
-# Or via runner:
+# Opt-in unfiltered MOSE ablation:
+export MOSE_BASE=1
 bash run_experiments.sh phase5_mose
 ```
 
@@ -371,10 +367,11 @@ bash run_experiments.sh phase5_mose
 
 | Variant | w_feat | w_readout | Notes |
 |---|---|---|---|
-| rbrics_filter | ✓ | ✓ | rBRICS, thresholded vocab |
+| rbrics_filter | ✓ | ✓ | Default MOSE track (thresholded) |
 | all_fallback_bpe_filter | ✓ | ✓ | Full cascade, thresholded |
-| all_fallback_bpe | ✓ | ✓ | Full cascade, no threshold |
-| all_fallback_bpe + gt | ✓ | ✓ | + synthetic relabelling |
+| rbrics_filter_relabelled | ✓ | ✓ | Filter vocab + synthetic GT (MOSE_BASE=0) |
+| all_fallback_bpe_filter_relabelled | ✓ | ✓ | Filter + synthetic GT |
+| all_fallback_bpe (base) | ✓ | ✓ | Only when `MOSE_BASE=1` |
 
 ---
 
@@ -654,27 +651,30 @@ per-dataset depth and the 0.01/0.001 LR split automatically.
 
 ---
 
-## Shared backbone normalization (MOSE + MotifSAT)
+## Shared backbone normalization (MOSE + MotifSAT + vanilla + GSAT)
 
-Both models share `SharedModules/models/gnn_base.py`. Two knobs control the conv
+All models share `SharedModules/models/gnn_base.py`. Two knobs control the conv
 stack, applied **after each conv, before ReLU**:
 
-* `--conv_normalize {l2,layernorm,none}` (**default `l2`**). `l2` rescales each
-  node embedding to unit length (matches the original DomainDrivenGlobalExpl
-  reference). This is intentional: it cancels embedding-magnitude differences so
-  the soft motif-weight scaling acts on direction rather than norm. `layernorm`
-  uses a learned per-layer LayerNorm; `none` disables per-conv normalization.
-  (Back-compat: `apply_layer_norm=True` still forces `layernorm`.)
+* `--conv_normalize {l2,layernorm,none}` (**default `none`**). `none` preserves
+  embedding magnitude (required for MOSE motif-weight scaling). `l2` rescales each
+  node embedding to unit length (opt-in ablation). `layernorm` uses a learned
+  per-layer LayerNorm. (Back-compat: `apply_layer_norm=True` still forces
+  `layernorm`.)
 * `--no_gin_inner_bn` disables the BatchNorm inside the GIN MLP. **Default: on**
   — GIN layers are `Linear→ReLU→Linear→ReLU→BatchNorm` (Xu et al. / reference).
 
 Both are recorded in `summary.json` / `all_results.csv` (`conv_normalize`,
-`gin_inner_bn`). `phase5_mose` / `phase5_motifsat` pass neither, so the L2 +
-GIN-BN defaults apply automatically.
+`gin_inner_bn`). `experiment_config.sh` sets `CONV_NORMALIZE=none` and
+`MOSE_CONV_NORMALIZE=none`.
 
-**Note:** these change the architecture, so models trained before this build are
-not comparable to L2 runs — retrain (or eval-only won't help, since weights
-differ structurally for GIN due to the added BatchNorm).
+### Optional: `self_gate` (GIN / SAGE only, default off)
+
+When `--self_gate` is set **and** `w_message` is on, GIN/SAGE scale their
+self/root term by node attention: `out = messages + (1+eps)·(x_i · att_i)` (GIN)
+and `out = W1·messages + W2·(x_i · att_i)` (SAGE). This closes the “leaky gate”
+where ungated self-terms bypass motif attention. GCN/GAT/PNA are unchanged (no
+ungated self-loop). Not supported for `MultiChannelGNN` (MultiLabel).
 
 ---
 

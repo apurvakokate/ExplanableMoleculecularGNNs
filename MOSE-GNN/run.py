@@ -37,8 +37,10 @@ from train import train_mose_gnn
 def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
                 kept_motif_ids=None):
     """Construct the appropriate model variant."""
-    from SharedModules.data.loader import NUM_CLASSES
-    num_classes = NUM_CLASSES.get(cfg.dataset, 1)
+    if task_type == 'MultiLabel':
+        raise ValueError(
+            f"MOSE-GNN does not support MultiLabel dataset {cfg.dataset!r}. "
+            f"OGB multi-label benchmarks (e.g. ogbg-moltox21) are excluded.")
 
     common = dict(
         x_dim=meta.x_dim,                 # 52 (CSV), 14 (mutag), 9 (OGB)
@@ -56,14 +58,11 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
         w_readout=cfg.w_readout,
         dropout=cfg.dropout,
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
-        conv_normalize=getattr(cfg, 'conv_normalize', 'l2'),
+        conv_normalize=getattr(cfg, 'conv_normalize', 'none'),
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
+        self_gate=getattr(cfg, 'self_gate', False),
     )
-
-    if task_type == 'MultiLabel':
-        return MultiChannelGNN(num_classes=num_classes, **common)
-    else:
-        return SingleChannelGNN(**common)
+    return SingleChannelGNN(**common)
 
 
 def run(cfg: MOSEConfig) -> dict:
@@ -72,6 +71,12 @@ def run(cfg: MOSEConfig) -> dict:
     validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
     set_seed(cfg.seed)
     device = get_device()
+
+    task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
+    if task_type == 'MultiLabel':
+        raise ValueError(
+            f"MOSE-GNN does not support MultiLabel dataset {cfg.dataset!r}. "
+            f"OGB multi-label benchmarks (e.g. ogbg-moltox21) are excluded.")
 
     print(f'\n{"="*60}')
     print(f'  MOSE-GNN  {cfg.dataset}  fold={cfg.fold}  backbone={cfg.backbone}')
@@ -83,7 +88,6 @@ def run(cfg: MOSEConfig) -> dict:
     print(f'  {vocab.num_motifs} motifs  mask_cache splits: {list(vocab.mask_cache.keys())}')
 
     # Data loaders
-    task_type = TASK_TYPE.get(cfg.dataset, 'BinaryClass')
     loaders, test_ds, meta = get_loaders(
         dataset=cfg.dataset,
         data_root=cfg.data_root,
@@ -115,10 +119,13 @@ def run(cfg: MOSEConfig) -> dict:
     # model trains on/eval against the rule label. pos_weights are recomputed
     # below from the GT training distribution.
     if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
+        _gt_vocab = getattr(cfg, 'gt_vocab_variant', None) or cfg.vocab_variant
         loaders, test_ds = apply_gt_loaders(
             loaders, test_ds,
             gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
             vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
+            gt_vocab_variant=_gt_vocab,
+            refresh_vocab=vocab if _gt_vocab != cfg.vocab_variant else None,
         )
 
     # Model
@@ -326,9 +333,9 @@ def run(cfg: MOSEConfig) -> dict:
         'hidden_dim':    cfg.hidden_dim,
         'explainer_lr':  getattr(cfg, 'explainer_lr', None),
         'gnn_lr':        getattr(cfg, 'gnn_lr', None),
-        'conv_normalize': getattr(cfg, 'conv_normalize', 'l2'),
+        'conv_normalize': getattr(cfg, 'conv_normalize', 'none'),
         'gin_inner_bn':  getattr(cfg, 'gin_inner_bn', True),
-        **training_summary_extras(cfg),
+        **training_summary_extras(cfg),  # includes self_gate
         # prediction
         'train_auc': split_metrics.get('train', {}).get('auc', split_metrics.get('train', {}).get('auc_mean', float('nan'))),
         'val_auc':   split_metrics.get('valid', {}).get('auc', split_metrics.get('valid', {}).get('auc_mean', float('nan'))),
@@ -426,6 +433,9 @@ def main():
                         help='Load ground-truth relabelled graphs from gt_cache')
     parser.add_argument('--gt_cache',    default=None,
                         help='Path to gt_cache directory written by phase4')
+    parser.add_argument('--gt_vocab_variant', default=None,
+                        help='Base vocab variant for gt_cache lookup when '
+                             'training on a *_filter vocab.')
     parser.add_argument('--mutag_index_maps_path', default=None,
                         help='mutag only: override path to '
                              'mutag_<fold>_index_maps.pkl (default: convention '
@@ -458,6 +468,10 @@ def main():
                         action='store_false',
                         help='Disable BatchNorm inside the GIN MLP (default on).')
     parser.set_defaults(gin_inner_bn=True)
+    parser.add_argument('--self_gate', action='store_true',
+                        help='EXPERIMENTAL (default off): gate GIN/SAGE self-term '
+                             'by node attention so the w_message gate controls all '
+                             "of a node's signal. No-op for GCN/GAT/PNA.")
     args = parser.parse_args()
 
     if args.config:
@@ -501,6 +515,7 @@ def main():
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
             use_gt=args.use_gt, gt_cache=args.gt_cache,
+            gt_vocab_variant=args.gt_vocab_variant,
             mutag_index_maps_path=args.mutag_index_maps_path,
             mutag_smiles_csv_path=args.mutag_smiles_csv_path,
             mutag_splits_path=args.mutag_splits_path,
@@ -509,6 +524,7 @@ def main():
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,
             gin_inner_bn=args.gin_inner_bn,
+            self_gate=args.self_gate,
             run_multi_explanation=args.run_multi_explanation,
         )
     run(cfg)

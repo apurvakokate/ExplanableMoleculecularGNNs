@@ -26,6 +26,7 @@ class MOSEConfig:
     apply_layer_norm: bool = False
     conv_normalize: str = 'none'    # l2 | layernorm | none (per-conv norm; MOSE default none)
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
+    self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
     dropout: float = 0.5
     w_feat: bool = True
     w_message: bool = False
@@ -75,6 +76,7 @@ class MOSEConfig:
     # Ground-truth relabelling (phase4)
     use_gt: bool = False        # load GT relabelled graphs from gt_cache
     gt_cache: Optional[str] = None  # path to gt_cache directory
+    gt_vocab_variant: Optional[str] = None  # base variant for gt_cache lookup when training on *_filter
 
     # mutag motif-annotation artifacts (optional overrides; default to the
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
@@ -117,7 +119,7 @@ class MOSEConfig:
         # back-compat alias that forces layernorm, so derive the effective value
         # the model will actually use, and put it in the tag so none/l2/layernorm
         # runs never collide.
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'l2')
+        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
         ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',

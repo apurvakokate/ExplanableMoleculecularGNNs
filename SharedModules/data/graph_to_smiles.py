@@ -437,6 +437,58 @@ def verify_ogb_dataset_alignment(
 # MolDataset helper: apply index_map when building nodes_to_motifs
 # ─────────────────────────────────────────────────────────────────────────────
 
+def validate_nodes_to_motifs(
+    nodes_to_motifs: torch.Tensor,
+    *,
+    smiles: str,
+    apply_threshold: bool,
+) -> None:
+    """Fail fast when motif assignment violates the partition contract.
+
+    Unfiltered vocabs must cover every atom (no ``-1``). Thresholded vocabs may
+    map below-threshold atoms to ``-1``, but at least one atom must remain mapped.
+    """
+    if nodes_to_motifs.numel() == 0:
+        return
+    if apply_threshold:
+        if int((nodes_to_motifs >= 0).sum()) == 0:
+            raise ValueError(
+                f"Graph {smiles!r}: all {nodes_to_motifs.numel()} nodes mapped "
+                f"to motif_id=-1 under a thresholded vocab — no trainable motifs.")
+    elif bool((nodes_to_motifs < 0).any()):
+        bad = torch.nonzero(nodes_to_motifs < 0, as_tuple=False).view(-1).tolist()
+        raise ValueError(
+            f"Graph {smiles!r}: {len(bad)} node(s) have motif_id=-1 on an "
+            f"unfiltered vocab (expected full partition). "
+            f"First indices: {bad[:10]}")
+
+
+def refresh_motif_annotations_on_graphs(
+    graphs: list,
+    lookup: Dict[str, Dict[int, Tuple[str, int]]],
+    *,
+    index_maps: Optional[Dict[str, Dict[int, int]]] = None,
+    apply_threshold: bool = False,
+) -> None:
+    """Re-attach ``nodes_to_motifs`` on cached GT graphs for a training vocab."""
+    for data in graphs:
+        smi = str(getattr(data, 'smiles', '') or '')
+        n = int(data.x.size(0))
+        if not smi:
+            raise ValueError(
+                'GT graph missing smiles — cannot refresh motif annotations.')
+        if index_maps is not None:
+            ntm = apply_motif_lookup_with_index_map(
+                n, smi, lookup, index_maps,
+                edge_index=getattr(data, 'edge_index', None),
+            )
+        else:
+            ntm = apply_motif_lookup_canonical(n, smi, lookup)
+        data.nodes_to_motifs = ntm
+        validate_nodes_to_motifs(
+            ntm, smiles=smi, apply_threshold=apply_threshold)
+
+
 def apply_motif_lookup_canonical(
     n_nodes: int,
     smiles: str,
@@ -450,6 +502,10 @@ def apply_motif_lookup_canonical(
     """
     ntm = torch.full((n_nodes,), -1, dtype=torch.long)
     smi_lookup = lookup.get(str(smiles), {})
+    if not smi_lookup and lookup:
+        raise KeyError(
+            f"SMILES {smiles!r} not found in vocab lookup "
+            f"({len(lookup)} keyed graphs).")
     for node_idx, entry in smi_lookup.items():
         ni = int(node_idx)
         if 0 <= ni < n_nodes and entry is not None:
@@ -500,6 +556,14 @@ def apply_motif_lookup_with_index_map(
     ntm = torch.full((n_nodes,), -1, dtype=torch.long)
     smi_lookup = lookup.get(mapped_smiles, {})
     g2s = index_map.get(mapped_smiles, {})
+    if not smi_lookup and lookup:
+        raise KeyError(
+            f"Mapped SMILES {mapped_smiles!r} not found in vocab lookup "
+            f"({len(lookup)} keyed graphs).")
+    if not g2s and index_map:
+        raise KeyError(
+            f"Mapped SMILES {mapped_smiles!r} not found in index_map "
+            f"({len(index_map)} keyed graphs).")
 
     for graph_idx, smiles_idx in g2s.items():
         entry = smi_lookup.get(smiles_idx)

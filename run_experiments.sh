@@ -56,7 +56,7 @@ DATASETS_SPECIAL="${DATASETS_SPECIAL:-mutag ogbg-molhiv ogbg-molbace}"
 DATASETS="${DATASETS:-$DATASETS_CSV $DATASETS_SPECIAL}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 EPOCHS="${EPOCHS:-500}"
-CONV_NORMALIZE="${CONV_NORMALIZE:-l2}"
+CONV_NORMALIZE="${CONV_NORMALIZE:-none}"
 MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
@@ -912,21 +912,25 @@ apply_gt() {
 }
 
 run_mose_gt() {
-    local variant=$1
+    # Train on FILTERED vocab + synthetic GT loaders. Phase-4 gt_cache is keyed
+    # by the matching BASE variant; refresh nodes_to_motifs from the filter vocab.
+    local filter_variant=$1
+    local base_variant
     local gt_variant
     local n_skip=0 n_run=0
-    gt_variant=$(_gt_variant_name "$variant")
+    base_variant=$(_baseline_weight_variant "$filter_variant")
+    gt_variant=$(_gt_variant_name "$filter_variant")
     local gt_ds
     gt_ds=$(_phase5_gt_datasets)
     if [ -z "$gt_ds" ]; then
         return 0
     fi
-    echo "  [MOSE+GT] variant=$gt_variant datasets:$gt_ds"
+    echo "  [MOSE+GT] train_vocab=$filter_variant gt_cache=$base_variant out=$gt_variant datasets:$gt_ds"
     for backbone in $BACKBONES; do
         for ds in $gt_ds; do
             for fold in $FOLDS; do
-                if ! _gt_split_cached "$variant" "$ds" "$fold" train; then
-                    echo "  [skip] $gt_variant $ds fold$fold — no gt_cache (run phase4)"
+                if ! _gt_split_cached "$base_variant" "$ds" "$fold" train; then
+                    echo "  [skip] $gt_variant $ds fold$fold — no gt_cache for $base_variant (run phase4)"
                     continue
                 fi
                 local enc="$(_dataset_node_encoder "$ds")"
@@ -942,10 +946,11 @@ run_mose_gt() {
                     --backbone     "$backbone" --node_encoder "$enc" \
                     --w_feat --w_readout \
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --gt_vocab_variant "$base_variant" \
                     --epochs       "$EPOCHS" \
                     --data_root    "$DATA_ROOT" \
                     --vocab_root   "$VOCAB_ROOT" \
-                    --vocab_variant "$variant" \
+                    --vocab_variant "$filter_variant" \
                     --conv_normalize "$MOSE_CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${gt_variant}" \
@@ -1307,8 +1312,9 @@ phase5_vanilla() {
 
 # =============================================================================
 # PHASE 5b — MOSE-GNN
-#   Per VOCAB_FOCUS: filtered + unfiltered base vocabs + GT relabelled
-#   (when phase4 gt_cache exists). Default injection: 101 (--w_feat --w_readout).
+#   Filtered vocabs only (MOSE_BASE=0 default). Optional unfiltered base runs
+#   when MOSE_BASE=1. Synthetic GT MOSE uses filtered+GT when MOSE_BASE=0.
+#   Default injection: 101 (--w_feat --w_readout).
 # =============================================================================
 phase5_mose() {
     _check_paths
@@ -1322,7 +1328,7 @@ phase5_mose() {
     for variant in $(_vocab_focus_filtered_variants); do
         run_mose "$variant" "$MOSE_INJ"
     done
-    if [ "${MOSE_BASE:-1}" = "1" ]; then
+    if [ "${MOSE_BASE:-0}" = "1" ]; then
         for variant in $(_vocab_focus_base_variants); do
             run_mose "$variant" "$MOSE_INJ"
         done
@@ -1331,9 +1337,13 @@ phase5_mose() {
     fi
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
-        for variant in $(_vocab_focus_base_variants); do
-            run_mose_gt "$variant"
-        done
+        if [ "${MOSE_BASE:-0}" = "1" ]; then
+            echo "  [skip] MOSE+GT — synthetic GT MOSE uses filtered vocabs (MOSE_BASE=0)"
+        else
+            for variant in $(_vocab_focus_filtered_variants); do
+                run_mose_gt "$variant"
+            done
+        fi
     elif ! _phase5_has_gt_training; then
         echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"
     else
@@ -1379,8 +1389,8 @@ phase5_gsat() {
 # =============================================================================
 # PHASE 5d — Post-hoc baselines
 #   GNNExplainer, PGExplainer, MAGE on each trained vanilla checkpoint,
-#   evaluated under unfiltered base vocabs only (same as vanilla/GSAT/MotifSAT).
-#   Filtered vocabs are MOSE-only; baselines do not run on *_filter variants.
+#   evaluated under unfiltered base vocabs AND filtered vocabs (item 10).
+#   Filtered eval reuses base-variant checkpoints via _baseline_weight_variant.
 # =============================================================================
 phase5_baselines() {
     _check_paths

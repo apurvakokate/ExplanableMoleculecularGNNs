@@ -64,21 +64,24 @@ class BaseGNN(nn.Module):
         dropout: float = 0.5,
         deg: Optional[Tensor] = None,
         edge_dim: Optional[int] = None,
-        conv_normalize: str = 'l2',
+        conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
+        self_gate: bool = False,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.backbone = backbone.upper()
+        # self_gate (optional, default OFF): when True, GIN/SAGE scale their
+        # ungated self/root term by node attention during w_message injection,
+        # so the attention gate controls ALL of a node's signal (parity with the
+        # self-loop-free GCN/GAT). No-op for GCN/GAT/PNA. See get_embedding.
+        self.self_gate = bool(self_gate)
         self.node_encoder_type = node_encoder
         self.dropout = dropout
         # Per-conv normalization applied AFTER each conv, BEFORE ReLU:
-        #   'l2'        — F.normalize(x, p=2, dim=1): unit-length node embeddings
-        #                 (reference DomainDrivenGlobalExpl behaviour; default).
-        #                 Cancels embedding-magnitude differences, so the soft
-        #                 motif-weight scaling acts on direction, not norm.
-        #   'layernorm' — LayerNorm(hidden_dim) per layer (learned scale/shift).
-        #   'none'      — no per-conv normalization.
+   #   'l2'        — F.normalize(x, p=2, dim=1): unit-length node embeddings.
+   #   'layernorm' — LayerNorm(hidden_dim) per layer (learned scale/shift).
+   #   'none'      — no per-conv normalization (default).
         # Back-compat: apply_layer_norm=True forces 'layernorm'.
         conv_normalize = (conv_normalize or 'none').lower()
         if apply_layer_norm:
@@ -139,14 +142,17 @@ class BaseGNN(nn.Module):
         edge_index: Tensor,
         edge_attr: Optional[Tensor] = None,
         edge_atten: Optional[Tensor] = None,
+        node_self_gate: Optional[Tensor] = None,
     ) -> Tensor:
         """Run all conv layers.
 
         ``edge_atten`` is passed to each layer for ``w_message`` injection.
+        ``node_self_gate`` (optional) is passed to each layer to gate the
+        per-node self/root term (GIN/SAGE only); None ⇒ unchanged behaviour.
         """
         for i, conv in enumerate(self.convs):
             x = conv(x, edge_index, edge_attr=edge_attr,
-                     edge_atten=edge_atten)
+                     edge_atten=edge_atten, node_self_gate=node_self_gate)
             # Per-conv normalization (before ReLU), matching reference order.
             if self.conv_normalize == 'l2':
                 x = F.normalize(x, p=2, dim=1)
@@ -217,7 +223,12 @@ class BaseGNN(nn.Module):
                 src, dst = edge_index
                 _edge_atten = (node_att.view(-1)[src] * node_att.view(-1)[dst]).unsqueeze(-1)
 
-        h = self.convolve(h, edge_index, edge_attr=edge_attr, edge_atten=_edge_atten)
+        # self_gate: gate GIN/SAGE self-terms by node attention (only meaningful
+        # alongside w_message, and only when attention is present). Default OFF.
+        _self_gate = (node_att if (self.self_gate and w_message
+                                   and node_att is not None) else None)
+        h = self.convolve(h, edge_index, edge_attr=edge_attr,
+                          edge_atten=_edge_atten, node_self_gate=_self_gate)
 
         # w_readout: scale node embeddings before pooling
         h_readout = h * node_att.view(-1, 1) if (w_readout and node_att is not None) else h

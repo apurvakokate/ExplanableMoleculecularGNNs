@@ -49,7 +49,7 @@ class VanillaGNN(nn.Module):
         num_classes: int = 1,
         deg=None,
         edge_dim: Optional[int] = None,
-        conv_normalize: str = 'l2',
+        conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
     ):
         super().__init__()
