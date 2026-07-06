@@ -442,25 +442,62 @@ def validate_nodes_to_motifs(
     *,
     smiles: str,
     apply_threshold: bool,
+    smi_lookup: Optional[Dict[int, Tuple[str, int]]] = None,
+    heavy_smiles_indices: Optional[set] = None,
 ) -> None:
     """Fail fast when motif assignment violates the partition contract.
 
     Unfiltered vocabs must cover every atom (no ``-1``). Thresholded vocabs may
-    map below-threshold atoms to ``-1``, but at least one atom must remain mapped.
+    map below-threshold atoms to ``-1`` (UNK). Graphs where *every* node is UNK
+    are allowed when the vocab lookup fully covers the heavy-atom / CSV atom
+    indices and every stored motif_id is ``-1`` — i.e. threshold filtering only,
+    not fragmentation or index-map failure.
+
+    For mutag, pass ``heavy_smiles_indices`` = the smiles-atom indices of heavy
+    atoms (from ``index_map``). Explicit H nodes inherit motifs via edge
+    propagation in ``apply_motif_lookup_with_index_map``; when all heavy atoms
+    are below threshold, H nodes correctly end up UNK too.
     """
     if nodes_to_motifs.numel() == 0:
         return
-    if apply_threshold:
-        if int((nodes_to_motifs >= 0).sum()) == 0:
+    if not apply_threshold:
+        if bool((nodes_to_motifs < 0).any()):
+            bad = torch.nonzero(nodes_to_motifs < 0, as_tuple=False).view(-1).tolist()
             raise ValueError(
-                f"Graph {smiles!r}: all {nodes_to_motifs.numel()} nodes mapped "
-                f"to motif_id=-1 under a thresholded vocab — no trainable motifs.")
-    elif bool((nodes_to_motifs < 0).any()):
-        bad = torch.nonzero(nodes_to_motifs < 0, as_tuple=False).view(-1).tolist()
+                f"Graph {smiles!r}: {len(bad)} node(s) have motif_id=-1 on an "
+                f"unfiltered vocab (expected full partition). "
+                f"First indices: {bad[:10]}")
+        return
+
+    if int((nodes_to_motifs >= 0).sum()) > 0:
+        return
+
+    # All UNK — allowed only when lookup proves threshold-only, not a gap/bug.
+    if smi_lookup is None:
+        return
+
+    if heavy_smiles_indices is not None:
+        indices_to_check = heavy_smiles_indices
+    else:
+        indices_to_check = set(range(int(nodes_to_motifs.numel())))
+
+    missing = sorted(i for i in indices_to_check if i not in smi_lookup)
+    if missing:
         raise ValueError(
-            f"Graph {smiles!r}: {len(bad)} node(s) have motif_id=-1 on an "
-            f"unfiltered vocab (expected full partition). "
-            f"First indices: {bad[:10]}")
+            f"Graph {smiles!r}: all nodes are motif_id=-1 but "
+            f"{len(missing)} atom(s) missing from vocab lookup — likely "
+            f"fragmentation or SMILES/index mismatch, not threshold filtering. "
+            f"First missing smiles indices: {missing[:10]}")
+
+    above_thr = sorted(
+        i for i in indices_to_check
+        if int(smi_lookup[i][1]) >= 0
+    )
+    if above_thr:
+        raise ValueError(
+            f"Graph {smiles!r}: nodes_to_motifs all -1 but lookup has "
+            f"{len(above_thr)} above-threshold motif(s) at smiles indices "
+            f"{above_thr[:10]} — atom-index mapping bug, not filtering.")
 
 
 def refresh_motif_annotations_on_graphs(
@@ -469,6 +506,7 @@ def refresh_motif_annotations_on_graphs(
     *,
     index_maps: Optional[Dict[str, Dict[int, int]]] = None,
     apply_threshold: bool = False,
+    validate: bool = True,
 ) -> None:
     """Re-attach ``nodes_to_motifs`` on cached GT graphs for a training vocab."""
     for data in graphs:
@@ -485,8 +523,14 @@ def refresh_motif_annotations_on_graphs(
         else:
             ntm = apply_motif_lookup_canonical(n, smi, lookup)
         data.nodes_to_motifs = ntm
-        validate_nodes_to_motifs(
-            ntm, smiles=smi, apply_threshold=apply_threshold)
+        if validate:
+            g2s = index_maps.get(smi, {}) if index_maps else {}
+            heavy = set(g2s.values()) if g2s else None
+            validate_nodes_to_motifs(
+                ntm, smiles=smi, apply_threshold=apply_threshold,
+                smi_lookup=lookup.get(smi, {}),
+                heavy_smiles_indices=heavy,
+            )
 
 
 def apply_motif_lookup_canonical(

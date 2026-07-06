@@ -33,6 +33,7 @@ from SharedModules.data.graph_to_smiles import (
     verify_ogb_index_alignment,
     verify_mutag_index_alignment,
     apply_motif_lookup_with_index_map,
+    validate_nodes_to_motifs,
 )
 
 
@@ -472,6 +473,75 @@ class TestHPropagation(unittest.TestCase):
         self.assertEqual(int(ntm[1]), 5)   # its H inherits
         self.assertEqual(int(ntm[2]), -1)  # isolated H-H: no heavy atom → -1
         self.assertEqual(int(ntm[3]), -1)
+
+
+class TestValidateNodesToMotifs(unittest.TestCase):
+    def test_threshold_all_unk_allowed_when_lookup_fully_below_cutoff(self):
+        smi = 'FC(F)(Cl)C(F)(F)Cl'
+        smi_lookup = {i: ('[*]F', -1) for i in range(8)}
+        ntm = torch.full((8,), -1, dtype=torch.long)
+        validate_nodes_to_motifs(
+            ntm, smiles=smi, apply_threshold=True, smi_lookup=smi_lookup)
+
+    def test_threshold_all_unk_rejects_missing_lookup_atoms(self):
+        smi = 'CCO'
+        smi_lookup = {0: ('[*]C', -1), 1: ('[*]C', -1)}  # atom 2 missing
+        ntm = torch.full((3,), -1, dtype=torch.long)
+        with self.assertRaises(ValueError) as ctx:
+            validate_nodes_to_motifs(
+                ntm, smiles=smi, apply_threshold=True, smi_lookup=smi_lookup)
+        self.assertIn('missing from vocab lookup', str(ctx.exception))
+
+    def test_mutag_all_unk_from_threshold_only(self):
+        """Heavy atoms all below threshold → H inherit -1 via propagation; OK."""
+        ei = torch.tensor([[0, 1, 0, 2], [1, 0, 2, 0]])
+        key = 'CO'
+        smi_lookup = {0: ('[*]C', -1), 1: ('[*]O', -1)}
+        index_map = {key: {0: 0, 1: 1}}
+        ntm = apply_motif_lookup_with_index_map(
+            3, key, {key: smi_lookup}, index_map, edge_index=ei)
+        self.assertTrue(bool((ntm < 0).all()))
+        validate_nodes_to_motifs(
+            ntm, smiles=key, apply_threshold=True,
+            smi_lookup=smi_lookup, heavy_smiles_indices={0, 1})
+
+    def test_unfiltered_rejects_any_minus_one(self):
+        ntm = torch.tensor([0, -1, 1], dtype=torch.long)
+        with self.assertRaises(ValueError):
+            validate_nodes_to_motifs(
+                ntm, smiles='CCN', apply_threshold=False)
+
+
+class TestAllUnkMotifGuard(unittest.TestCase):
+    def _data(self, ntm):
+        from torch_geometric.data import Data
+        return Data(x=torch.zeros(max(len(ntm), 1), 4), nodes_to_motifs=ntm)
+
+    def test_guard_allows_sparse_all_unk(self):
+        from SharedModules.data.loader import guard_excessive_all_unk_motifs
+        graphs = [
+            self._data(torch.tensor([0, 1], dtype=torch.long)),
+            self._data(torch.tensor([-1, -1], dtype=torch.long)),
+        ]
+        guard_excessive_all_unk_motifs(
+            graphs, apply_threshold=True, label='test', max_fraction=0.9)
+
+    def test_guard_raises_when_mostly_all_unk(self):
+        from SharedModules.data.loader import guard_excessive_all_unk_motifs
+        graphs = [
+            self._data(torch.tensor([-1, -1], dtype=torch.long))
+            for _ in range(10)
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            guard_excessive_all_unk_motifs(
+                graphs, apply_threshold=True, label='test', max_fraction=0.9)
+        self.assertIn('all motif_id=-1', str(ctx.exception))
+
+    def test_guard_skipped_when_unfiltered(self):
+        from SharedModules.data.loader import guard_excessive_all_unk_motifs
+        graphs = [self._data(torch.tensor([-1], dtype=torch.long)) for _ in range(5)]
+        guard_excessive_all_unk_motifs(
+            graphs, apply_threshold=False, label='test', max_fraction=0.9)
 
 
 if __name__ == '__main__':

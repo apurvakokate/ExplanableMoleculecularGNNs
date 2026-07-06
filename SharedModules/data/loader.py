@@ -61,6 +61,60 @@ class LoaderMeta:
     # should use this instead of vocab.kept_motif_ids from fold-0 mining.
     kept_motif_ids: Optional[List[int]] = None
     threshold_pct: Optional[float] = None
+    # Fold-thresholded SMILES lookup from build_fold_annotation (CSV + mutag).
+    motif_lookup: Optional[Dict] = None
+
+
+# Fraction of all-UNK graphs above which thresholded training likely failed.
+MAX_ALL_UNK_GRAPH_FRACTION = 0.9
+
+
+def _fraction_all_unk_motif_graphs(graphs) -> Tuple[int, int]:
+    """Return (n_all_unk, n_total) for graphs with every node motif_id=-1."""
+    n_total = len(graphs)
+    if n_total == 0:
+        return 0, 0
+    n_all_unk = 0
+    for data in graphs:
+        ntm = getattr(data, 'nodes_to_motifs', None)
+        if ntm is None or ntm.numel() == 0 or int((ntm >= 0).sum()) == 0:
+            n_all_unk += 1
+    return n_all_unk, n_total
+
+
+def guard_excessive_all_unk_motifs(
+    graphs,
+    *,
+    apply_threshold: bool,
+    label: str,
+    max_fraction: float = MAX_ALL_UNK_GRAPH_FRACTION,
+) -> None:
+    """Fail fast when thresholding leaves almost every graph entirely UNK.
+
+    Individual all-UNK graphs are valid (every fragment below cutoff). When
+    > ``max_fraction`` of a split is all-UNK, the threshold is likely too harsh
+    for this dataset/variant or there is a vocab/SMILES/index mismatch.
+    """
+    if not apply_threshold:
+        return
+    n_all_unk, n_total = _fraction_all_unk_motif_graphs(graphs)
+    if n_total == 0:
+        return
+    frac = n_all_unk / n_total
+    if frac > max_fraction:
+        raise ValueError(
+            f"{label}: {n_all_unk}/{n_total} ({frac:.1%}) graphs have all "
+            f"motif_id=-1 under the thresholded vocab (>{max_fraction:.0%}). "
+            f"This usually means CHOSEN_THRESHOLD is too aggressive for this "
+            f"dataset/variant, or there is a vocab/SMILES/index mismatch — not "
+            f"expected per-graph filtering. Lower the threshold or use an "
+            f"unfiltered vocab."
+        )
+    if n_all_unk and frac >= 0.25:
+        print(
+            f"  [threshold] {label}: {n_all_unk}/{n_total} "
+            f"({frac:.1%}) all-UNK graphs (within guard ≤{max_fraction:.0%})"
+        )
 
 
 def resolve_node_encoder(cli_value: Optional[str], meta_value: str) -> str:
@@ -209,7 +263,13 @@ class MutagTUDataset(torch.utils.data.Dataset):
         Mapped SMILES string for each graph (same order as data_list).
         Required when vocab is not None.
     split : str
-        'training', 'valid', or 'test' — selects which lookup to use from vocab.
+        'training', 'valid', or 'test' — legacy split slice when ``motif_lookup``
+        is omitted (prefer passing ``motif_lookup`` from ``build_fold_annotation``).
+    motif_lookup : dict or None
+        Pre-threshold or fold-thresholded ``{smiles: {node_idx: (smarts, mid)}}``.
+        When set, overrides ``vocab.lookup_for_split(split)``.
+    apply_threshold : bool
+        Whether ``motif_id=-1`` nodes are allowed (thresholded vocabs).
     """
 
     def __init__(
@@ -219,15 +279,22 @@ class MutagTUDataset(torch.utils.data.Dataset):
         index_maps: Optional[Dict] = None,
         smiles_list: Optional[List[str]] = None,
         split: str = 'training',
+        *,
+        motif_lookup: Optional[Dict] = None,
+        apply_threshold: bool = False,
     ):
         self._data = data_list
         self._vocab = vocab
         self._index_maps = index_maps or {}
         self._smiles = smiles_list or [None] * len(data_list)
         self._split = split
+        self._apply_threshold = apply_threshold
 
-        if vocab is not None:
+        if motif_lookup is not None:
+            self._lookup = motif_lookup
+        elif vocab is not None:
             self._lookup = vocab.lookup_for_split(split)
+            self._apply_threshold = getattr(vocab, 'apply_threshold', False)
         else:
             self._lookup = {}
 
@@ -251,21 +318,21 @@ class MutagTUDataset(torch.utils.data.Dataset):
         # same attribute keys; always attach smiles (empty when unmapped).
         data.smiles = mapped_smi if mapped_smi else ''
 
-        if self._vocab is not None and mapped_smi:
-            if not self._lookup:
-                raise ValueError(
-                    f"mutag graph {idx}: vocab set but lookup for split "
-                    f"{self._split!r} is empty.")
+        if self._lookup and mapped_smi:
             data.nodes_to_motifs = apply_motif_lookup_with_index_map(
                 n, mapped_smi, self._lookup, self._index_maps,
                 edge_index=getattr(data, 'edge_index', None),
             )
             from .graph_to_smiles import validate_nodes_to_motifs
+            g2s = self._index_maps.get(mapped_smi, {})
+            smi_lookup = self._lookup.get(mapped_smi, {})
             validate_nodes_to_motifs(
                 data.nodes_to_motifs, smiles=mapped_smi,
-                apply_threshold=getattr(self._vocab, 'apply_threshold', False),
+                apply_threshold=self._apply_threshold,
+                smi_lookup=smi_lookup,
+                heavy_smiles_indices=set(g2s.values()) if g2s else None,
             )
-        elif self._vocab is not None:
+        elif self._vocab is not None or self._apply_threshold:
             raise ValueError(
                 f"mutag graph {idx}: vocab set but mapped SMILES is missing.")
         else:
@@ -334,6 +401,7 @@ class OGBMotifDataset(torch.utils.data.Dataset):
             validate_nodes_to_motifs(
                 data.nodes_to_motifs, smiles=str(smiles),
                 apply_threshold=self._apply_threshold,
+                smi_lookup=self._lookup.get(str(smiles), {}),
             )
         elif self._lookup and self._require_smiles:
             raise ValueError(
@@ -530,6 +598,43 @@ def _get_mutag_loaders(
         val_items   = list(split_idx['valid'])
         test_items  = list(split_idx['test'])
 
+    motif_lookup = None
+    kept_motif_ids = None
+    threshold_pct = None
+    apply_threshold = False
+
+    if vocab is not None:
+        from .fold_threshold import build_fold_annotation
+        from .dataset_schema import DATASET_COLUMN
+        from pathlib import Path as _Path
+
+        label_col = DATASET_COLUMN['mutag']
+        if not label_col:
+            raise ValueError(
+                "mutag has no DATASET_COLUMN entry — cannot apply fold threshold.")
+        motif_lookup, kept_motif_ids, _thr_motifs, threshold_pct = build_fold_annotation(
+            lookup_all=vocab.lookup_all,
+            motif_list=vocab.motif_list,
+            mol_fragment_smarts=vocab.mol_fragment_smarts,
+            csv_path=str(_csv_file),
+            label_col=label_col,
+            dataset='mutag',
+            variant=vocab.variant or '',
+            vocab_dir=_Path(vocab.vocab_dir) if vocab.vocab_dir else _Path('.'),
+            apply_threshold=vocab.apply_threshold,
+            threshold_pct=vocab.threshold_pct,
+        )
+        apply_threshold = threshold_pct is not None
+        if threshold_pct is not None:
+            print(
+                f'  [fold threshold] mutag fold={fold} pct={threshold_pct} '
+                f'kept={len(kept_motif_ids)}/{vocab.num_motifs} motifs '
+                f'(support from train+val in {_csv_file})')
+        else:
+            print(
+                f'  [fold lookup] mutag fold={fold} no threshold filter '
+                f'({vocab.num_motifs} motifs)')
+
     def _build_ds(indices, split_name):
         data_list   = [dataset[i] for i in indices]
         smiles_list = [smiles_by_graph.get(i) for i in indices]
@@ -542,11 +647,20 @@ def _get_mutag_loaders(
                     f"in splits lack mapped SMILES (graph_ids={missing_ids[:10]}…). "
                     f"Re-run export_mutag_dataset_to_csv.py or refresh artifacts.")
         return MutagTUDataset(
-            data_list, vocab, index_maps, smiles_list, split=split_name)
+            data_list, vocab, index_maps, smiles_list, split=split_name,
+            motif_lookup=motif_lookup, apply_threshold=apply_threshold,
+        )
 
     train_ds = _build_ds(train_items, 'training')
     val_ds   = _build_ds(val_items,   'valid')
     test_ds  = _build_ds(test_items,  'test')
+    _tag = f'mutag fold={fold}'
+    guard_excessive_all_unk_motifs(
+        train_ds, apply_threshold=apply_threshold, label=f'{_tag} train')
+    guard_excessive_all_unk_motifs(
+        val_ds, apply_threshold=apply_threshold, label=f'{_tag} valid')
+    guard_excessive_all_unk_motifs(
+        test_ds, apply_threshold=apply_threshold, label=f'{_tag} test')
     _deg = compute_deg_histogram(train_ds)
 
     loaders = {
@@ -566,6 +680,9 @@ def _get_mutag_loaders(
         fold=fold,
         node_encoder='onehot',   # 14-dim pre-baked features, identity passthrough
         deg=_deg,
+        kept_motif_ids=kept_motif_ids,
+        threshold_pct=threshold_pct,
+        motif_lookup=motif_lookup,
     )
     return loaders, test_ds, meta
 
@@ -808,6 +925,15 @@ def get_loaders(
         force_reprocess=force_reprocess,
     )
 
+    _apply_thr = threshold_pct is not None
+    _tag = f'{dataset} fold={fold}'
+    guard_excessive_all_unk_motifs(
+        train_ds, apply_threshold=_apply_thr, label=f'{_tag} train')
+    guard_excessive_all_unk_motifs(
+        val_ds, apply_threshold=_apply_thr, label=f'{_tag} valid')
+    guard_excessive_all_unk_motifs(
+        test_ds, apply_threshold=_apply_thr, label=f'{_tag} test')
+
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size,
                             shuffle=True, num_workers=num_workers),
@@ -832,6 +958,7 @@ def get_loaders(
         norm_std=(train_ds.std if normalize else 1.0),
         kept_motif_ids=kept_motif_ids,
         threshold_pct=threshold_pct,
+        motif_lookup=lookup if vocab is not None else None,
     )
     return loaders, test_ds, meta
 
@@ -851,6 +978,8 @@ def apply_gt_loaders(
     gt_vocab_variant: Optional[str] = None,
     refresh_vocab: Optional[VocabData] = None,
     refresh_index_maps: Optional[Dict] = None,
+    fold_motif_lookup: Optional[Dict] = None,
+    apply_threshold: Optional[bool] = None,
 ) -> Tuple[Dict[str, DataLoader], object]:
     """Swap train/valid/test loaders for the GT-relabelled graphs cached by
     ``SharedModules/data/apply_gt.py`` (Phase 4).
@@ -897,23 +1026,42 @@ def apply_gt_loaders(
     gt_loaded: Dict[str, list] = {}
     gt_missing: List[str] = []
     _lookup_split = {'train': 'training', 'valid': 'valid', 'test': 'test'}
+    _apply_thr = apply_threshold
+    if _apply_thr is None and refresh_vocab is not None:
+        _apply_thr = getattr(refresh_vocab, 'apply_threshold', False)
+    if _apply_thr is None:
+        _apply_thr = False
+    _refresh_lookup = fold_motif_lookup
     for split in ('train', 'valid', 'test'):
         gt_path = gt_base / f'{split}_with_gt.pt'
         if gt_path.exists():
             gt_loaded[split] = torch.load(gt_path, weights_only=False)
             if refresh_vocab is not None and gt_vocab_variant and gt_vocab_variant != vocab_variant:
                 from .graph_to_smiles import refresh_motif_annotations_on_graphs
+                lookup = _refresh_lookup
+                if lookup is None:
+                    lookup = refresh_vocab.lookup_for_split(_lookup_split[split])
                 refresh_motif_annotations_on_graphs(
                     gt_loaded[split],
-                    refresh_vocab.lookup_for_split(_lookup_split[split]),
+                    lookup,
                     index_maps=refresh_index_maps,
-                    apply_threshold=getattr(refresh_vocab, 'apply_threshold', False),
+                    apply_threshold=_apply_thr,
+                    validate=True,
                 )
             if verbose:
                 print(f'  GT {split}: {len(gt_loaded[split])} graphs '
                       f'← {gt_path.name}')
         else:
             gt_missing.append(str(gt_path))
+
+    if _apply_thr:
+        for split in ('train', 'valid', 'test'):
+            if split in gt_loaded:
+                guard_excessive_all_unk_motifs(
+                    gt_loaded[split],
+                    apply_threshold=True,
+                    label=f'{dataset} fold={fold} GT/{split}',
+                )
 
     if gt_missing:
         raise FileNotFoundError(

@@ -126,6 +126,8 @@ def run(cfg: MOSEConfig) -> dict:
             vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
             gt_vocab_variant=_gt_vocab,
             refresh_vocab=vocab if _gt_vocab != cfg.vocab_variant else None,
+            fold_motif_lookup=getattr(meta, 'motif_lookup', None),
+            apply_threshold=getattr(meta, 'threshold_pct', None) is not None,
         )
 
     # Model
