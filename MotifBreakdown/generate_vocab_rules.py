@@ -1898,9 +1898,11 @@ Examples:
         'elapsed_s':    m.get('elapsed', 0),
     } for m in all_metas]
     _write_vocab_summary_csv(out_dir, summary_rows)
-    df = pd.read_csv(out_dir / 'summary.csv')
-    print(f"\n{'='*60}\nSummary → {out_dir}/summary.csv")
-    print(df.to_string(index=False))
+    df_new = pd.DataFrame(summary_rows)
+    n_total = len(pd.read_csv(out_dir / 'summary.csv'))
+    print(f"\n{'='*60}\nSummary (this run) → {out_dir}/summary.csv "
+          f"({len(df_new)} row(s); {n_total} total in rollup)")
+    print(df_new.to_string(index=False))
 
 
 if __name__ == '__main__':
