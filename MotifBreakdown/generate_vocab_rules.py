@@ -1735,6 +1735,24 @@ def _write_stats_summary(motif_df: pd.DataFrame,
     (vdir / 'stats_summary.txt').write_text('\n'.join(lines))
 
 
+def _write_vocab_summary_csv(out_dir: Path, rows: list[dict]) -> None:
+    """Merge rows into vocab_output/summary.csv keyed by (dataset, variant).
+
+    run_experiments.sh invokes this script once per dataset × variant, so a plain
+    overwrite would keep only the last invocation. Upsert preserves prior runs.
+    """
+    path = out_dir / 'summary.csv'
+    new_df = pd.DataFrame(rows)
+    if path.exists():
+        old_df = pd.read_csv(path)
+        combined = pd.concat([old_df, new_df], ignore_index=True)
+        combined = combined.drop_duplicates(subset=['dataset', 'variant'], keep='last')
+        combined = combined.sort_values(['dataset', 'variant']).reset_index(drop=True)
+    else:
+        combined = new_df
+    combined.to_csv(path, index=False)
+
+
 def main():
     p = argparse.ArgumentParser(
         description='Generate MotifSAT-compatible vocabulary and rules',
@@ -1870,7 +1888,7 @@ Examples:
         meta['dataset'] = ds
         all_metas.append(meta)
 
-    df = pd.DataFrame([{
+    summary_rows = [{
         'dataset':      m['dataset'],
         'variant':      m['variant'],
         'n_motifs':     m['n_vocab_motifs'],
@@ -1878,8 +1896,9 @@ Examples:
         'best_pct1':    m['best_rule_pct1'],
         'best_rule':    m['best_rule'][:80],
         'elapsed_s':    m.get('elapsed', 0),
-    } for m in all_metas])
-    df.to_csv(out_dir / 'summary.csv', index=False)
+    } for m in all_metas]
+    _write_vocab_summary_csv(out_dir, summary_rows)
+    df = pd.read_csv(out_dir / 'summary.csv')
     print(f"\n{'='*60}\nSummary → {out_dir}/summary.csv")
     print(df.to_string(index=False))
 
