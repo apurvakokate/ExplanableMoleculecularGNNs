@@ -1,0 +1,533 @@
+############################################################
+# FULL PIPELINE — dataset=BBBP   mode=smoke   fresh=1
+#   VOCAB_FOCUS=rbrics,all_fallback_bpe  FOLDS='0'  BACKBONES='GIN'
+#   EPOCHS=3  MOSE_BASE=0  RULE_INDEX=0
+#   MOSE_CONV_NORMALIZE=none
+#   SKIP_PHASE0=0  FAIL_FAST=0  DATASETS_CSV='BBBP'
+#   SKIP_EXISTING=0  WANDB_MODE=offline
+#   PROJECT=/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+#   started Sun Jul  5 17:36:30 PDT 2026
+############################################################
+
+==================== phase0 (17:36:30) ====================
+experiment_config.sh loaded
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  BACKBONES  = GIN
+  EPOCHS     = 3   (phase 5 max; early stopping may finish earlier)
+  GNNEX      = max_graphs=all epochs=200
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  VOCAB_FOCUS= rbrics,all_fallback_bpe
+Loaded config: /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/experiment_config.sh
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  FOLDS      = 0
+  BACKBONES  = GIN
+  PROCESSED  = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/processed
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  EPOCHS     = 3
+  Thresholds = per-dataset dict in generate_vocab_rules.py
+  VOCAB_FOCUS= rbrics,all_fallback_bpe  → base: rbrics all_fallback_bpe
+  SKIP_EXISTING= 0  (FORCE_RERUN=1 to redo; FORCE_PHASE1=1 for phase1 only)
+
+══════════════════════════════════════════════════════════
+ PHASE 0 — Export mutag / OGB CSV bridges
+══════════════════════════════════════════════════════════
+  [mutag] → /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+Loaded mutag: 2951 graphs from /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/mutag
+  split: 80/10/10 disjoint  seed=42
+  train=2360  valid=295  test=296
+  test mutagens w/ source GT (GT-ROC eval): 105
+[build_mutag_smiles_df] total=2951 converted=2937 failed=14 verify_fail=0
+  14 graphs failed SMILES conversion — excluding from dataset:
+    graph_ids=[160, 285, 803, 804, 1084, 1694, 1716, 1943, 2072, 2316, 2348, 2621, 2671, 2881]
+    removed from train: 12
+    removed from test: 2
+  after exclusion: train=2348  valid=295  test=294
+  test mutagens w/ source GT: 105
+  artifact check OK: 2937 graphs (train=2348 valid=295 test=294)
+  wrote /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/mutag_0.csv  (2937 molecules)
+  wrote /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/mutag_0_index_maps.pkl  (2937 index maps)
+  wrote /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/mutag_0_splits.pkl
+  [ogbg-molbace] → /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py:33: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+Traceback (most recent call last):
+  File "/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py", line 50, in _ensure_ogb_cached
+    from ogb.graphproppred import PygGraphPropPredDataset
+ModuleNotFoundError: No module named 'ogb'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py", line 136, in <module>
+    main()
+  File "/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py", line 132, in main
+    export(args.dataset, args.ogb_root, args.out_dir, args.fold, args.label_col)
+  File "/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py", line 66, in export
+    mol_csv = _ensure_ogb_cached(dataset, ogb_root)
+  File "/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/export_ogb_to_csv.py", line 52, in _ensure_ogb_cached
+    raise ImportError("OGB not installed. Run: pip install ogb")
+ImportError: OGB not installed. Run: pip install ogb
+  [error] phase0 exited 1
+  [warn] continuing with remaining phases.
+
+==================== phase1 (17:36:40) ====================
+experiment_config.sh loaded
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  BACKBONES  = GIN
+  EPOCHS     = 3   (phase 5 max; early stopping may finish earlier)
+  GNNEX      = max_graphs=all epochs=200
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  VOCAB_FOCUS= rbrics,all_fallback_bpe
+Loaded config: /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/experiment_config.sh
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  FOLDS      = 0
+  BACKBONES  = GIN
+  PROCESSED  = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/processed
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  EPOCHS     = 3
+  Thresholds = per-dataset dict in generate_vocab_rules.py
+  VOCAB_FOCUS= rbrics,all_fallback_bpe  → base: rbrics all_fallback_bpe
+  SKIP_EXISTING= 0  (FORCE_RERUN=1 to redo; FORCE_PHASE1=1 for phase1 only)
+  [warn] missing /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb/ogbg-molbace_0.csv — run phase0 first
+  [warn] missing /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb/ogbg-molhiv_0.csv — run phase0 first
+
+══════════════════════════════════════════════════════════
+ PHASE 1 — Fragmentation (no threshold; VOCAB_FOCUS-scoped:  rbrics all_fallback_bpe)
+  DATASETS=BBBP
+  Only builds variants in the resolved VOCAB_FOCUS (empty → all four)
+  Skips per dataset/variant when rules.json + vocab_meta.json exist
+  (SKIP_EXISTING=1 default; FORCE_PHASE1=1 or FORCE_RERUN=1 to redo)
+══════════════════════════════════════════════════════════
+1b. rbrics  (BreakrBRICSBonds + BRICS fallback + reBRICS)
+  [rbrics] method=rbrics fallback=0 bpe=0 shatter=0 protect=0
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/generate_vocab_rules.py:76: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+============================================================
+  BBBP
+============================================================
+
+  method=rbrics  fallback=False  bpe=False  preserve_typed_dummies=False  threshold=off  → rbrics
+    [legacy:rbrics] Fragmented: 1797/1859 (96.7%)  single-frag: 62
+    Vocab: 1435 motifs  ≥1%:81  frags/mol: μ=5.93
+       25.4%   1a     [*]O[*]
+       24.5%   1a     [*]C[*]
+       19.5%   2a     [*]CC[*]
+       19.2%   1a     [*]N[*]
+       17.4%   6a  R  [*]c1ccccc1
+    Node coverage: total=1487/1487  fully-known=1487/1487 (100.0%)
+    Best rule [balanced] cover=49.1%  balance=0.982  sep=0.9782  spurious=0.0622  score=0.90084:
+      ([*]CC[*]) ∨ ([*]c1ccccc1) ∨ ([*]C([*])=O) ∨ ([*]OC)
+    Rules: 160
+    Saved  → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/rbrics/
+    Stats → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/rbrics/stats_motifs.csv  stats_graphs.csv
+    (11.3s)
+
+============================================================
+Summary → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/summary.csv
+dataset variant  n_motifs  n_rules  best_pct1                                            best_rule  elapsed_s
+   BBBP  rbrics      1435      160       49.1 ([*]CC[*]) ∨ ([*]c1ccccc1) ∨ ([*]C([*])=O) ∨ ([*]OC)       11.3
+1c. all_fallback_bpe  (full cascade, fallback, BPE)
+  [all_fallback_bpe] method=all fallback=1 bpe=1 shatter=0 protect=0
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/generate_vocab_rules.py:76: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+============================================================
+  BBBP
+============================================================
+
+  method=all  fallback=True  bpe=True  preserve_typed_dummies=False  threshold=off  → all_fallback_bpe
+    [v4] Fragmented: 1778/1859 (95.6%)  single-frag: 81  merge_rules=156
+    Vocab: 1238 motifs  ≥1%:55  frags/mol: μ=5.82
+       51.4%   1a     *C*
+       32.4%   2a     *C(*)=O
+       30.8%   1a     *O*
+       27.9%   1a     *C
+       20.7%   1a     *N*
+    Node coverage: total=1487/1487  fully-known=1487/1487 (100.0%)
+    Best rule [balanced] cover=49.7%  balance=0.994  sep=0.9752  spurious=0.0494  score=0.92146:
+      (*C(*)=O) ∨ (*c1ccccc1) ∨ (*CO) ∨ (*CC ∧ *C(*)C)
+    Rules: 159
+    Saved  → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/all_fallback_bpe/
+    Stats → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/all_fallback_bpe/stats_motifs.csv  stats_graphs.csv
+    (170.2s)
+
+============================================================
+Summary → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/summary.csv
+dataset          variant  n_motifs  n_rules  best_pct1                                        best_rule  elapsed_s
+   BBBP all_fallback_bpe      1238      159       49.7 (*C(*)=O) ∨ (*c1ccccc1) ∨ (*CO) ∨ (*CC ∧ *C(*)C)      170.2
+
+Phase 1 complete. Vocabularies in: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+Variants: rbrics_old  rbrics  rbrics_with_struct_fallback  all_fallback_bpe
+Next: bash run_experiments.sh phase2  (review coverage plots)
+
+==================== phase2 (17:39:49) ====================
+experiment_config.sh loaded
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  BACKBONES  = GIN
+  EPOCHS     = 3   (phase 5 max; early stopping may finish earlier)
+  GNNEX      = max_graphs=all epochs=200
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  VOCAB_FOCUS= rbrics,all_fallback_bpe
+Loaded config: /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/experiment_config.sh
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  FOLDS      = 0
+  BACKBONES  = GIN
+  PROCESSED  = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/processed
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  EPOCHS     = 3
+  Thresholds = per-dataset dict in generate_vocab_rules.py
+  VOCAB_FOCUS= rbrics,all_fallback_bpe  → base: rbrics all_fallback_bpe
+  SKIP_EXISTING= 0  (FORCE_RERUN=1 to redo; FORCE_PHASE1=1 for phase1 only)
+
+══════════════════════════════════════════════════════════
+ PHASE 2 — Coverage vs threshold sweep (4 variants)
+  DATASETS=BBBP
+  Skips variant when combined plot + per-dataset CSVs exist (SKIP_EXISTING=1)
+══════════════════════════════════════════════════════════
+
+  [combined / rbrics]
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/coverage_vs_threshold.py:45: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+  BBBP / rbrics  (N_trainval=1,672  minority=class0)
+      thr%   N_cut   vocab  rescued   cov_tv%  cov_test%   common%
+  -----------------------------------------------------------------
+    0.100%       1    1435      104    100.0%     100.0%    100.0%
+    0.200%       3    1435     1074    100.0%     100.0%    100.0%
+    0.300%       5     594      372     77.6%      70.5%    100.0%
+    0.400%       6     584      387     77.0%      69.4%    100.0%
+    0.500%       8     568      420     75.4%      68.5%    100.0%
+    0.600%      10     252      128     65.8%      63.2%    100.0%
+    0.700%      11     250      135     65.5%      62.9%    100.0%
+    0.800%      13     179       73     61.4%      59.3%    100.0%
+    0.900%      15     172       77     59.9%      57.3%    100.0%
+
+  Suggested: 0.200% = 3 molecules  vocab=1435  coverage=100.0%  rescued=1074
+  -> Set THRESHOLD=0.0020 in experiment_config.sh
+
+  Saved: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/BBBP_rbrics_coverage.png
+  CSV:  /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/BBBP_rbrics_coverage.csv
+  Saved combined: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/all_datasets_rbrics_coverage.png
+
+  [combined / all_fallback_bpe]
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/coverage_vs_threshold.py:45: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+  BBBP / all_fallback_bpe  (N_trainval=1,672  minority=class0)
+      thr%   N_cut   vocab  rescued   cov_tv%  cov_test%   common%
+  -----------------------------------------------------------------
+    0.100%       1    1238       88    100.0%     100.0%    100.0%
+    0.200%       3    1238      971    100.0%     100.0%    100.0%
+    0.300%       5     447      278     69.8%      63.4%    100.0%
+    0.400%       6     436      298     68.1%      62.5%    100.0%
+    0.500%       8     424      327     66.3%      60.9%    100.0%
+    0.600%      10     176       96     54.9%      55.7%    100.0%
+    0.700%      11     176       97     54.9%      55.7%    100.0%
+    0.800%      13     133       61     51.7%      53.8%    100.0%
+    0.900%      15     126       63     50.7%      52.7%    100.0%
+
+  Suggested: 0.200% = 3 molecules  vocab=1238  coverage=100.0%  rescued=971
+  -> Set THRESHOLD=0.0020 in experiment_config.sh
+
+  Saved: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/BBBP_all_fallback_bpe_coverage.png
+  CSV:  /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/BBBP_all_fallback_bpe_coverage.csv
+  Saved combined: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots/all_datasets_all_fallback_bpe_coverage.png
+
+Phase 2 complete. Review plots in: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/coverage_plots
+  Per-dataset:  {dataset}_{variant}_coverage.png
+  Combined:     all_datasets_{variant}_coverage.png
+Then:  edit CHOSEN_THRESHOLD in MotifBreakdown/generate_vocab_rules.py
+       bash run_experiments.sh phase3
+
+==================== phase3 (17:39:53) ====================
+experiment_config.sh loaded
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  BACKBONES  = GIN
+  EPOCHS     = 3   (phase 5 max; early stopping may finish earlier)
+  GNNEX      = max_graphs=all epochs=200
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  VOCAB_FOCUS= rbrics,all_fallback_bpe
+Loaded config: /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/experiment_config.sh
+
+══════════════════════════════════════════════════════════
+ PHASE 3 — Thresholded vocabularies (per-dataset CHOSEN_THRESHOLD)
+  DATASETS=BBBP
+  Skips per dataset/variant when filtered vocab exists (SKIP_EXISTING=1)
+══════════════════════════════════════════════════════════
+3b. rbrics_filter
+  [rbrics_filter] method=rbrics protect=0 (threshold from CHOSEN_THRESHOLD dict)
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/generate_vocab_rules.py:76: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+============================================================
+  BBBP
+============================================================
+
+  method=rbrics  fallback=False  bpe=False  preserve_typed_dummies=False  threshold=0.600%  → rbrics_filter
+    [legacy:rbrics] Fragmented: 1797/1859 (96.7%)  single-frag: 62
+    Vocab: 1435 motifs  ≥1%:81  frags/mol: μ=5.93
+       25.4%   1a     [*]O[*]
+       24.5%   1a     [*]C[*]
+       19.5%   2a     [*]CC[*]
+       19.2%   1a     [*]N[*]
+       17.4%   6a  R  [*]c1ccccc1
+    Threshold 0.600%: cutoff=10  kept=252  below (→ -1)=1183
+    Node coverage: total=1487/1487  fully-known=425/1487 (28.6%)
+    Best rule [balanced] cover=49.1%  balance=0.982  sep=0.9782  spurious=0.0622  score=0.90084:
+      ([*]CC[*]) ∨ ([*]c1ccccc1) ∨ ([*]C([*])=O) ∨ ([*]OC)
+    Rules: 160
+    Saved  → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/rbrics_filter/
+    Stats → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/rbrics_filter/stats_motifs.csv  stats_graphs.csv
+    (10.3s)
+
+============================================================
+Summary → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/summary.csv
+dataset       variant  n_motifs  n_rules  best_pct1                                            best_rule  elapsed_s
+   BBBP rbrics_filter      1435      160       49.1 ([*]CC[*]) ∨ ([*]c1ccccc1) ∨ ([*]C([*])=O) ∨ ([*]OC)       10.3
+3c. all_fallback_bpe_filter
+  [all_fallback_bpe_filter] method=all protect=0 (threshold from CHOSEN_THRESHOLD dict)
+/Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/MotifBreakdown/generate_vocab_rules.py:76: DeprecationWarning: 
+Pyarrow will become a required dependency of pandas in the next major release of pandas (pandas 3.0),
+(to allow more performant data types, such as the Arrow string type, and better interoperability with other libraries)
+but was not found to be installed on your system.
+If this would cause problems for you,
+please provide us feedback at https://github.com/pandas-dev/pandas/issues/54466
+        
+  import pandas as pd
+
+============================================================
+  BBBP
+============================================================
+
+  method=all  fallback=True  bpe=True  preserve_typed_dummies=False  threshold=0.600%  → all_fallback_bpe_filter
+    [v4] Fragmented: 1778/1859 (95.6%)  single-frag: 81  merge_rules=156
+    Vocab: 1238 motifs  ≥1%:55  frags/mol: μ=5.82
+       51.4%   1a     *C*
+       32.4%   2a     *C(*)=O
+       30.8%   1a     *O*
+       27.9%   1a     *C
+       20.7%   1a     *N*
+    Threshold 0.600%: cutoff=10  kept=176  below (→ -1)=1062
+    Node coverage: total=1487/1487  fully-known=374/1487 (25.2%)
+    Best rule [balanced] cover=49.7%  balance=0.994  sep=0.9752  spurious=0.0494  score=0.92146:
+      (*C(*)=O) ∨ (*c1ccccc1) ∨ (*CO) ∨ (*CC ∧ *C(*)C)
+    Rules: 159
+    Saved  → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/all_fallback_bpe_filter/
+    Stats → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/BBBP/all_fallback_bpe_filter/stats_motifs.csv  stats_graphs.csv
+    (166.3s)
+
+============================================================
+Summary → /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output/summary.csv
+dataset                 variant  n_motifs  n_rules  best_pct1                                        best_rule  elapsed_s
+   BBBP all_fallback_bpe_filter      1238      159       49.7 (*C(*)=O) ∨ (*c1ccccc1) ∨ (*CO) ∨ (*CC ∧ *C(*)C)      166.3
+
+Phase 3 complete.  Vocabularies now available:
+  No threshold: rbrics_old  rbrics  rbrics_with_struct_fallback  all_fallback_bpe
+  Filtered:     rbrics_old_filter  rbrics_filter  rbrics_with_struct_fallback_filter  all_fallback_bpe_filter
+
+To change thresholds: edit CHOSEN_THRESHOLD in
+  MotifBreakdown/generate_vocab_rules.py
+
+Next: review rules then:
+  export RULE_INDEX=<n>
+  bash run_experiments.sh phase4
+
+==================== phase4 (17:42:58) ====================
+experiment_config.sh loaded
+  PROJECT    = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs
+  DATA_ROOT  = /Users/apurvakokate/Documents/MOSE-GNN/DomainDrivenGlobalExpl/datasets/FOLDS/
+  VOCAB_ROOT = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/vocab_output
+  OUT_ROOT   = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results
+  DATASETS   = BBBP
+  CSV        = BBBP
+  SPECIAL    = mutag ogbg-molbace ogbg-molhiv
+  CONV_NORM  = l2  (MOSE: none)
+  BACKBONES  = GIN
+  EPOCHS     = 3   (phase 5 max; early stopping may finish earlier)
+  GNNEX      = max_graphs=all epochs=200
+  MUTAG_ROOT = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data
+  OGB_ROOT   = /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/data/ogb
+  VOCAB_FOCUS= rbrics,all_fallback_bpe
+Loaded config: /Users/apurvakokate/ExplanableMolecularGNN/ExplanableMoleculecularGNNs/experiment_config.sh
+
+══════════════════════════════════════════════════════════
+ PHASE 4 — Synthetic GT (rule=0, VOCAB_FOCUS=rbrics,all_fallback_bpe)
+  GT datasets: BBBP 
+  Skips per dataset/fold/variant when gt_cache exists (SKIP_EXISTING=1)
+══════════════════════════════════════════════════════════
+
+  --- apply_gt: rbrics ---
+  [SyntheticGT] vocab=rbrics rule=0 datasets:BBBP
+Processing...
+
+============================================================
+  Phase 4 — GT annotation
+  dataset    = BBBP
+  variant    = rbrics
+  rule_index = 0
+  out_dir    = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/gt_cache
+============================================================
+
+  Rule #0 (DNF — OR of 4 clause(s)):
+    clause 0   = ['[*]CC[*]']
+    clause 1   = ['[*]c1ccccc1']
+    clause 2   = ['[*]C([*])=O']
+    clause 3   = ['[*]OC']
+    match%     = 49.1%
+    n_match    = 913
+    n_clauses  = 4
+
+  Loading vocabulary...
+    1435 motifs
+  Loading data loaders...
+  [fold lookup] fold=0 no threshold filter (1435 motifs)
+Building training:   0%|          | 0/1487 [00:00<?, ?it/s]Building training:   4%|▎         | 54/1487 [00:00<00:02, 533.67it/s]Building training:   8%|▊         | 117/1487 [00:00<00:02, 585.59it/s]Building training:  12%|█▏        | 176/1487 [00:00<00:02, 577.25it/s]Building training:  16%|█▌        | 240/1487 [00:00<00:02, 600.20it/s]Building training:  20%|██        | 301/1487 [00:00<00:01, 594.75it/s]Building training:  24%|██▍       | 361/1487 [00:00<00:01, 587.48it/s]Building training:  28%|██▊       | 420/1487 [00:00<00:01, 573.83it/s]Building training:  33%|███▎      | 485/1487 [00:00<00:01, 593.62it/s]Building training:  37%|███▋      | 549/1487 [00:00<00:01, 603.94it/s]Building training:  41%|████      | 610/1487 [00:01<00:01, 597.82it/s]Building training:  45%|████▌     | 670/1487 [00:01<00:01, 582.75it/s]Building training:  49%|████▉     | 733/1487 [00:01<00:01, 593.26it/s]Building training:  53%|█████▎    | 793/1487 [00:01<00:01, 593.81it/s]Building training:  57%|█████▋    | 853/1487 [00:01<00:01, 546.09it/s]Building training:  62%|██████▏   | 917/1487 [00:01<00:00, 571.10it/s]Building training:  66%|██████▌   | 978/1487 [00:01<00:00, 581.64it/s]Building training:  70%|██████▉   | 1037/1487 [00:01<00:00, 580.91it/s]Building training:  74%|███████▍  | 1098/1487 [00:01<00:00, 589.09it/s]Building training:  78%|███████▊  | 1160/1487 [00:01<00:00, 597.69it/s]Building training:  82%|████████▏ | 1222/1487 [00:02<00:00, 601.51it/s]Building training:  86%|████████▋ | 1285/1487 [00:02<00:00, 607.20it/s]Building training:  91%|█████████ | 1349/1487 [00:02<00:00, 614.14it/s]Building training:  95%|█████████▍| 1411/1487 [00:02<00:00, 614.51it/s]Building training:  99%|█████████▉| 1473/1487 [00:02<00:00, 600.60it/s]Building training: 100%|██████████| 1487/1487 [00:02<00:00, 591.05it/s]
+Done!
+Processing...
+Building valid:   0%|          | 0/185 [00:00<?, ?it/s]Building valid:  31%|███       | 57/185 [00:00<00:00, 565.54it/s]Building valid:  64%|██████▍   | 119/185 [00:00<00:00, 596.58it/s]Building valid:  98%|█████████▊| 182/185 [00:00<00:00, 608.33it/s]Building valid: 100%|██████████| 185/185 [00:00<00:00, 601.15it/s]
+Done!
+Processing...
+Building test:   0%|          | 0/187 [00:00<?, ?it/s]Building test:  33%|███▎      | 61/187 [00:00<00:00, 606.33it/s]Building test:  67%|██████▋   | 125/187 [00:00<00:00, 621.58it/s]Building test: 100%|██████████| 187/187 [00:00<00:00, 593.32it/s]
+Done!
+    train=1487  valid=185  test=187
+
+  [train]  n=1487  rule_pos=720  relabelled=783  node_pos_frac=0.0992  edge_pos_frac=0.0708  → train_with_gt.pt
+
+  [valid]  n=185  rule_pos=90  relabelled=97  node_pos_frac=0.1067  edge_pos_frac=0.0780  → valid_with_gt.pt
+
+  [test]  n=187  rule_pos=103  relabelled=108  node_pos_frac=0.1137  edge_pos_frac=0.0860  → test_with_gt.pt
+
+  Saved to: /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/gt_cache/BBBP/fold0/rbrics/relabel1/
+    train_with_gt.pt  (14299 KB)
+    valid_with_gt.pt  (1813 KB)
+    test_with_gt.pt  (1870 KB)
+    selected_rule.json
+
+  Phase 4 complete.
+
+  --- apply_gt: all_fallback_bpe ---
+  [SyntheticGT] vocab=all_fallback_bpe rule=0 datasets:BBBP
+Processing...
+
+============================================================
+  Phase 4 — GT annotation
+  dataset    = BBBP
+  variant    = all_fallback_bpe
+  rule_index = 0
+  out_dir    = /private/tmp/claude-501/-Users-apurvakokate-ExplanableMolecularGNN/7a36f30d-17ef-4888-8fec-b6f6a5d343db/scratchpad/smokerun/results/gt_cache
+============================================================
+
+  Rule #0 (DNF — OR of 4 clause(s)):
+    clause 0   = ['*C(*)=O']
+    clause 1   = ['*c1ccccc1']
+    clause 2   = ['*CO']
+    clause 3   = ['*C(*)C', '*CC']
+    match%     = 49.7%
+    n_match    = 923
+    n_clauses  = 4
+
+  Loading vocabulary...
+    1238 motifs
+  Loading data loaders...
+  [fold lookup] fold=0 no threshold filter (1238 motifs)
+Building training:   0%|          | 0/1487 [00:00<?, ?it/s]Building training:   4%|▍         | 60/1487 [00:00<00:02, 594.40it/s]Building training:   8%|▊         | 123/1487 [00:00<00:02, 609.20it/s]Building training:  12%|█▏        | 184/1487 [00:00<00:02, 596.35it/s]Building training:  16%|█▋        | 244/1487 [00:00<00:02, 594.64it/s]Building training:  20%|██        | 304/1487 [00:00<00:02, 584.34it/s]Building training:  24%|██▍       | 363/1487 [00:00<00:01, 567.12it/s]Building training:  28%|██▊       | 420/1487 [00:00<00:01, 553.00it/s]Building training:  33%|███▎      | 484/1487 [00:00<00:01, 576.59it/s]Building training:  37%|███▋      | 543/1487 [00:00<00:01, 577.34it/s]Building training:  40%|████      | 602/1487 [00:01<00:01, 580.55it/s]Building training:  45%|████▍     | 666/1487 [00:01<00:01, 596.53it/s]Building training:  49%|████▉     | 731/1487 [00:01<00:01, 611.85it/s]Building training:  53%|█████▎    | 793/1487 [00:01<00:01, 611.58it/s]Building training:  57%|█████▋    | 855/1487 [00:01<00:01, 598.70it/s]Building training:  62%|██████▏   | 917/1487 [00:01<00:00, 604.34it/s]Building training:  66%|██████▌   | 978/1487 [00:01<00:00, 604.04it/s]Building training:  70%|██████▉   | 1039/1487 [00:01<00:00, 591.41it/s]Building training:  74%|███████▍  | 1099/1487 [00:01<00:00, 591.76it/s]Building training:  78%|███████▊  | 1160/1487 [00:01<00:00, 594.23it/s]Building training:  82%|████████▏ | 1220/1487 [00:02<00:00, 594.44it/s]Building training:  86%|████████▌ | 1280/1487 [00:02<00:00, 594.09it/s]Building training:  90%|█████████ | 1340/1487 [00:02<00:00, 582.42it/s]Building training:  94%|█████████▍| 1399/1487 [00:02<00:00, 579.48it/s]Building training:  98%|█████████▊| 1457/1487 [00:02<00:00, 557.16it/s]Building training: 100%|██████████| 1487/1487 [00:02<00:00, 585.64it/s]
+Done!
+Processing...
+Building valid:   0%|          | 0/185 [00:00<?, ?it/s]Building valid:  30%|███       | 56/185 [00:00<00:00, 545.98it/s]Building valid:  62%|██████▏   | 114/185 [00:00<00:00, 563.08it/s]Building valid:  95%|█████████▍| 175/185 [00:00<00:00, 582.46it/s]Building valid: 100%|██████████| 185/185 [00:00<00:00, 573.03it/s]
+Done!
+Processing...
+Building test:   0%|          | 0/187 [00:00<?, ?it/s]Building test:  32%|███▏      | 59/187 [00:00<00:00, 574.09it/s]Building test:  65%|██████▍   | 121/187 [00:00<00:00, 595.05it/s]Building test:  97%|█████████▋| 181/187 [00:00<00:00, 557.77it/s]Building test: 100%|██████████| 187/187 [00:00<00:00, 563.85it/s]
+Done!

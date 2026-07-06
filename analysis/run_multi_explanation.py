@@ -28,7 +28,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from analysis.aggregate_experiments import (
-    resolve_family, dataset_allowed, iter_summaries)
+    family_of, dataset_allowed, iter_summaries)
 from analysis.probe_masked_nodes import _load_model_and_data, _is_probeable_run
 from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 
@@ -53,7 +53,7 @@ def _run_one(run_dir: Path, data_root: str, vocab_root: str, device, local_filte
         meta = json.load(f)
 
     learn_edge_att = bool(meta.get('learn_edge_att', False))
-    fam = resolve_family(meta, str(run_dir))
+    fam = family_of(meta)
     if fam in ('vanilla', 'baselines'):
         print(f'  [skip] {run_dir}: post-hoc explainers have no global motif scores')
         return False
@@ -116,7 +116,7 @@ def main():
             try:
                 with open(p, encoding='utf-8') as f:
                     meta = json.load(f)
-                fam = resolve_family(meta, str(p.parent))
+                fam = family_of(meta)
             except Exception:
                 continue
             if fam not in allowed and not (fam == 'gsat' and 'gsat' in allowed):

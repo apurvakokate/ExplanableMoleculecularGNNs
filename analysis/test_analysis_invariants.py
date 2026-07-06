@@ -12,12 +12,11 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from analysis.aggregate_experiments import (
-    enrich_from_exp_dir,
     expand_posthoc_explainer_rows,
+    family_of,
     filter_prediction_rows,
     normalize,
     parse_vocab_variant,
-    resolve_family,
 )
 from analysis.make_results_table import build
 
@@ -95,28 +94,13 @@ class TestAnalysisInvariants(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize(pd.DataFrame([row]))
 
-    def test_resolve_family_mose(self):
-        meta = {'model_type': 'MOSE-GNN', 'motif_method': 'mose'}
-        self.assertEqual(resolve_family(meta, 'foo/mose/bar'), 'mose')
+    def test_family_of_reads_field(self):
+        self.assertEqual(family_of({'family': 'mose'}), 'mose')
+        self.assertEqual(family_of({'family': 'base_gsat'}), 'gsat')  # normalised
 
-    def test_resolve_family_gsat_not_motifsat_via_model_type(self):
-        """E3: model_type MotifSAT must not collapse base_gsat into motifsat."""
-        meta = {'model_type': 'MotifSAT', 'motif_method': 'none'}
-        self.assertEqual(
-            resolve_family(meta, 'gsat/BBBP/fold0/rbrics/bb-GIN_enc-onehot'),
-            'gsat')
-
-    def test_enrich_vanilla_layout_from_path(self):
-        """E4: vanilla/baselines layout fills dataset/backbone/fold from exp_dir."""
-        df = pd.DataFrame([{
-            'exp_dir': 'vanilla/BBBP/fold1/rbrics_old_filter/bb-GIN_enc-onehot_norm-l2',
-            'vocab_variant': 'rbrics_old_filter',
-            'auc': 0.72,
-        }])
-        out = enrich_from_exp_dir(df)
-        self.assertEqual(out.iloc[0]['dataset'], 'BBBP')
-        self.assertEqual(out.iloc[0]['backbone'], 'GIN')
-        self.assertEqual(out.iloc[0]['fold'], 1)
+    def test_family_of_fails_fast_when_missing(self):
+        with self.assertRaises(ValueError):
+            family_of({'model_type': 'MOSE-GNN', 'motif_method': 'mose'})
 
     def test_synthetic_from_use_gt_field(self):
         """synthetic comes from the recorded use_gt field, not the path."""

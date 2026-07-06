@@ -18,10 +18,10 @@ _CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Paths (all absolute, anchored to project root) ────────────────────────────
 export PROJECT="$_CFG_DIR"           # repo root: MOSE-GNN/, MotifSAT/, etc.
-export DATA_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/"
-export VOCAB_ROOT="$_CFG_DIR/vocab_output"    # phase1 writes here
+export DATA_ROOT="${DATA_ROOT:-/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/}"
+export VOCAB_ROOT="${VOCAB_ROOT:-$_CFG_DIR/vocab_output}"    # phase1 writes here
 export OUT_ROOT="${OUT_ROOT:-$_CFG_DIR/results}"   # override before run: export OUT_ROOT=$PROJECT/results_motifsat_ib
-export PROCESSED_ROOT="$_CFG_DIR/processed"   # PyG processed .pt cache
+export PROCESSED_ROOT="${PROCESSED_ROOT:-$_CFG_DIR/processed}"   # PyG processed .pt cache
 # mutag TUDataset exports (mutag_<fold>.csv under MUTAG_DATA_ROOT; TUDataset in mutag/)
 export MUTAG_DATA_ROOT="${MUTAG_DATA_ROOT:-$_CFG_DIR/data}"
 # OGB molecule datasets (PyG auto-download cache)

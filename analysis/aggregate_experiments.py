@@ -60,8 +60,6 @@ assert _spec.loader is not None
 _spec.loader.exec_module(_schema)
 TASK_TYPE = _schema.TASK_TYPE
 
-BACKBONE_ORDER = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
-
 POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'mage')
 EXPLAINER_AGGS = ('mean', 'max')
 
@@ -134,31 +132,6 @@ def iter_summaries(root, extra_excludes=(), datasets=None):
 
 # ── normalization helpers ──────────────────────────────────────────────────────
 
-def _family(exp_dir: str) -> str:
-    parts = [p for p in str(exp_dir).split('/') if p]
-    for p in parts:
-        if p in FAMILIES:
-            return 'gsat' if p == 'base_gsat' else p
-    return ''
-
-
-def _fold(exp_dir: str):
-    m = re.search(r'fold(\d+)', str(exp_dir))
-    return int(m.group(1)) if m else None
-
-
-# Legacy run_priority.sh layout (A0_B0_C0/…); producer removed — keep parser
-# if old result trees remain on disk.
-# def _priority_axes(exp_dir: str):
-#     m = re.match(r'A(\d)_B(\d)_C(\d)', str(exp_dir))
-#     if not m:
-#         return None, None
-#     _, b, c = m.groups()
-#     synthetic = 'gt' if b == '1' else 'real'
-#     norm = 'l2' if c == '1' else 'none'
-#     return synthetic, norm
-
-
 def _truthy(v) -> bool:
     if v is True:
         return True
@@ -181,25 +154,6 @@ def parse_vocab_variant(vv: str) -> tuple[str, bool, bool]:
     return v, is_filter, is_relabelled
 
 
-def _dataset_from_path(exp_dir: str) -> str:
-    parts = [p for p in str(exp_dir).split('/') if p]
-    for i, p in enumerate(parts):
-        if re.match(r'fold\d+$', p) and i > 0:
-            return parts[i - 1]
-    return ''
-
-
-def _backbone_from_path(exp_dir: str) -> str:
-    s = str(exp_dir)
-    m = re.search(r'bb-(GIN|GCN|GAT|SAGE|PNA)_', s, re.I)
-    if m:
-        return m.group(1).upper()
-    for bb in BACKBONE_ORDER:
-        if re.search(rf'(?:^|[/_-]){bb}(?:[/_-]|$)', s):
-            return bb
-    return ''
-
-
 def _config_sig(exp_dir: str) -> str:
     """Fold-invariant run signature = the run path with the ``fold<k>`` segment
     removed. The run-dir tag encodes EVERY config axis (backbone, method, vocab,
@@ -214,53 +168,18 @@ def _config_sig(exp_dir: str) -> str:
     return '/'.join(parts)
 
 
-def enrich_from_exp_dir(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill missing dataset / backbone / fold from exp_dir (E4: both layout schemes)."""
-    df = df.copy()
-    if 'exp_dir' not in df.columns:
-        df['exp_dir'] = ''
-    exp = df['exp_dir'].astype(str)
-
-    for col, parser in (
-        ('dataset', _dataset_from_path),
-        ('backbone', _backbone_from_path),
-        ('fold', _fold),
-    ):
-        parsed = exp.map(parser)
-        if col not in df.columns:
-            df[col] = parsed
-        else:
-            blank = df[col].isna() | df[col].astype(str).str.strip().eq('')
-            if blank.any() and col == 'fold':
-                df[col] = df[col].astype(object)
-            df.loc[blank, col] = parsed[blank]
-    return df
-
-
-def resolve_family(meta: dict, exp_dir: str = '') -> str:
-    """Resolve model family from path first; never merge GSAT into MotifSAT via model_type (E3)."""
-    fam = _family(exp_dir) if exp_dir else ''
-    if fam:
-        return fam
-
-    mm = (meta.get('motif_method') or 'none').lower()
-    if mm == 'mose':
-        return 'mose'
-    if mm in ('readout', 'loss'):
-        return 'motifsat'
-    if mm == 'none':
-        if re.search(r'(?:^|/)(base_gsat|gsat)(?:/|$)', exp_dir):
-            return 'gsat'
-        if re.search(r'(?:^|/)baselines(?:/|$)', exp_dir):
-            return 'baselines'
-        if re.search(r'(?:^|/)vanilla(?:/|$)', exp_dir):
-            return 'vanilla'
-        # GSAT uses motif_method=none but lives under gsat/ or base_gsat/
-        if 'gsat' in exp_dir.lower() and 'motifsat' not in exp_dir.lower():
-            return 'gsat'
-        return 'vanilla'
-
-    return mm or 'unknown'
+def family_of(meta: dict) -> str:
+    """The run's model family, read from the authoritative ``family`` field in
+    summary.json (base_gsat normalised to gsat). Fails fast if absent — every
+    run.py records it, so a run without it is an incomplete summary. No path
+    fallback."""
+    fam = str(meta.get('family') or '').strip()
+    if not fam or fam.lower() in ('nan', 'none', 'null'):
+        raise ValueError(
+            "summary.json is missing the 'family' field. Every run.py records it "
+            "(mose / motifsat / gsat / vanilla / baselines); re-run or regenerate "
+            "to produce a complete summary. No path fallback.")
+    return 'gsat' if fam == 'base_gsat' else fam
 
 
 # Every run.py writes these to summary.json (family + training_summary_extras).

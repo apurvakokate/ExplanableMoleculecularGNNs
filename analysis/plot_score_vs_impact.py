@@ -41,7 +41,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from analysis.aggregate_experiments import ARCHIVE_PREFIXES, FAMILIES, resolve_family
+from analysis.aggregate_experiments import ARCHIVE_PREFIXES, FAMILIES, family_of
 
 _COUNT_COLOR = '#e8a24c'
 _BOX_COLOR = '#1f77b4'
@@ -93,7 +93,7 @@ def _meta(run_dir: Path):
             # inferred from the variant (would pool real + relabelled runs).
             synthetic = 'gt' if bool(d.get('use_gt')) else 'real'
             if not fam:
-                fam = resolve_family(d, str(run_dir))
+                fam = family_of(d)
             if d.get('fold') is not None:
                 fold = int(d['fold'])
         except Exception:

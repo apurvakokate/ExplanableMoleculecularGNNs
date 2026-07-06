@@ -42,7 +42,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from analysis.aggregate_experiments import (
-    resolve_family, dataset_allowed, ARCHIVE_PREFIXES)
+    family_of, dataset_allowed, ARCHIVE_PREFIXES)
 from SharedModules.data.dataset_routing import (
     base_from_stored_processed_root,
     mutag_artifact_paths,
@@ -146,7 +146,7 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
         exp_dir = str(run_dir.relative_to(Path(args.out_root)))
     except ValueError:
         exp_dir = str(run_dir)
-    fam = resolve_family(meta, exp_dir)
+    fam = family_of(meta)
     ds = meta.get('dataset')
     fold = meta.get('fold', 0)
     bb = meta.get('backbone')
@@ -277,7 +277,7 @@ def main():
             exp_dir = str(run_dir.relative_to(out_root))
         except ValueError:
             exp_dir = str(run_dir)
-        fam = resolve_family(meta, exp_dir)
+        fam = family_of(meta)
         if not _family_allowed(fam, allowed):
             skipped += 1
             continue

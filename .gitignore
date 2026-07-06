@@ -11,9 +11,6 @@ wandb/
 
 # ── Local artifact validation / report outputs (never commit) ───────────────
 _validate_vocab/
-analysis/_vocab_ppt_figs/
-analysis/vocab_phase1_results.pptx
-analysis/build_vocab_phase1_ppt.py
 
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
