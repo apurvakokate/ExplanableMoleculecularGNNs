@@ -4,6 +4,9 @@ results/
 vocab_output/
 processed/
 wandb/
+logs/
+gt_cache/
+.audit_vocab/
 
 # NOTE: analysis/ is SOURCE CODE (plotting, tables, probe, run_analysis) and is
 # intentionally NOT ignored. If you want to ignore only the generated plots,
