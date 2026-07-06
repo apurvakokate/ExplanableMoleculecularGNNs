@@ -94,6 +94,22 @@ class TestAnalysisInvariants(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize(pd.DataFrame([row]))
 
+    def test_vanilla_null_injection_flags_do_not_abort_collect(self):
+        """vanilla/baselines are injection-agnostic and legitimately record
+        w_feat/w_message/w_readout as null; that must NOT fail-fast (else the
+        whole collect aborts, since vanilla always runs)."""
+        row = _run(family='vanilla', w_feat=None, w_message=None, w_readout=None,
+                   exp_dir='vanilla/BBBP/fold0/rbrics/bb-GIN_enc-onehot')
+        out = normalize(pd.DataFrame([row]))
+        self.assertEqual(out.iloc[0]['injection'], 'na')
+
+    def test_antehoc_null_injection_flags_still_fail_fast(self):
+        """Injection-bearing families (mose/motifsat/gsat) MUST record the
+        injection flags; a null there is still a broken summary."""
+        row = _run(family='mose', w_feat=None)
+        with self.assertRaises(ValueError):
+            normalize(pd.DataFrame([row]))
+
     def test_family_of_reads_field(self):
         self.assertEqual(family_of({'family': 'mose'}), 'mose')
         self.assertEqual(family_of({'family': 'base_gsat'}), 'gsat')  # normalised

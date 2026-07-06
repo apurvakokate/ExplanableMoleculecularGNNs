@@ -519,9 +519,14 @@ def category_summary(
     DataFrame: one row per category, columns:
         category, n_motifs, mean_ratio_H2, mean_ratio_H1, mean_ratio_H0,
         mean_importance, mean_impact
+        An empty result still carries these columns so the written CSV always
+        has a header and stays round-trippable (pd.read_csv never raises
+        EmptyDataError on a no-row summary).
     """
+    cols = ["category", "n_motifs", "mean_ratio_H2", "mean_ratio_H1",
+            "mean_ratio_H0", "mean_importance", "mean_impact"]
     if "category" not in ratios_df.columns or ratios_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=cols)
 
     rows = []
     for cat in categories:
@@ -537,7 +542,7 @@ def category_summary(
             "mean_importance": float(sub["avg_importance"].mean()),
             "mean_impact":    float(sub["avg_impact"].mean()),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=cols)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

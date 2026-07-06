@@ -275,17 +275,11 @@ def run(cfg: VanillaConfig) -> dict:
     from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
     _gt_eval = (mutag_gt_eval_graphs(test_list)
                 if cfg.dataset == 'mutag' else None)
-    from SharedModules.data.dataset_routing import load_mutag_eval_index_maps
-    _mutag_maps = (load_mutag_eval_index_maps(
-        cfg.data_root, cfg.fold,
-        index_maps_path=getattr(cfg, 'mutag_index_maps_path', None))
-        if cfg.dataset == 'mutag' else None)
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
-        index_maps=_mutag_maps,
     )
     eval_results = pipeline.run(run_motif_impact=cfg.run_motif_impact)
     dfs = pipeline.to_dataframe(eval_results)

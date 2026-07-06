@@ -187,8 +187,12 @@ def family_of(meta: dict) -> str:
 REQUIRED_SUMMARY_FIELDS = (
     'family', 'dataset', 'backbone', 'fold', 'vocab_variant',
     'node_encoder', 'conv_normalize', 'use_gt', 'epochs',
-    'w_feat', 'w_message', 'w_readout',
 )
+# Injection flags are required only for injection-BEARING families. vanilla /
+# baselines are injection-agnostic (injection axis = 'na', see _inj) and
+# legitimately record these as null; requiring them there would wrongly abort
+# the whole collect. Ante-hoc families (mose/motifsat/gsat) must record them.
+INJECTION_REQUIRED_FIELDS = ('w_feat', 'w_message', 'w_readout')
 
 
 def _require_field(df: pd.DataFrame, col: str) -> pd.Series:
@@ -232,6 +236,13 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     # family (authoritative field; base_gsat normalised to gsat)
     df['family'] = df['family'].astype(str).map(
         lambda s: 'gsat' if s == 'base_gsat' else s)
+
+    # Injection flags: required only for injection-bearing families (mirrors _inj).
+    # Injection-agnostic families (vanilla/baselines) may leave them null.
+    antehoc = df[~df['family'].isin(INJECTION_AGNOSTIC)]
+    if not antehoc.empty:
+        for col in INJECTION_REQUIRED_FIELDS:
+            _require_field(antehoc, col)
 
     # fold (numeric)
     df['fold'] = pd.to_numeric(df['fold'], errors='coerce').astype('Int64')

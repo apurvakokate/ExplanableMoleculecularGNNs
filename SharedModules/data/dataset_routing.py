@@ -171,24 +171,6 @@ def mutag_artifact_paths(
     }
 
 
-def load_mutag_eval_index_maps(
-    data_root: str,
-    fold: int,
-    *,
-    index_maps_path: Optional[str] = None,
-) -> Optional[Dict]:
-    """Load mutag index maps for motif-impact SMILES→graph remapping."""
-    from pathlib import Path
-    from .mutag_artifacts import load_mutag_index_maps
-
-    paths = mutag_artifact_paths(
-        data_root, fold, index_maps_path=index_maps_path)
-    p = Path(paths['mutag_index_maps_path'])
-    if not p.is_file():
-        return None
-    return load_mutag_index_maps(p)
-
-
 def default_processed_base(data_root: str, processed_root: Optional[str] = None) -> str:
     """Base PyG cache directory; CLI passes this, trainers append ``/{vocab_variant}``."""
     if processed_root not in (None, ''):

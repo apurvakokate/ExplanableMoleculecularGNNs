@@ -14,6 +14,7 @@ gt_cache/
 
 # ── Local artifact validation / report outputs (never commit) ───────────────
 _validate_vocab/
+_validation_results/
 
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/

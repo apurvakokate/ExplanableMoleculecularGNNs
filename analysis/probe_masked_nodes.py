@@ -94,7 +94,14 @@ def _node_emb_and_att(model, data, device, gated: bool):
     except Exception:
         pass
 
-    backbone = getattr(model, 'backbone', model)
+    # Embedding backbone: MOSE exposes it at .backbone; GSAT/MotifSAT (GSAT class)
+    # expose the classifier GNN at .clf. Both are BaseGNN with get_embedding.
+    backbone = model
+    for _attr in ('backbone', 'clf'):
+        _cand = getattr(model, _attr, None)
+        if _cand is not None and hasattr(_cand, 'get_embedding'):
+            backbone = _cand
+            break
     if not hasattr(backbone, 'get_embedding'):
         return None, None, None
 
@@ -412,10 +419,17 @@ def main():
                         att_threshold=args.att_threshold,
                         max_graphs=args.max_graphs, seed=args.seed)
         res['run_dir'] = str(rd)
+        gated_gap = res.get('gated_gap_unmasked_minus_masked')
+        raw_gap = res.get('raw_gap_unmasked_minus_masked')
+        if gated_gap is None and raw_gap is None:
+            # No probe data extracted (e.g. no node embeddings for this model /
+            # split). Report honestly instead of crashing on a None format.
+            print(f'  [probe] {rd.name}: no probe data extracted (skipped)')
+            continue
         rows.append(res)
+        _fmt = lambda v: f'{v:.4f}' if isinstance(v, (int, float)) else 'n/a'
         print(f'  [probe] {rd.name}: '
-              f"gated_gap={res.get('gated_gap_unmasked_minus_masked'):.4f} "
-              f"raw_gap={res.get('raw_gap_unmasked_minus_masked'):.4f}")
+              f'gated_gap={_fmt(gated_gap)} raw_gap={_fmt(raw_gap)}')
 
     if rows:
         import pandas as pd

@@ -272,18 +272,11 @@ def run(cfg: MOSEConfig) -> dict:
     else:
         flat_scores = motif_scores
 
-    from SharedModules.data.dataset_routing import load_mutag_eval_index_maps
-    _mutag_maps = (load_mutag_eval_index_maps(
-        cfg.data_root, cfg.fold,
-        index_maps_path=getattr(cfg, 'mutag_index_maps_path', None))
-        if cfg.dataset == 'mutag' else None)
-
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
-        index_maps=_mutag_maps,
     )
     results = pipeline.run(
         motif_scores=flat_scores,
@@ -296,7 +289,6 @@ def run(cfg: MOSEConfig) -> dict:
             model, vocab, test_list, device, task_type, out_dir,
             motif_scores=flat_scores,
             max_motifs=cfg.max_motifs_eval,
-            index_maps=_mutag_maps,
         )
 
     # Save results

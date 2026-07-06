@@ -408,18 +408,12 @@ def run(cfg: MotifSATConfig) -> dict:
     from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
     _gt_eval = (mutag_gt_eval_graphs(test_list)
                 if cfg.dataset == 'mutag' else None)
-    from SharedModules.data.dataset_routing import load_mutag_eval_index_maps
-    _mutag_maps = (load_mutag_eval_index_maps(
-        cfg.data_root, cfg.fold,
-        index_maps_path=getattr(cfg, 'mutag_index_maps_path', None))
-        if cfg.dataset == 'mutag' else None)
     pipeline = EvalPipeline(
         model, vocab, loaders["test"], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         gt_level=gt_level,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
-        index_maps=_mutag_maps,
     )
     # For base GSAT (learn_edge_att=True, motif_method='none') aggregate node
     # attention to vocabulary-level scores (mean and max) for correlation eval.
@@ -500,7 +494,6 @@ def run(cfg: MotifSATConfig) -> dict:
             learn_edge_att=cfg.learn_edge_att,
             att_aggregate_fn=agg_fn,
             max_motifs=cfg.max_motifs_eval,
-            index_maps=_mutag_maps,
         )
 
     # Save
