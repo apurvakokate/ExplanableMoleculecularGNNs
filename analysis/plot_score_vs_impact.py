@@ -272,7 +272,10 @@ def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray):
     ax.set_xticks(range(nbin))
     ax.set_xticklabels([_bin_label(edges, i) for i in range(nbin)],
                        rotation=45, fontsize=6, ha='right')
-    ax.tick_params(axis='y', labelsize=7)
+    # Ensure both axes render visible tick marks (the y-locator is automatic; the
+    # x FixedLocator is shared with ax_top, so guard it below).
+    ax.tick_params(axis='x', which='both', bottom=True, length=3)
+    ax.tick_params(axis='y', which='both', left=True, length=3, labelsize=7)
 
     cmax = max(counts) if counts and max(counts) > 0 else 1
     ax_top.bar(pos, counts, width=0.55, color=_COUNT_COLOR,
@@ -283,7 +286,9 @@ def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray):
                         fontsize=5.5, color='#8a5a10')
     ax_top.set_xlim(-0.5, nbin - 0.5)
     ax_top.set_ylim(0, cmax * 1.35)
-    ax_top.set_xticks([])
+    # Hide the count strip's x ticks WITHOUT clearing the shared FixedLocator
+    # (set_xticks([]) here would wipe the main axis's x ticks too).
+    ax_top.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
     ax_top.set_ylabel('#', fontsize=6, labelpad=1)
     ax_top.tick_params(axis='y', labelsize=5, length=2)
     ax_top.set_yticks([0, cmax] if cmax > 0 else [0])

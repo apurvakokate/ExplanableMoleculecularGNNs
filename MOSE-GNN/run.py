@@ -348,9 +348,15 @@ def run(cfg: MOSEConfig) -> dict:
         # classification tasks
         'rmse_orig': split_metrics.get('test', {}).get('rmse_orig', float('nan')),
         'mae_orig':  split_metrics.get('test', {}).get('mae_orig',  float('nan')),
-        # correlation (score vs impact)
+        # correlation (score vs impact). MOSE scores are motif-level (no
+        # node->motif pooling), so mean == max — emit both so the per-pooling
+        # report tables include MOSE in each.
         'pearson':   corr.get('pearson',  float('nan')),
         'spearman':  corr.get('spearman', float('nan')),
+        'pearson_node_mean':  corr.get('pearson',  float('nan')),
+        'pearson_node_max':   corr.get('pearson',  float('nan')),
+        'spearman_node_mean': corr.get('spearman', float('nan')),
+        'spearman_node_max':  corr.get('spearman', float('nan')),
         # GT ROC (primary = configured level; node & edge reported alongside)
         'gt_roc_auc_mean': gt.get('auc_mean', float('nan')),
         'gt_roc_n_graphs': gt.get('n_graphs', 0),

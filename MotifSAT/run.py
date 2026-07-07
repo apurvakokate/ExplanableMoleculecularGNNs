@@ -441,12 +441,14 @@ def run(cfg: MotifSATConfig) -> dict:
 
         # Run pipeline twice — once per aggregation; mean run feeds summary.json
         results = None
+        corr_by_agg: dict = {}
         for agg in ("mean", "max"):
             agg_scores = gsat_agg[agg]
             r = pipeline.run(
                 motif_scores=agg_scores if agg_scores else None,
                 run_motif_impact=cfg.run_motif_impact,
             )
+            corr_by_agg[agg] = r.get("correlation", {})
             dfs_agg = pipeline.to_dataframe(r)
             for name, df in dfs_agg.items():
                 df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
@@ -465,12 +467,14 @@ def run(cfg: MotifSATConfig) -> dict:
             max_graphs=cfg.max_motifs_eval or 500,
         )
         results = None
+        corr_by_agg: dict = {}
         for agg in ("mean", "max"):
             agg_scores = motif_agg.get(agg, {})
             r = pipeline.run(
                 motif_scores=agg_scores if agg_scores else None,
                 run_motif_impact=cfg.run_motif_impact,
             )
+            corr_by_agg[agg] = r.get("correlation", {})
             for name, df in pipeline.to_dataframe(r).items():
                 df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
             if agg == "mean":
@@ -545,9 +549,15 @@ def run(cfg: MotifSATConfig) -> dict:
         # classification tasks
         "rmse_orig": split_metrics.get("test", {}).get("rmse_orig", float("nan")),
         "mae_orig":  split_metrics.get("test", {}).get("mae_orig",  float("nan")),
-        # correlation (score vs impact)
+        # correlation (score vs impact). 'pearson'/'spearman' stay the mean-pooled
+        # headline; *_node_mean/max carry BOTH node->motif poolings for the
+        # per-pooling report tables (mean == max for motif-level scores).
         "pearson":  corr.get("pearson",  float("nan")),
         "spearman": corr.get("spearman", float("nan")),
+        "pearson_node_mean":  corr_by_agg.get("mean", {}).get("pearson",  float("nan")),
+        "pearson_node_max":   corr_by_agg.get("max",  {}).get("pearson",  float("nan")),
+        "spearman_node_mean": corr_by_agg.get("mean", {}).get("spearman", float("nan")),
+        "spearman_node_max":  corr_by_agg.get("max",  {}).get("spearman", float("nan")),
         # GT ROC (primary = configured level; node & edge reported alongside)
         "gt_roc_auc_mean": gt.get("auc_mean", float("nan")),
         "gt_roc_n_graphs": gt.get("n_graphs", 0),

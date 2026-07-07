@@ -68,8 +68,16 @@ EPS = 1e-9
 
 
 def _binary_entropy(p: np.ndarray) -> np.ndarray:
+    """Binary entropy H(p) in bits. Defined as 0 at p in {0,1} (the analytic
+    limit) and for non-finite inputs, so this monitoring metric never emits
+    log2 divide-by-zero / invalid-value warnings. Clip handles the 0/1 boundary;
+    NaN/inf are sanitised to 0 first (clip does not fix NaN)."""
+    p = np.asarray(p, dtype=float)
+    p = np.where(np.isfinite(p), p, 0.0)
     p = np.clip(p, EPS, 1 - EPS)
-    return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        h = -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+    return np.where(np.isfinite(h), h, 0.0)
 
 
 class WandbLogger:

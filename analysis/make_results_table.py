@@ -37,24 +37,48 @@ PREDICTION_METRICS = frozenset({
 NODE_SCORING_FAMILIES = frozenset({'gsat'})
 NODE_POOL_SRC = {'mean': 'gt_roc_node_mean_auc_mean', 'max': 'gt_roc_node_max_auc_mean'}
 
+# Correlation metrics carry BOTH node->motif poolings (mean/max) as explicit
+# summary columns, so they can be reported per-pooling like node GT-ROC. Every
+# ante-hoc trainer records these (motif-level MOSE writes mean == max).
+CORR_POOL_SRC = {
+    'pearson':  {'mean': 'pearson_node_mean',  'max': 'pearson_node_max'},
+    'spearman': {'mean': 'spearman_node_mean', 'max': 'spearman_node_max'},
+}
+# Metrics that get split into separate per-pooling report tables (see step_table).
+POOLED_TABLE_METRICS = frozenset(CORR_POOL_SRC)
+
 
 def _expand_node_pooling(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """For node GT-ROC, split node-scoring ante-hoc families (GSAT) into mean/max
-    pooled rows; all other families get a single blank-agg row (mean == max)."""
+    """Split ante-hoc rows into mean/max node->motif-pooled rows for *metric*.
+
+    * ``gt_roc_node_auc_mean`` — only genuinely node-scoring families (GSAT)
+      differ; motif-level MOSE/MotifSAT keep a single blank-agg row.
+    * ``pearson`` / ``spearman`` — every ante-hoc family records both poolings
+      (``*_node_mean`` / ``*_node_max``); split them all so each pooling has a
+      row (MOSE's mean == max). Rows without the source columns stay blank-agg.
+    """
     df = df.copy()
     if 'family' not in df.columns:
         df['explainer_agg'] = ''
         return df
-    is_node = (metric == 'gt_roc_node_auc_mean') and \
-        all(c in df.columns for c in NODE_POOL_SRC.values())
-    split = is_node & df['family'].astype(str).isin(NODE_SCORING_FAMILIES)
+    if metric == 'gt_roc_node_auc_mean':
+        pool_src = NODE_POOL_SRC
+        eligible = df['family'].astype(str).isin(NODE_SCORING_FAMILIES)
+    elif metric in CORR_POOL_SRC:
+        pool_src = CORR_POOL_SRC[metric]
+        eligible = pd.Series(True, index=df.index)
+    else:
+        df['explainer_agg'] = ''
+        return df
+    have_cols = all(c in df.columns for c in pool_src.values())
+    split = eligible & have_cols
     keep = df[~split].copy()
     keep['explainer_agg'] = ''
     if not split.any():
         return keep
     src = df[split]
     pieces = [keep]
-    for agg, col in NODE_POOL_SRC.items():
+    for agg, col in pool_src.items():
         sub = src.copy()
         sub['explainer_agg'] = agg
         sub[metric] = src[col]
@@ -99,6 +123,21 @@ def _pivot(df: pd.DataFrame, metric: str, index: list | None = None) -> pd.DataF
     cols = [b for b in BACKBONE_ORDER if b in piv.columns] + \
            [b for b in piv.columns if b not in BACKBONE_ORDER]
     return piv[cols]
+
+
+def select_pooling(table: pd.DataFrame, pool: str) -> pd.DataFrame:
+    """Slice a pooled explanation table (``explainer_agg`` = last index level)
+    down to one node->motif pooling. Keeps rows tagged ``pool`` AND blank-agg
+    rows (motif-level, mean == max, belong in both files), then drops the
+    now-redundant ``explainer_agg`` level."""
+    names = list(table.index.names or [])
+    if table.empty or 'explainer_agg' not in names:
+        return table
+    agg = table.index.get_level_values('explainer_agg').astype(str)
+    sub = table[(agg == pool) | (agg == '')]
+    if sub.empty:
+        return sub
+    return sub.droplevel('explainer_agg')
 
 
 def build(df: pd.DataFrame, metric: str, *, mode: str = 'auto') -> pd.DataFrame:

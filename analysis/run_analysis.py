@@ -65,8 +65,24 @@ _NON_METRIC_COLS = frozenset({
 })
 
 
+_EXPLAINER_PREFIXES = ('gnnexplainer_', 'pgexplainer_', 'mage_')
+
+
 def discover_table_metrics(df) -> list[str]:
-    """Metrics to pivot into tables: full report set + any numeric explainer cols."""
+    """Metrics to pivot into tables.
+
+    Two deliberate policies:
+
+    * **No dedicated per-explainer tables.** Post-hoc explainers (GNNExplainer /
+      PGExplainer / MAGE) already surface as FAMILY ROWS inside every generic
+      metric table (via ``build``'s ``expand_posthoc``), so the redundant
+      ``{explainer}_{agg}_*`` columns are never tabled on their own.
+    * **Regression performance in ORIGINAL units.** ``rmse_orig``/``mae_orig``
+      (predictions inverse-transformed to the target's real scale) are the
+      reported regression metrics; the normalised ``rmse``/``mae`` are tabled
+      only as a fallback when no denormalised counterpart exists (i.e. the model
+      was trained without target normalisation).
+    """
     import pandas as pd
     from analysis.aggregate_experiments import DEFAULT_REPORT_METRICS, PERF
 
@@ -74,10 +90,18 @@ def discover_table_metrics(df) -> list[str]:
     seen: set[str] = set()
     for m in DEFAULT_REPORT_METRICS:
         if m == PERF:
-            for col in ('auc', 'rmse_orig', 'mae_orig', 'rmse', 'mae'):
+            perf_cols = ['auc', 'rmse_orig', 'mae_orig']
+            # Normalised rmse/mae only when the original-scale version is absent.
+            if 'rmse_orig' not in df.columns:
+                perf_cols.append('rmse')
+            if 'mae_orig' not in df.columns:
+                perf_cols.append('mae')
+            for col in perf_cols:
                 if col in df.columns and col not in seen:
                     metrics.append(col)
                     seen.add(col)
+        elif m.startswith(_EXPLAINER_PREFIXES):
+            continue  # per-explainer tables are redundant (see docstring)
         elif m in df.columns and m not in seen:
             metrics.append(m)
             seen.add(m)
@@ -86,8 +110,11 @@ def discover_table_metrics(df) -> list[str]:
             continue
         if not pd.api.types.is_numeric_dtype(df[c]):
             continue
-        if (c.startswith(('gnnexplainer_', 'pgexplainer_', 'mage_'))
-                or c.startswith('score_')):
+        # Auto-add only bare score_* distribution stats; explainer-prefixed
+        # columns are intentionally excluded (no dedicated per-explainer tables).
+        if c.startswith(_EXPLAINER_PREFIXES):
+            continue
+        if c.startswith('score_'):
             metrics.append(c)
             seen.add(c)
     return metrics
@@ -97,6 +124,38 @@ def discover_table_metrics(df) -> list[str]:
 
 def _datasets_arg(args) -> list[str] | None:
     return getattr(args, 'dataset', None) or None
+
+
+def _fill_pooled_correlation(d: dict, run_dir) -> None:
+    """Backfill ``{pearson,spearman}_node_{mean,max}`` for runs whose summary.json
+    predates them. Prefer the sidecar ``correlation_att_{mean,max}.csv``
+    (MotifSAT / GSAT write one per pooling); otherwise fall back to the headline
+    ``pearson``/``spearman`` (motif-level runs where mean == max). New runs
+    already carry the columns and are left untouched."""
+    import math
+    import pandas as pd
+
+    def _present(v) -> bool:
+        return v is not None and not (isinstance(v, float) and math.isnan(v))
+
+    for base in ('pearson', 'spearman'):
+        for agg in ('mean', 'max'):
+            key = f'{base}_node_{agg}'
+            if _present(d.get(key)):
+                continue
+            val = None
+            side = run_dir / f'correlation_att_{agg}.csv'
+            if side.exists():
+                try:
+                    sdf = pd.read_csv(side)
+                    if base in sdf.columns and len(sdf):
+                        val = float(sdf.iloc[0][base])
+                except Exception:
+                    val = None
+            if not _present(val):
+                val = d.get(base)  # motif-level headline (mean == max)
+            if _present(val):
+                d[key] = val
 
 
 def _regenerate_families(args) -> list[str]:
@@ -191,6 +250,7 @@ def step_collect(args) -> int:
                     n_cfg += 1
                 except Exception as e:
                     print(f'  [warn] skip corrupt config {cfg_path}: {e}')
+            _fill_pooled_correlation(d, p.parent)
             d['results_root'] = str(root)
             d['exp_dir'] = str(p.parent.relative_to(root))
             rows.append(d)
@@ -238,6 +298,8 @@ def step_collect(args) -> int:
                         'mage_mean_gt_roc_node_auc_mean',
                         'mage_max_gt_roc_node_auc_mean',
                         'pearson', 'spearman',
+                        'pearson_node_mean', 'pearson_node_max',
+                        'spearman_node_mean', 'spearman_node_max',
                         'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman',
                         'score_min', 'score_max', 'score_mean', 'score_std',
                         'score_median', 'score_mode', 'score_count'] if c in df]
@@ -258,7 +320,9 @@ def step_collect(args) -> int:
 
 def step_table(args) -> int:
     import pandas as pd
-    from analysis.make_results_table import build, PREDICTION_METRICS
+    from analysis.make_results_table import (
+        build, PREDICTION_METRICS, POOLED_TABLE_METRICS, select_pooling,
+    )
     out_root = Path(args.out_root)
     csv = Path(args.csv) if args.csv else out_root / 'all_results.csv'
     if not csv.exists():
@@ -292,12 +356,25 @@ def step_table(args) -> int:
             print(f'  [skip] metric {metric}: no rows after pivot')
             continue
         suffix = '' if mode == 'auto' else f'_{mode}'
-        md = save_dir / f'results_table_{metric}{suffix}.md'
-        try:
-            md.write_text(tbl.to_markdown())
-        except Exception:
-            md.write_text(tbl.to_string())
-        print(f'  wrote {md}  ({mode}, {len(tbl)} rows)')
+
+        def _write(table, path):
+            try:
+                path.write_text(table.to_markdown())
+            except Exception:
+                path.write_text(table.to_string())
+            print(f'  wrote {path}  ({mode}, {len(table)} rows)')
+
+        if metric in POOLED_TABLE_METRICS:
+            # Split into separate per-pooling files (mean/max node->motif),
+            # e.g. results_table_pearson_explanation_mean.md / _max.md.
+            for pool in ('mean', 'max'):
+                sub = select_pooling(tbl, pool)
+                if sub.empty:
+                    print(f'  [skip] metric {metric} ({pool}): no rows')
+                    continue
+                _write(sub, save_dir / f'results_table_{metric}{suffix}_{pool}.md')
+        else:
+            _write(tbl, save_dir / f'results_table_{metric}{suffix}.md')
     return 0
 
 

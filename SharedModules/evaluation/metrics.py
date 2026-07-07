@@ -109,18 +109,26 @@ def evaluate_predictions(
     elif task_type == 'Regression':
         preds_r = preds.ravel()
         labels_r = labels.ravel()
+        # NORMALISED metrics: normalised model outputs vs normalised targets —
+        # both live on the training z-score scale the model was trained on, so
+        # the two sides are matched.
         out = {
             'mae':  mae_score(labels_r, preds_r),
             'rmse': rmse_score(labels_r, preds_r),
         }
-        # Optionally also report metrics in the ORIGINAL target units. With
-        # z-score normalisation y_norm = (y - mean) / std, the error scales
-        # exactly by std (the mean cancels in differences), so the
-        # denormalised MAE/RMSE are the normalised values times std.
+        # ORIGINAL-UNIT metrics: inverse-transform BOTH the model outputs and the
+        # targets back to real units (y = y_norm * std + mean) and score there,
+        # so unnormalised targets are compared against unnormalised outputs — the
+        # two sides stay on the same (original) scale. For MAE/RMSE the additive
+        # mean cancels in the error so this equals rmse_norm * std, but computing
+        # it explicitly keeps output/target scales matched and stays correct if a
+        # non-affine original-unit metric is ever added.
         if denorm is not None:
-            _mean, _std = denorm
-            out['mae_orig']  = out['mae']  * float(_std)
-            out['rmse_orig'] = out['rmse'] * float(_std)
+            _mean, _std = float(denorm[0]), float(denorm[1])
+            preds_o  = preds_r  * _std + _mean
+            labels_o = labels_r * _std + _mean
+            out['mae_orig']  = mae_score(labels_o, preds_o)
+            out['rmse_orig'] = rmse_score(labels_o, preds_o)
         return out
 
     else:  # MultiLabel
