@@ -46,3 +46,6 @@ reports/
 .idea/
 .vscode/
 *.swp
+
+analysis/build_vocab_report.py
+analysis/vocab_report.html

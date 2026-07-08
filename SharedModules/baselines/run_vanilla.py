@@ -15,7 +15,9 @@ Usage
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import statistics
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, Dict
@@ -289,6 +291,30 @@ def run(cfg: VanillaConfig) -> dict:
     results: Dict = {'prediction': all_preds, 'eval': eval_results}
 
     # ── Post-hoc explainers ───────────────────────────────────────────────────
+    # IMPORTANT: PyG's GNNExplainer / PGExplainer instrument the model IN PLACE to
+    # inject their edge masks — the ``MessagePassing.explain`` setter rewrites each
+    # layer's ``propagate``/``inspector`` state (see torch_geometric
+    # nn/conv/message_passing.py). This is NOT captured by state_dict and is not
+    # cleanly reversible, so running a SECOND PyG explainer on the SAME model
+    # object leaves its mask without effect → the mask collapses to ~0 → NaN
+    # score-vs-impact (the classic "PGExplainer produces GT-ROC but blank Pearson"
+    # symptom). Give every explainer its OWN fresh deepcopy and keep ``model``
+    # pristine for the downstream impact / GT-ROC computations below.
+    def _clean_model():
+        mc = copy.deepcopy(model)
+        mc.eval()
+        return mc
+
+    def _warn_if_collapsed(name: str, scores) -> None:
+        vals = list((scores or {}).get('mean', {}).values())
+        if len(vals) > 1:
+            std = statistics.pstdev(vals)
+            if std < 1e-8:
+                print(f'  [warn] {name} produced a near-constant mask '
+                      f'(score_std={std:.2e}) — score-vs-impact metrics will be '
+                      f'NaN. Likely explainer mask collapse; check the model was '
+                      f'not contaminated by a prior explainer.')
+
     # GNNExplainer
     if cfg.run_gnnexplainer:
         try:
@@ -299,10 +325,11 @@ def run(cfg: VanillaConfig) -> dict:
             print(f'    settings: max_graphs={cfg.gnnex_max_graphs!r} → {_gnnex_cap}, '
                   f'epochs={cfg.gnnex_epochs} (test split only, not train/valid)')
             gnnex_scores = run_gnnexplainer(
-                model, test_list, vocab, device, task_type,
+                _clean_model(), test_list, vocab, device, task_type,
                 epochs=cfg.gnnex_epochs,
                 max_graphs=cfg.gnnex_max_graphs,
                 verbose=cfg.verbose)
+            _warn_if_collapsed('GNNExplainer', gnnex_scores)
             _save_explainer_scores(gnnex_scores, out_dir / 'gnnexplainer_motif_scores', vocab)
             results['gnnexplainer_mean'] = gnnex_scores.get('mean', {})
             results['gnnexplainer_max']  = gnnex_scores.get('max', {})
@@ -314,9 +341,10 @@ def run(cfg: VanillaConfig) -> dict:
         try:
             print('\n  Running PGExplainer ...')
             pgex_scores = run_pgexplainer(
-                model, loaders, test_list, vocab, device, task_type,
+                _clean_model(), loaders, test_list, vocab, device, task_type,
                 max_graphs=cfg.pgex_max_graphs,
                 explain_model=cfg.pgex_explain_model)
+            _warn_if_collapsed('PGExplainer', pgex_scores)
             _save_explainer_scores(pgex_scores, out_dir / 'pgexplainer_motif_scores', vocab)
             results['pgexplainer_mean'] = pgex_scores.get('mean', {})
             results['pgexplainer_max']  = pgex_scores.get('max', {})
@@ -327,7 +355,8 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_mage:
         try:
             print('\n  Running MAGE ...')
-            mage_scores = run_mage(model, test_list, vocab, device, task_type)
+            mage_scores = run_mage(_clean_model(), test_list, vocab, device, task_type)
+            _warn_if_collapsed('MAGE', mage_scores)
             _save_explainer_scores(mage_scores, out_dir / 'mage_motif_scores', vocab)
             results['mage_mean'] = mage_scores.get('mean', {})
             results['mage_max']  = mage_scores.get('max', {})

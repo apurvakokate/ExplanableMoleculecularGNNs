@@ -186,8 +186,9 @@ def run_pgexplainer(
     try:
         from torch_geometric.explain import Explainer, PGExplainer as _PGEx
     except ImportError:
-        print('  [warn] PGExplainer requires PyG >= 2.3; falling back to gradient saliency')
-        return _gradient_fallback(model, test_list, device, max_graphs)
+        print('  [warn] PGExplainer requires PyG >= 2.3; skipping (no gradient '
+              'fallback — PGExplainer results must be genuine PGExplainer).')
+        return {'mean': {}, 'max': {}}
 
     class _Wrapper(torch.nn.Module):
         def __init__(self, inner):
@@ -227,8 +228,9 @@ def run_pgexplainer(
             max_train_graphs=max_train_graphs)
         if train_ok == 0:
             msg = last_err or 'no successful train steps'
-            print(f'  [warn] PGExplainer training failed ({msg}); using gradient saliency fallback')
-            return _gradient_fallback(model, test_list, device, max_graphs)
+            print(f'  [warn] PGExplainer training failed ({msg}); skipping — no '
+                  f'gradient fallback (would masquerade as PGExplainer).')
+            return {'mean': {}, 'max': {}}
         if train_fail:
             print(f'    PGExplainer train: {train_ok} ok, {train_fail} skipped/failed')
 
@@ -257,14 +259,19 @@ def run_pgexplainer(
             edge_masks_fn=lambda data: _explain_graph(data),
             max_graphs=max_graphs,
         )
+        # Return the genuine PGExplainer scores — even a degenerate / near-constant
+        # (collapsed-mask) solution is reported AS PGExplainer so it is honestly
+        # recorded and flagged downstream (see _warn_if_collapsed in run_vanilla),
+        # never silently swapped for gradient saliency.
         if scores['mean'] or scores['max']:
             return scores
-        print('  [warn] PGExplainer produced no motif scores after training; using gradient fallback')
-        return _gradient_fallback(model, test_list, device, max_graphs)
+        print('  [warn] PGExplainer produced no motif scores after training; '
+              'skipping — no gradient fallback.')
+        return {'mean': {}, 'max': {}}
 
     except Exception as e:
-        print(f'  [warn] PGExplainer failed ({e}); using gradient saliency fallback')
-        return _gradient_fallback(model, test_list, device, max_graphs)
+        print(f'  [warn] PGExplainer failed ({e}); skipping — no gradient fallback.')
+        return {'mean': {}, 'max': {}}
 
 
 def _iter_train_graphs(loaders: Dict, max_graphs: Optional[int] = None):
@@ -333,39 +340,7 @@ def _train_pgexplainer(
 
     return train_ok, train_fail, last_err
 
-
-def _gradient_fallback(
-    model, test_list, device, max_graphs: Optional[int] = None,
-) -> NodeScoreResult:
-    from .gnn_explainer import _gradient_saliency
-
-    mean_sum: Dict[int, float] = {}
-    mean_cnt: Dict[int, int] = {}
-    max_sum: Dict[int, float] = {}
-    max_cnt: Dict[int, int] = {}
-
-    graphs = test_list[:max_graphs] if max_graphs else test_list
-    for data in graphs:
-        data = data.to(device)
-        n2m = getattr(data, 'nodes_to_motifs', None)
-        if n2m is None:
-            continue
-        sal = _gradient_saliency(model, data, device)
-        if sal is None:
-            continue
-        n2m_cpu = n2m.cpu()
-        for mid in n2m_cpu[n2m_cpu >= 0].unique().tolist():
-            s = sal[n2m_cpu == mid]
-            if s.numel() == 0:
-                continue
-            mean_sum[mid] = mean_sum.get(mid, 0.0) + float(s.mean())
-            mean_cnt[mid] = mean_cnt.get(mid, 0) + 1
-            max_sum[mid] = max_sum.get(mid, 0.0) + float(s.max())
-            max_cnt[mid] = max_cnt.get(mid, 0) + 1
-
-    return {
-        'mean': {mid: mean_sum[mid] / mean_cnt[mid]
-                 for mid in mean_sum if mean_cnt[mid] > 0},
-        'max': {mid: max_sum[mid] / max_cnt[mid]
-                for mid in max_sum if max_cnt[mid] > 0},
-    }
+# NOTE: the former ``_gradient_fallback`` (gradient-saliency substitute) was
+# removed intentionally. PGExplainer must never silently return gradient-saliency
+# scores under the "pgexplainer" label — on failure or a degenerate/collapsed
+# mask it now returns empty/genuine PGExplainer results instead (see run_pgexplainer).
