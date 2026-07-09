@@ -370,9 +370,16 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         self._require_smiles = require_smiles
 
         if require_smiles and vocab is not None:
+            # SMILES are stored as ``ogb_dataset.smiles_list`` (indexed by graph
+            # id); fall back to a per-graph ``.smiles`` attribute if present.
+            _slist = getattr(self._ds, 'smiles_list', None)
+            def _smi(gid):
+                if _slist is not None:
+                    return _slist[gid]
+                return getattr(self._ds[gid], 'smiles', None)
             missing = [
                 self._indices[i] for i in range(len(self._indices))
-                if not getattr(self._ds[self._indices[i]], 'smiles', None)
+                if not _smi(self._indices[i])
             ]
             if missing:
                 raise ValueError(
@@ -389,7 +396,8 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         i = self._indices[idx]
         data = self._ds[i].clone()
         n = data.num_nodes
-        smiles = getattr(data, 'smiles', None)
+        _slist = getattr(self._ds, 'smiles_list', None)
+        smiles = _slist[i] if _slist is not None else getattr(data, 'smiles', None)
         if self._require_smiles and self._lookup and not smiles:
             raise ValueError(
                 f"OGB graph index {i} has no SMILES; cannot attach motif annotations.")

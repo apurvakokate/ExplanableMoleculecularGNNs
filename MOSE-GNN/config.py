@@ -41,14 +41,18 @@ class MOSEConfig:
     lr: float = 1e-3              # base LR (kept for backward compat / fallback)
     explainer_lr: float = 0.01   # LR for motif-importance params (the explainer)
     gnn_lr: float = 0.001        # LR for GNN backbone params
-    weight_decay: float = 1e-5
-    batch_size: int = 128
+    optimizer: str = 'adamw'     # adamw | adam (paper used AdamW w/ decoupled wd)
+    weight_decay: float = 0.01   # paper default (AdamW). Was 1e-5 (Adam) earlier.
+    batch_size: int = 64
     size_reg: float = 0.0
     ent_reg: float = 0.01
     top_tau: int = 10
     ignore_unknowns: bool = False
     patience: int = 30
     min_epochs: int = 20
+    # Early-stop / LR-scheduler signal: 'loss' = smoothed val task loss (paper
+    # default); 'auc' = legacy val-AUC. Checkpoint is always best-val-AUC.
+    early_stop_metric: str = 'loss'
     clip_grad: float = 2.0
     seed: int = 42
 

@@ -336,10 +336,15 @@ class TestApplyMotifLookup(unittest.TestCase):
         with self.assertRaises(KeyError):
             apply_motif_lookup_with_index_map(n, 'WRONG_SMILES', lookup, index_map)
 
-    def test_empty_lookup_raises(self):
+    def test_empty_lookup_returns_all_unknown(self):
+        # An EMPTY lookup means "no motif vocabulary" — a valid state, not an
+        # error: every node is unknown (-1). apply_motif_lookup_with_index_map
+        # only raises for a NON-empty lookup that is missing this SMILES (the
+        # deliberate `and lookup` guard). Contrast test_missing_smiles_raises.
         n, smiles, lookup, index_map, nt = self._setup()
-        with self.assertRaises(KeyError):
-            apply_motif_lookup_with_index_map(n, smiles, {}, index_map)
+        ntm = apply_motif_lookup_with_index_map(n, smiles, {}, index_map)
+        self.assertEqual(ntm.shape, (n,))
+        self.assertTrue(bool((ntm == -1).all()))
 
     def test_no_unknown_nodes_in_fully_mapped_graph(self):
         """When every atom is in the lookup, no -1 should remain."""

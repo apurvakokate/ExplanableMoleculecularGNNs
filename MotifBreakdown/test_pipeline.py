@@ -1318,10 +1318,13 @@ class TestV4Adapter(unittest.TestCase):
         for key, _ in toks:
             self.assertIsInstance(key, str)
 
-    def test_invalid_smiles_marked(self):
+    def test_invalid_smiles_raises(self):
+        # fragment_tracked_v4 fails fast on SMILES RDKit cannot parse (rather
+        # than emitting a placeholder token), matching the fail-fast handling of
+        # invalid molecules elsewhere (vocab build / OGB load drop such rows).
         ruleset, index = v4.learn_corpus_rulebook(['not_a_smiles'])
-        toks = v4.fragment_tracked_v4('not_a_smiles', ruleset, index)
-        self.assertEqual(toks, [('[INVALID]', {0})])
+        with self.assertRaises(ValueError):
+            v4.fragment_tracked_v4('not_a_smiles', ruleset, index)
 
     def test_fail_loud_on_missing_atom(self):
         # A corrupt tokenizer that drops atoms must raise, never silently patch

@@ -240,6 +240,8 @@ def run(cfg: MOSEConfig) -> dict:
             explainer_lr=getattr(cfg, 'explainer_lr', None),
             gnn_lr=getattr(cfg, 'gnn_lr', None),
             weight_decay=cfg.weight_decay,
+            optimizer=getattr(cfg, 'optimizer', 'adamw'),
+            early_stop_metric=getattr(cfg, 'early_stop_metric', 'loss'),
             pos_weights=pos_w, size_reg=cfg.size_reg, ent_reg=cfg.ent_reg,
             top_tau=cfg.top_tau, ignore_unknowns=cfg.ignore_unknowns,
             patience=cfg.patience, min_epochs=cfg.min_epochs,
@@ -412,6 +414,15 @@ def main():
                         help='Size/sparsity reg. If omitted, resolved per '
                              '(backbone, dataset) from reg_config.py (PNA→GIN).')
     parser.add_argument('--epochs',      type=int, default=150)
+    parser.add_argument('--batch_size',  type=int, default=None,
+                        help='Minibatch size (default 64 from MOSEConfig).')
+    parser.add_argument('--optimizer',   default=None, choices=['adamw', 'adam'],
+                        help='Optimizer (default adamw from MOSEConfig).')
+    parser.add_argument('--weight_decay', type=float, default=None,
+                        help='Weight decay (default 0.01 from MOSEConfig).')
+    parser.add_argument('--early_stop_metric', default=None, choices=['loss', 'auc'],
+                        help="Early-stop/scheduler signal: 'loss' = smoothed val "
+                             "loss (default, paper); 'auc' = legacy val-AUC.")
     parser.add_argument('--gnn_lr',      type=float, default=None,
                         help='LR for GNN backbone params (default 0.001 from MOSEConfig).')
     parser.add_argument('--explainer_lr', type=float, default=None,
@@ -503,6 +514,10 @@ def main():
             w_readout=args.w_readout,
             ent_reg=_ent, size_reg=_size,
             epochs=args.epochs,
+            **({} if args.batch_size is None else {'batch_size': args.batch_size}),
+            **({} if args.optimizer is None else {'optimizer': args.optimizer}),
+            **({} if args.weight_decay is None else {'weight_decay': args.weight_decay}),
+            **({} if args.early_stop_metric is None else {'early_stop_metric': args.early_stop_metric}),
             gnn_lr=0.001 if args.gnn_lr is None else args.gnn_lr,
             explainer_lr=0.01 if args.explainer_lr is None else args.explainer_lr,
             data_root=args.data_root,

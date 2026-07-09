@@ -18,6 +18,7 @@ may use ``[*]``, but full-molecule graphs must not contain RDKit dummy atoms.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -239,6 +240,27 @@ def load_ogb_dataset(data_dir: str, dataset_name: str):
 
     # OGB expects hyphens; normalise underscores
     name_hyphen = dataset_name.replace('_', '-')
+    # torch>=2.6 defaults torch.load(weights_only=True), which rejects the PyG
+    # collate globals in OGB's (trusted) processed cache. Allowlist exactly the
+    # classes OGB serialises so the load succeeds without disabling safety.
+    try:
+        import torch.serialization as _ts
+        if hasattr(_ts, 'add_safe_globals'):
+            _safe = []
+            try:
+                from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+                _safe += [DataEdgeAttr, DataTensorAttr]
+            except Exception:
+                pass
+            try:
+                from torch_geometric.data.storage import GlobalStorage
+                _safe += [GlobalStorage]
+            except Exception:
+                pass
+            if _safe:
+                _ts.add_safe_globals(_safe)
+    except Exception:
+        pass
     dataset = PygGraphPropPredDataset(root=data_dir, name=name_hyphen)
     split_idx = dataset.get_idx_split()
 
@@ -248,8 +270,35 @@ def load_ogb_dataset(data_dir: str, dataset_name: str):
     if mol_csv is not None:
         smiles_df = pd.read_csv(str(mol_csv))
         if 'smiles' in smiles_df.columns and len(smiles_df) == len(dataset):
-            for i, smi in enumerate(smiles_df['smiles']):
-                dataset[i].smiles = str(smi)
+            # Store SMILES as a plain list ATTRIBUTE on the dataset object.
+            # (Assigning to ``dataset[i].smiles`` is a no-op: InMemoryDataset
+            # returns a fresh copy per index, so per-graph attach never persists.
+            # Consumers read ``dataset.smiles_list[i]`` by graph index instead.)
+            dataset.smiles_list = [str(s) for s in smiles_df['smiles']]
+
+            # Drop molecules RDKit cannot parse (e.g. metal-coordination complexes
+            # like [Al]/[B-] compounds). They cannot be motif-annotated by the
+            # RDKit-based vocab, so they must never enter any split. Remove them
+            # from split_idx (they stay in the underlying store but are never
+            # referenced) and warn with the exact SMILES removed.
+            bad = [i for i, s in enumerate(dataset.smiles_list)
+                   if Chem.MolFromSmiles(s) is None]
+            if bad:
+                _n_prev = min(len(bad), 20)
+                _lines = "\n".join(
+                    f"    idx {i}: {dataset.smiles_list[i]}" for i in bad[:_n_prev])
+                _more = "" if len(bad) <= _n_prev else f"\n    ... (+{len(bad) - _n_prev} more)"
+                warnings.warn(
+                    f"[load_ogb_dataset] {dataset_name}: removed {len(bad)} "
+                    f"RDKit-unparseable molecule(s) from all splits (cannot be "
+                    f"motif-annotated):\n{_lines}{_more}",
+                    stacklevel=2,
+                )
+                _badset = set(bad)
+                for _k in list(split_idx.keys()):
+                    _v = split_idx[_k]
+                    _keep = [int(x) for x in _v.tolist() if int(x) not in _badset]
+                    split_idx[_k] = torch.as_tensor(_keep, dtype=_v.dtype)
 
     return dataset, split_idx
 

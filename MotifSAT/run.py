@@ -86,9 +86,23 @@ def _requires_nodes_to_motifs(cfg: MotifSATConfig) -> bool:
 
 
 def _validate_motif_annotations(cfg: MotifSATConfig, loaders) -> None:
-    """Fail fast when readout / motif-noise needs nodes_to_motifs but data lacks them."""
+    """Fail fast when readout / motif-noise needs nodes_to_motifs but data lacks them.
+
+    Also rejects FILTERED vocab variants (``*_filter``): filtering drops motifs
+    below the frequency threshold, so some graphs end up with all-unknown nodes
+    (``nodes_to_motifs`` all -1). MotifSAT's motif-readout / motif-noise paths do
+    not handle filtered vocabularies yet.
+    """
     if not _requires_nodes_to_motifs(cfg):
         return
+    # Filtered vocab + MotifSAT (readout / motif-noise) is not supported yet.
+    if str(cfg.vocab_variant).endswith('_filter'):
+        raise ValueError(
+            f"motif_method={cfg.motif_method!r} noise={cfg.noise!r} with a "
+            f"FILTERED vocab (vocab_variant={cfg.vocab_variant!r}) is not "
+            f"supported yet: filtered + MotifSAT support is yet to be added. "
+            f"Run MotifSAT with the base (unfiltered) vocab variant instead."
+        )
     ds = loaders['train'].dataset
     if len(ds) == 0:
         raise ValueError('train dataset is empty; cannot validate nodes_to_motifs')
@@ -100,12 +114,6 @@ def _validate_motif_annotations(cfg: MotifSATConfig, loaders) -> None:
             f"nodes_to_motifs on each graph, but the train loader does not "
             f"provide it. Check vocab_root/vocab_variant and mutag export "
             f"artifacts (mutag_<fold>.csv + index maps)."
-        )
-    if (n2m >= 0).sum().item() == 0:
-        raise ValueError(
-            f"motif_method={cfg.motif_method!r} noise={cfg.noise!r} requires "
-            f"annotated motifs (nodes_to_motifs >= 0), but the first train "
-            f"graph has none. Check vocab lookup / index maps."
         )
 
 

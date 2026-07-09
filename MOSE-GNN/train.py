@@ -10,6 +10,7 @@ Where H(p) = -p log p - (1-p) log(1-p) is binary entropy.
 
 from __future__ import annotations
 
+from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -92,6 +93,31 @@ def _task_loss(
     return criterion(out.view(-1)[valid], y.view(-1)[valid].float())
 
 
+@torch.no_grad()
+def _val_task_loss(
+    model,
+    criterion: nn.Module,
+    loader,
+    device: torch.device,
+    task_type: str,
+    ignore_unknowns: bool = False,
+) -> float:
+    """Mean validation TASK loss (no motif regularisation) — the paper's
+    early-stop / LR-scheduler signal (smoothed over recent epochs)."""
+    model.eval()
+    tot, n = 0.0, 0
+    for data in loader:
+        data = data.to(device)
+        out, _ = model(
+            data.x, data.edge_index, data.batch,
+            data.nodes_to_motifs, getattr(data, 'edge_attr', None),
+            ignore_unknowns=ignore_unknowns,
+        )
+        tot += float(_task_loss(criterion, out, data.y, task_type).item())
+        n += 1
+    return tot / max(n, 1)
+
+
 def train_one_epoch(
     model,
     criterion: nn.Module,
@@ -159,7 +185,9 @@ def train_mose_gnn(
     lr: float = 1e-3,
     explainer_lr: Optional[float] = None,
     gnn_lr: Optional[float] = None,
-    weight_decay: float = 1e-5,
+    weight_decay: float = 0.01,
+    optimizer: str = 'adamw',
+    early_stop_metric: str = 'loss',
     pos_weights: Optional[torch.Tensor] = None,
     size_reg: float = 0.0,
     ent_reg: float = 0.01,
@@ -185,6 +213,10 @@ def train_mose_gnn(
     else:
         criterion = nn.MSELoss()
 
+    # Optimizer choice: AdamW (decoupled weight decay, the paper default) or
+    # Adam. Resolved from the ``optimizer`` string before the param-group build.
+    _OptCls = torch.optim.AdamW if str(optimizer).lower() == 'adamw' else torch.optim.Adam
+
     # Two learning rates: the explainer (motif-importance params) and the GNN
     # backbone train at different speeds. When explainer_lr/gnn_lr are given we
     # build separate param groups; otherwise fall back to a single LR (`lr`).
@@ -206,20 +238,31 @@ def train_mose_gnn(
             groups.append({'params': exp_params, 'lr': _exp_lr})
         if gnn_params:
             groups.append({'params': gnn_params, 'lr': _gnn_lr})
-        optimizer = torch.optim.Adam(groups, weight_decay=weight_decay)
+        optimizer = _OptCls(groups, weight_decay=weight_decay)
         if verbose:
-            print(f'  [lr] explainer={_exp_lr} ({len(exp_params)} params)  '
+            print(f'  [opt] {_OptCls.__name__}(weight_decay={weight_decay})  '
+                  f'explainer={_exp_lr} ({len(exp_params)} params)  '
                   f'gnn={_gnn_lr} ({len(gnn_params)} params)')
     else:
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr,
-                                     weight_decay=weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, patience=15, factor=0.5,
-                                  min_lr=1e-5)
+        optimizer = _OptCls(model.parameters(), lr=lr,
+                            weight_decay=weight_decay)
+    # LR scheduler & early-stop signal.
+    #   'loss' (paper default): drive off SMOOTHED validation task loss
+    #       (deque mean), scheduler patience 5.
+    #   'auc'  (legacy): drive off the checkpoint metric (val AUC / -RMSE),
+    #       scheduler patience 15.
+    _stop_on_loss = str(early_stop_metric).lower() == 'loss'
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5,
+        patience=(5 if _stop_on_loss else 15), min_lr=1e-5)
 
-    best_val = float('inf') if task_type == 'Regression' else 0.0
+    best_val = float('inf') if task_type == 'Regression' else 0.0  # checkpoint metric
+    best_stop = float('inf')                # smoothed val loss (min is better)
+    loss_queue: deque = deque(maxlen=5)
     no_improve = 0
     best_state = deepcopy(model.state_dict())
-    history: Dict = {'train_loss': [], 'reg_loss': [], 'val_metric': []}
+    history: Dict = {'train_loss': [], 'reg_loss': [], 'val_metric': [],
+                     'val_loss': []}
 
     for epoch in range(1, epochs + 1):
         t_loss, r_loss = train_one_epoch(
@@ -233,16 +276,33 @@ def train_mose_gnn(
         val_score = _val_score(val_m, task_type)
         history['val_metric'].append(val_score)
 
-        scheduler.step(val_score if task_type == 'Regression' else -val_score)
+        # Smoothed validation task loss (paper early-stop / scheduler signal).
+        vloss = _val_task_loss(model, criterion, loaders['valid'], device,
+                               task_type, ignore_unknowns)
+        loss_queue.append(vloss)
+        smoothed_loss = sum(loss_queue) / len(loss_queue)
+        history['val_loss'].append(smoothed_loss)
 
+        # Checkpoint is ALWAYS the best validation AUC (classification) / RMSE
+        # (regression) snapshot — matching the paper's best_model_acc used for
+        # explanation — regardless of the early-stop signal.
         is_better = (val_score < best_val if task_type == 'Regression'
                      else val_score > best_val)
         if is_better:
             best_val = val_score
-            no_improve = 0
             best_state = deepcopy(model.state_dict())
+
+        # Early-stop + LR schedule signal (decoupled from checkpoint selection).
+        if _stop_on_loss:
+            scheduler.step(smoothed_loss)
+            if smoothed_loss < best_stop - 1e-4:
+                best_stop = smoothed_loss
+                no_improve = 0
+            else:
+                no_improve += 1
         else:
-            no_improve += 1
+            scheduler.step(val_score if task_type == 'Regression' else -val_score)
+            no_improve = 0 if is_better else no_improve + 1
 
         # W&B logging
         if wandb_logger is not None:
