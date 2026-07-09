@@ -787,6 +787,29 @@ def top_bottom_motif_eval(
 # 4. GT vs outside-GT motif evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _infer_positive_class(data_list: List[Data]) -> int:
+    """The property-positive / GT-bearing class label.
+
+    Most datasets label the property-positive class as 1, but mutag labels
+    mutagens — the property-positive, GT-bearing class — as ``y == 0``
+    (``Mutagenicity_label_readme.txt``). The GT node/edge annotations live ONLY
+    on the property-positive class, so infer it from the label of the graphs that
+    actually carry GT. Falls back to 1 when there is no GT or it is ambiguous
+    (the conventional convention), preserving behaviour for every non-mutag set.
+    """
+    labels = set()
+    for d in data_list:
+        nl = getattr(d, 'node_label', None)
+        el = getattr(d, 'edge_label', None)
+        has_gt = ((nl is not None and float(nl.sum()) > 0) or
+                  (el is not None and float(el.sum()) > 0))
+        if has_gt:
+            lab = _true_label(d)
+            if lab is not None:
+                labels.add(int(lab))
+    return labels.pop() if len(labels) == 1 else 1
+
+
 def gt_vs_outside_gt_eval(
     motif_scores: Dict[int, float],
     motif_impacts: Dict[int, Dict[str, float]],
@@ -798,6 +821,7 @@ def gt_vs_outside_gt_eval(
     task_type: str = 'BinaryClass',
     threshold: float = 0.5,
     base_att_fn: Optional[Callable[[Data], Optional[torch.Tensor]]] = None,
+    positive_class: Optional[int] = None,
 ) -> Dict[str, Dict[str, float]]:
     """Compare GT vs non-GT motifs across three example subsets.
 
@@ -807,9 +831,17 @@ def gt_vs_outside_gt_eval(
 
     Three subsets
     -------------
-    all              — all test examples
-    class1           — all examples with true label = 1
-    correct_class1   — examples with true label = 1 AND p̂ > threshold
+    all                    — all test examples
+    positive_class         — examples whose true label = the property-positive
+                             class (see ``positive_class``)
+    correct_positive_class — the above AND the model correctly predicts that
+                             class (p̂(positive_class) > threshold)
+
+    NOTE on the positive class: most datasets encode the property-positive class
+    as 1, but mutag encodes mutagens as ``y == 0``. Hardcoding class 1 would make
+    this analysis pick the wrong (GT-free) graphs for mutag, so ``positive_class``
+    is auto-derived from where the GT labels live when not given. This keeps every
+    non-mutag dataset on class 1 and flips mutag to class 0.
 
     For each subset, reports:
       gt_mean_impact     mean impact of GT motifs
@@ -826,6 +858,10 @@ def gt_vs_outside_gt_eval(
         Motif vocab ids considered ground-truth explanatory motifs.
     threshold : float
         Probability threshold for "correctly predicted" (default 0.5).
+    positive_class : int or None
+        The property-positive class label. When None (default) it is inferred
+        from the GT-bearing graphs via ``_infer_positive_class`` (mutag → 0,
+        everything else → 1).
     """
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
@@ -837,17 +873,26 @@ def gt_vs_outside_gt_eval(
     base_W, p_full_W = build_faithful_loo_baseline(
         model, data_list, device, task_type, base_att_fn=base_att_fn)
 
-    # Partition data_list into the three subsets by graph index.
+    # Partition data_list into the three subsets by graph index. The
+    # property-positive class is auto-derived (mutag=0, else 1) unless given.
+    pos = int(positive_class if positive_class is not None
+              else _infer_positive_class(data_list))
     all_indices = set(range(len(data_list)))
-    class1_indices = {gi for gi, d in enumerate(data_list)
-                      if _true_label(d) == 1}
-    correct1_indices = {gi for gi in class1_indices
-                        if orig_probs.get(gi, 0.0) > threshold}
+    pos_indices = {gi for gi, d in enumerate(data_list)
+                   if _true_label(d) == pos}
+
+    def _pred_pos_prob(gi: int) -> float:
+        # orig_probs is P(y=1); the positive class may be 0, so use P(y=pos).
+        p = orig_probs.get(gi, 0.0)
+        return p if pos == 1 else (1.0 - p)
+
+    correct_pos_indices = {gi for gi in pos_indices
+                           if _pred_pos_prob(gi) > threshold}
 
     subsets = {
-        'all':            all_indices,
-        'class1':         class1_indices,
-        'correct_class1': correct1_indices,
+        'all':                    all_indices,
+        'positive_class':         pos_indices,
+        'correct_positive_class': correct_pos_indices,
     }
 
     common_motifs = sorted(set(motif_scores) & set(motif_impacts))

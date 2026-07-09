@@ -88,6 +88,29 @@ def export(dataset: str, ogb_root: str, out_dir: str, fold: int,
         from ogb.graphproppred import PygGraphPropPredDataset
     except ImportError:
         raise ImportError("OGB not installed. Run: pip install ogb")
+    # torch>=2.6 defaults torch.load(weights_only=True), which rejects the PyG
+    # collate globals in OGB's (trusted) processed cache. Allowlist exactly the
+    # classes OGB serialises — same fix as
+    # SharedModules.data.dataset.load_ogb_dataset (this export path bypasses that
+    # loader, so it needs its own guard).
+    try:
+        import torch.serialization as _ts
+        if hasattr(_ts, 'add_safe_globals'):
+            _safe = []
+            try:
+                from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+                _safe += [DataEdgeAttr, DataTensorAttr]
+            except Exception:
+                pass
+            try:
+                from torch_geometric.data.storage import GlobalStorage
+                _safe += [GlobalStorage]
+            except Exception:
+                pass
+            if _safe:
+                _ts.add_safe_globals(_safe)
+    except Exception:
+        pass
     ds = PygGraphPropPredDataset(root=ogb_root, name=name_hyphen)
     split = ds.get_idx_split()
     group = ['training'] * len(df)

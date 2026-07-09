@@ -1091,7 +1091,7 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             device=DEVICE,
             task_type='BinaryClass',
         )
-        for subset in ('all', 'class1', 'correct_class1'):
+        for subset in ('all', 'positive_class', 'correct_positive_class'):
             self.assertIn(subset, result)
 
     def test_all_subset_fields(self):
@@ -1135,7 +1135,7 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             scores, impacts, gt_ids, data_list, model, vocab,
             DEVICE, task_type='BinaryClass'
         )
-        self.assertLessEqual(result['class1']['n_examples'],
+        self.assertLessEqual(result['positive_class']['n_examples'],
                              result['all']['n_examples'])
 
     def test_correct_class1_subset_lt_eq_class1(self):
@@ -1144,8 +1144,8 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             scores, impacts, gt_ids, data_list, model, vocab,
             DEVICE, task_type='BinaryClass'
         )
-        self.assertLessEqual(result['correct_class1']['n_examples'],
-                             result['class1']['n_examples'])
+        self.assertLessEqual(result['correct_positive_class']['n_examples'],
+                             result['positive_class']['n_examples'])
 
     def test_gt_impact_rank_populated(self):
         model, vocab, data_list, scores, impacts, gt_ids = self._setup()
@@ -1164,10 +1164,40 @@ class TestGtVsOutsideGtEval(unittest.TestCase):
             scores, impacts, set(), data_list, model, vocab,
             DEVICE, task_type='BinaryClass'
         )
-        for subset in ('all', 'class1', 'correct_class1'):
+        for subset in ('all', 'positive_class', 'correct_positive_class'):
             self.assertEqual(result[subset]['n_gt_motifs'], 0)
             self.assertTrue(np.isnan(result[subset]['gt_mean_score'])
                             or result[subset]['gt_mean_score'] != result[subset]['gt_mean_score'])
+
+    def test_positive_class_is_configurable(self):
+        """The positive-class subset follows `positive_class`, not a hardcoded 1
+        — so mutag (property-positive = class 0) selects the right graphs."""
+        model, vocab, data_list, scores, impacts, gt_ids = self._setup(20)
+        n0 = sum(1 for d in data_list if int(d.y.view(-1)[0]) == 0)
+        n1 = sum(1 for d in data_list if int(d.y.view(-1)[0]) == 1)
+        # No GT labels on the synthetic data → inference defaults to class 1.
+        r_def = gt_vs_outside_gt_eval(scores, impacts, gt_ids, data_list, model,
+                                      vocab, DEVICE, task_type='BinaryClass')
+        self.assertEqual(r_def['positive_class']['n_examples'], n1)
+        # Explicit positive_class=0 (mutag-style) selects the class-0 graphs.
+        r0 = gt_vs_outside_gt_eval(scores, impacts, gt_ids, data_list, model,
+                                   vocab, DEVICE, task_type='BinaryClass',
+                                   positive_class=0)
+        self.assertEqual(r0['positive_class']['n_examples'], n0)
+
+    def test_infer_positive_class_from_gt_bearing_label(self):
+        """positive_class is auto-derived from the label the GT lives on:
+        mutag-style (GT node_label only on y==0) → 0; else → 1."""
+        from SharedModules.evaluation.motif_eval import _infer_positive_class
+        _, _, data_list, *_ = self._setup(10)
+        for d in data_list:  # GT annotations only on class-0 graphs (mutag)
+            d.node_label = (torch.ones(d.x.size(0)) if int(d.y.view(-1)[0]) == 0
+                            else torch.zeros(d.x.size(0)))
+        self.assertEqual(_infer_positive_class(data_list), 0)
+        for d in data_list:  # flip GT onto class-1 graphs → conventional
+            d.node_label = (torch.ones(d.x.size(0)) if int(d.y.view(-1)[0]) == 1
+                            else torch.zeros(d.x.size(0)))
+        self.assertEqual(_infer_positive_class(data_list), 1)
 
     def _setup_index_remap(self):
         """A 4-node graph whose masks are derived from nodes_to_motifs."""
@@ -1236,7 +1266,7 @@ class TestEvalPipelineDataframes(unittest.TestCase):
                                    'non_gt_mean_score': 0.1,
                                    'score_auc': 0.95,
                                    'gt_impact_rank': 1.0},
-                'class1':         {'n_examples': 50,  'n_gt_motifs': 1,
+                'positive_class':         {'n_examples': 50,  'n_gt_motifs': 1,
                                    'n_non_gt_motifs': 1,
                                    'gt_mean_impact': 0.6,
                                    'non_gt_mean_impact': 0.15,
@@ -1244,7 +1274,7 @@ class TestEvalPipelineDataframes(unittest.TestCase):
                                    'non_gt_mean_score': 0.1,
                                    'score_auc': 0.95,
                                    'gt_impact_rank': 1.0},
-                'correct_class1': {'n_examples': 40,  'n_gt_motifs': 1,
+                'correct_positive_class': {'n_examples': 40,  'n_gt_motifs': 1,
                                    'n_non_gt_motifs': 1,
                                    'gt_mean_impact': 0.65,
                                    'non_gt_mean_impact': 0.12,
@@ -1288,7 +1318,7 @@ class TestEvalPipelineDataframes(unittest.TestCase):
         self.assertIn('gt_vs_outside', dfs)
         self.assertEqual(len(dfs['gt_vs_outside']), 3)
         subsets = set(dfs['gt_vs_outside']['subset'].tolist())
-        self.assertEqual(subsets, {'all', 'class1', 'correct_class1'})
+        self.assertEqual(subsets, {'all', 'positive_class', 'correct_positive_class'})
 
     def test_motif_impact_sorted_descending(self):
         pipeline = self._make_pipeline()
