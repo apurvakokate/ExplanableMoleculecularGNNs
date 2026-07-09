@@ -1,5 +1,6 @@
 from .vocab import VocabData, load_vocab, compute_mask_cache
 from .dataset import MolDataset, build_graph, NUM_ATOM_TYPES, EDGE_FEAT_DIM, ATOMS, BONDS
+from .dataset import WildcardAtomError, assert_no_wildcard_smiles, reject_wildcard_smiles_in_csv
 from .loader import (
     get_loaders, compute_pos_weights, apply_gt_loaders, LoaderMeta,
     DATASET_COLUMN, TASK_TYPE,
@@ -42,6 +43,7 @@ from .dataset_routing import (
 __all__ = [
     'VocabData', 'load_vocab', 'compute_mask_cache',
     'MolDataset', 'build_graph', 'NUM_ATOM_TYPES', 'EDGE_FEAT_DIM', 'ATOMS', 'BONDS',
+    'WildcardAtomError', 'assert_no_wildcard_smiles', 'reject_wildcard_smiles_in_csv',
     'get_loaders', 'compute_pos_weights', 'apply_gt_loaders', 'LoaderMeta',
     'DATASET_COLUMN', 'TASK_TYPE',
     'MutagTUDataset', 'MUTAG_X_DIM', 'MUTAG_EDGE_DIM', 'OGB_DATASET_NAMES',

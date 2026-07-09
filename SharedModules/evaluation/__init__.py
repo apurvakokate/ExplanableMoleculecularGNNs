@@ -7,7 +7,7 @@ from .motif_eval import (
     explainer_roc_vs_gt,
     compute_gt_roc,
 )
-from .pipeline import EvalPipeline
+from .pipeline import EvalPipeline, explainability_summary_fields
 from .multi_explanation import (
     build_per_graph_impact_df,
     build_per_graph_impact_df_from_masks,
@@ -26,7 +26,7 @@ __all__ = [
     'compute_motif_impact', 'score_impact_correlation',
     'top_bottom_motif_eval', 'gt_vs_outside_gt_eval',
     'explainer_roc_vs_gt', 'compute_gt_roc',
-    'EvalPipeline',
+    'EvalPipeline', 'explainability_summary_fields',
     'build_per_graph_impact_df', 'build_per_graph_impact_df_from_masks',
     'assign_hypothesis_flags', 'compute_h1_h2_ratios',
     'classify_motif_category', 'category_summary',

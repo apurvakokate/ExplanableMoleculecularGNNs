@@ -104,7 +104,11 @@ def evaluate_predictions(
 
     if task_type == 'BinaryClass':
         scores = torch.sigmoid(torch.tensor(preds)).numpy().ravel()
-        return {'auc': auc_score(labels.ravel(), scores)}
+        labels_r = labels.ravel()
+        valid = ~np.isnan(labels_r)
+        if valid.sum() < 2 or len(set(labels_r[valid].astype(int).tolist())) < 2:
+            return {'auc': float('nan')}
+        return {'auc': auc_score(labels_r[valid], scores[valid])}
 
     elif task_type == 'Regression':
         preds_r = preds.ravel()

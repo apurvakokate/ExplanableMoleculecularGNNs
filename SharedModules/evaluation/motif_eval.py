@@ -7,7 +7,8 @@ Four evaluation modes
      - ``impact`` — graph ablation via ``_ablate_motif`` (zero features / drop edges).
      - ``masking_without_removal`` — graph unchanged; the vocab bool mask is passed
        as ``node_weights`` in the model forward (motif atoms suppressed in attention).
-   Bool masks always come from ``vocab.mask_cache[split]`` (phase-1 pickle).
+   Bool masks are derived from each graph's ``nodes_to_motifs`` via
+   ``build_graph_mask_cache`` (graph-node space, one entry per list position).
 
 2. score_impact_correlation
    Pearson + Spearman between learned scores and mask-based impacts.
@@ -51,16 +52,16 @@ def _get_probs(
     data_list: List[Data],
     device: torch.device,
     task_type: str,
-) -> Dict[str, float]:
-    """smiles → predicted probability (sigmoid for binary, raw for regression)."""
+) -> Dict[int, float]:
+    """graph index → predicted probability (sigmoid for binary, raw for regression)."""
     from .metrics import _model_forward
-    probs = {}
-    for d in data_list:
+    probs: Dict[int, float] = {}
+    for gi, d in enumerate(data_list):
         out = _model_forward(model, d.clone().to(device))
         if task_type == 'BinaryClass':
-            probs[d.smiles] = float(torch.sigmoid(out.view(-1)[0]))
+            probs[gi] = float(torch.sigmoid(out.view(-1)[0]))
         else:
-            probs[d.smiles] = float(out.view(-1)[0])
+            probs[gi] = float(out.view(-1)[0])
     return probs
 
 
@@ -84,19 +85,17 @@ def _single_prob(
 
 def build_graph_mask_cache(
     data_list: List[Data],
-) -> Dict[int, Dict[str, torch.BoolTensor]]:
+) -> Dict[int, Dict[int, torch.BoolTensor]]:
     """The single source of motif masks for EVERY dataset (no fallbacks).
 
-    Returns ``motif_id -> {smiles: bool mask [num_nodes]}`` derived directly from
-    each graph's ``nodes_to_motifs`` (graph-node space). This IS the motif
-    partition the model was trained and evaluated on: mutag's explicit-H nodes
-    are already folded into their heavy atom's motif at load time, so there is no
-    SMILES→graph remapping, no vocab mask-cache pickle, and no length mismatch.
+    Returns ``motif_id -> {graph_idx: bool mask [num_nodes]}`` derived directly
+    from each graph's ``nodes_to_motifs`` (graph-node space). Keys are list
+    positions so duplicate SMILES across train/val/test are kept distinct.
 
     Fail fast: every graph must carry ``smiles`` and ``nodes_to_motifs``.
     """
-    cache: Dict[int, Dict[str, torch.BoolTensor]] = {}
-    for d in data_list:
+    cache: Dict[int, Dict[int, torch.BoolTensor]] = {}
+    for gi, d in enumerate(data_list):
         smi = getattr(d, 'smiles', None)
         n2m = getattr(d, 'nodes_to_motifs', None)
         if smi is None or n2m is None:
@@ -111,7 +110,7 @@ def build_graph_mask_cache(
             mid = int(mid)
             if mid < 0:
                 continue
-            cache.setdefault(mid, {})[smi] = (n2m == mid)
+            cache.setdefault(mid, {})[gi] = (n2m == mid)
     return cache
 
 
@@ -121,9 +120,9 @@ def build_faithful_loo_baseline(
     device: torch.device,
     task_type: str,
     base_att_fn: Optional[Callable[[Data], Optional[torch.Tensor]]] = None,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+) -> Tuple[Dict[int, torch.Tensor], Dict[int, float]]:
     """Precompute the faithful-LOO weight vector ``W`` and its baseline
-    prediction ``p(g;W)`` per graph, keyed by smiles.
+    prediction ``p(g;W)`` per graph, keyed by graph index in ``data_list``.
 
     ``W`` defaults to the model's own learned node attention
     (``model_node_att_fn``); pass ``base_att_fn`` to inject a post-hoc
@@ -136,25 +135,26 @@ def build_faithful_loo_baseline(
         return {}, {}
     if base_att_fn is None:
         base_att_fn = model_node_att_fn(model, device)
-    base_W: Dict[str, torch.Tensor] = {}
-    p_full_W: Dict[str, float] = {}
-    for d in data_list:
+    base_W: Dict[int, torch.Tensor] = {}
+    p_full_W: Dict[int, float] = {}
+    for gi, d in enumerate(data_list):
         W = base_att_fn(d)
         if W is None:
             continue
         W = W.view(-1).float().to(device)
-        base_W[d.smiles] = W
-        p_full_W[d.smiles] = _single_prob(
+        base_W[gi] = W
+        p_full_W[gi] = _single_prob(
             model, d, device, task_type, node_weights=W)
     return base_W, p_full_W
 
 
 def loo_impact(
     model,
+    graph_idx: int,
     data: Data,
     graph_mask: torch.Tensor,
-    base_W: Dict[str, torch.Tensor],
-    p_full_W: Dict[str, float],
+    base_W: Dict[int, torch.Tensor],
+    p_full_W: Dict[int, float],
     device: torch.device,
     task_type: str,
 ) -> Optional[float]:
@@ -166,18 +166,19 @@ def loo_impact(
     must agree. This is the ONE place the per-graph zero-weight impact is
     computed, reused by every caller.
     """
-    W = base_W.get(data.smiles)
+    W = base_W.get(graph_idx)
     if W is None:
         return None
     if W.numel() != graph_mask.numel():
         raise ValueError(
             f"loo_impact: W length {W.numel()} != mask length "
-            f"{graph_mask.numel()} for smiles={data.smiles!r}."
+            f"{graph_mask.numel()} for graph_idx={graph_idx} "
+            f"smiles={getattr(data, 'smiles', None)!r}."
         )
     Wm = W.clone()
     Wm[graph_mask.to(Wm.device).bool()] = 0.0
     p_masked = _single_prob(model, data, device, task_type, node_weights=Wm)
-    return abs(p_full_W[data.smiles] - p_masked)
+    return abs(p_full_W[graph_idx] - p_masked)
 
 
 def _model_supports_node_weights(model) -> bool:
@@ -278,7 +279,6 @@ def compute_motif_impact(
     data_list: List[Data],
     vocab: VocabData,
     device: torch.device,
-    split: str = 'test',
     task_type: str = 'BinaryClass',
     max_motifs: Optional[int] = None,
     base_att_fn: Optional[Callable[[Data], Optional[torch.Tensor]]] = None,
@@ -306,7 +306,9 @@ def compute_motif_impact(
     Requires the model's ``forward`` to accept ``node_weights``; skipped
     otherwise.
 
-    Bool masks are loaded from ``vocab.mask_cache[split]`` only.
+    Bool masks come from ``build_graph_mask_cache(data_list)`` (``nodes_to_motifs``
+    on each graph). One mask entry per list position — duplicate SMILES are not
+    collapsed.
 
     Returns
     -------
@@ -321,7 +323,6 @@ def compute_motif_impact(
     """
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
-    smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
     # mask_nodes, mask_edges = _injection_modes(model)   # removal impact disabled
 
@@ -342,10 +343,10 @@ def compute_motif_impact(
     for mid in motif_ids:
         # impacts = []          # removal-based impact — DISABLED (see below)
         nw_impacts = []
-        for smi, graph_mask in mask_cache[mid].items():
-            d = smi_to_data.get(smi)
-            orig_p = orig_probs.get(smi)
-            if d is None or orig_p is None:
+        for gi, graph_mask in mask_cache[mid].items():
+            d = data_list[gi]
+            orig_p = orig_probs.get(gi)
+            if orig_p is None:
                 continue
 
             # ── Removal-based (graph-ablation) impact — COMMENTED OUT ─────────
@@ -361,7 +362,7 @@ def compute_motif_impact(
 
             # Faithful LOO (zero-weight, no removal) via the shared helper.
             nw = loo_impact(
-                model, d, graph_mask, base_W, p_full_W, device, task_type)
+                model, gi, d, graph_mask, base_W, p_full_W, device, task_type)
             if nw is not None:
                 nw_impacts.append(nw)
 
@@ -418,24 +419,42 @@ def score_impact_correlation(
     motif_scores: Dict[int, float],
     motif_impacts: Dict[int, Dict[str, float]],
 ) -> Dict[str, float]:
-    """Pearson/Spearman between learned scores and impacts, computed
-    *instance-level*: every (motif, graph) impact is one point and the motif's
-    score is repeated across its graphs — matching the original MOSE-GNN, which
-    does NOT average impacts across graphs before correlating."""
+    """Pearson/Spearman between learned scores and mask-based impacts, at TWO
+    aggregation levels (both always returned):
+
+    * instance-level (``pearson`` / ``spearman``): every (motif, graph) impact
+      is one point and the motif's score is repeated across its graphs — the
+      original MOSE-GNN definition, which does NOT average impacts across graphs.
+    * motif-level (``pearson_motif`` / ``spearman_motif``): each motif is ONE
+      point — its mean impact vs its score. This is the grouped-by-motif
+      aggregation used to report the paper's Table 3.4 score-vs-impact
+      correlation.
+
+    Keys: ``pearson``/``spearman``/``n_points`` (instance) and
+    ``pearson_motif``/``spearman_motif``/``n_motifs`` (motif-level)."""
     from scipy.stats import pearsonr, spearmanr
 
+    nan = float('nan')
     common = sorted(set(motif_scores) & set(motif_impacts))
     if len(common) < 3:
-        return {'pearson': float('nan'), 'spearman': float('nan'), 'n_points': 0}
+        return {'pearson': nan, 'spearman': nan, 'n_points': 0,
+                'pearson_motif': nan, 'spearman_motif': nan,
+                'n_motifs': len(common)}
 
-    xs: List[float] = []
+    xs: List[float] = []       # instance-level: score repeated per graph
     ys: List[float] = []
+    xs_m: List[float] = []     # motif-level: one point per motif
+    ys_m: List[float] = []
     for m in common:
         vals = _impact_values(motif_impacts[m])
         xs.extend([float(motif_scores[m])] * len(vals))
         ys.extend(vals)
-    s   = np.array(xs)
-    imp = np.array(ys)
+        xs_m.append(float(motif_scores[m]))
+        ys_m.append(_impact_value(motif_impacts[m]))   # per-motif mean impact
+    s     = np.array(xs)
+    imp   = np.array(ys)
+    s_m   = np.array(xs_m)
+    imp_m = np.array(ys_m)
 
     def _safe(fn, a, b):
         return (float(fn(a, b)[0])
@@ -443,9 +462,12 @@ def score_impact_correlation(
                 else float('nan'))
 
     return {
-        'pearson':  _safe(pearsonr,  s, imp),
-        'spearman': _safe(spearmanr, s, imp),
-        'n_points': int(len(s)),
+        'pearson':        _safe(pearsonr,  s,   imp),
+        'spearman':       _safe(spearmanr, s,   imp),
+        'n_points':       int(len(s)),
+        'pearson_motif':  _safe(pearsonr,  s_m, imp_m),
+        'spearman_motif': _safe(spearmanr, s_m, imp_m),
+        'n_motifs':       int(len(s_m)),
     }
 
 
@@ -456,7 +478,6 @@ def score_impact_correlation(
 def motif_class_discriminativeness(
     data_list: List[Data],
     vocab: VocabData,
-    split: str = 'test',
     max_motifs: Optional[int] = None,
 ) -> Dict[int, Dict[str, float]]:
     """How class-discriminative is each motif's *presence*, independent of the
@@ -480,20 +501,19 @@ def motif_class_discriminativeness(
                          presence_auc, abs_disc, n_present}]
     """
     mask_cache = build_graph_mask_cache(data_list)
-    # Per-graph binary label keyed by smiles
-    y_by_smi: Dict[str, float] = {}
+    y_all: List[float] = []
     for d in data_list:
         y = d.y
         try:
-            y_by_smi[d.smiles] = float(y.view(-1)[0].item())
+            y_all.append(float(y.view(-1)[0].item()))
         except Exception:
-            continue
-    smis = [d.smiles for d in data_list if d.smiles in y_by_smi]
-    y_all = np.array([y_by_smi[s] for s in smis])
-    n = len(smis)
-    if n == 0 or len(set(y_all.tolist())) < 2:
+            y_all.append(float('nan'))
+    y_all_arr = np.array(y_all, dtype=float)
+    valid = ~np.isnan(y_all_arr)
+    n = int(valid.sum())
+    if n == 0 or len(set(y_all_arr[valid].astype(int).tolist())) < 2:
         return {}
-    base_rate = float(y_all.mean())
+    base_rate = float(y_all_arr[valid].mean())
 
     motif_ids = sorted(mask_cache.keys())
     if max_motifs is not None:
@@ -501,17 +521,19 @@ def motif_class_discriminativeness(
 
     out: Dict[int, Dict[str, float]] = {}
     for mid in motif_ids:
-        present_smis = set(mask_cache[mid].keys())
-        z = np.array([1.0 if s in present_smis else 0.0 for s in smis])
+        present = set(mask_cache[mid].keys())
+        z = np.array([1.0 if gi in present and valid[gi] else 0.0
+                      for gi in range(len(data_list))])
+        z = z[valid]
         n_present = int(z.sum())
         if n_present == 0 or n_present == n:
             continue  # motif gives no contrast on this split
-        y1 = y_all[z == 1]
-        y0 = y_all[z == 0]
+        y1 = y_all_arr[valid][z == 1]
+        y0 = y_all_arr[valid][z == 0]
         p1_m   = float(y1.mean()) if len(y1) else float('nan')
         p1_notm= float(y0.mean()) if len(y0) else float('nan')
         try:
-            pauc = float(roc_auc_score(y_all, z))
+            pauc = float(roc_auc_score(y_all_arr[valid], z))
         except ValueError:
             pauc = float('nan')
         smarts = vocab.motif_list[mid] if mid < len(vocab.motif_list) else '?'
@@ -664,7 +686,6 @@ def gt_vs_outside_gt_eval(
     model: torch.nn.Module,
     vocab: VocabData,
     device: torch.device,
-    split: str = 'test',
     task_type: str = 'BinaryClass',
     threshold: float = 0.5,
     base_att_fn: Optional[Callable[[Data], Optional[torch.Tensor]]] = None,
@@ -699,7 +720,6 @@ def gt_vs_outside_gt_eval(
     """
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
-    smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
     # mask_nodes, mask_edges = _injection_modes(model)   # removal impact disabled
     # Zero-weight (faithful LOO) baseline — the ONE impact definition, shared
@@ -708,44 +728,41 @@ def gt_vs_outside_gt_eval(
     base_W, p_full_W = build_faithful_loo_baseline(
         model, data_list, device, task_type, base_att_fn=base_att_fn)
 
-    # Partition data_list into the three subsets by smiles
-    all_smiles        = {d.smiles for d in data_list}
-    class1_smiles     = {d.smiles for d in data_list
-                         if _true_label(d) == 1}
-    correct1_smiles   = {smi for smi in class1_smiles
-                         if orig_probs.get(smi, 0.0) > threshold}
+    # Partition data_list into the three subsets by graph index.
+    all_indices = set(range(len(data_list)))
+    class1_indices = {gi for gi, d in enumerate(data_list)
+                      if _true_label(d) == 1}
+    correct1_indices = {gi for gi in class1_indices
+                        if orig_probs.get(gi, 0.0) > threshold}
 
     subsets = {
-        'all':            all_smiles,
-        'class1':         class1_smiles,
-        'correct_class1': correct1_smiles,
+        'all':            all_indices,
+        'class1':         class1_indices,
+        'correct_class1': correct1_indices,
     }
 
     common_motifs = sorted(set(motif_scores) & set(motif_impacts))
     gt_ids     = [m for m in common_motifs if m in gt_motif_ids]
     non_gt_ids = [m for m in common_motifs if m not in gt_motif_ids]
 
-    # (motif_id, smiles) pairs whose mask could not be applied.
-    skipped_pairs: Set[Tuple[int, str]] = set()
+    # (motif_id, graph_idx) pairs whose mask could not be applied.
+    skipped_pairs: Set[Tuple[int, int]] = set()
 
-    def _subset_impacts(motif_id: int, allowed_smiles: Set[str]) -> List[float]:
-        """Zero-weight (faithful LOO) impacts of motif_id over allowed_smiles."""
-        d = smi_to_data
+    def _subset_impacts(motif_id: int, allowed: Set[int]) -> List[float]:
+        """Zero-weight (faithful LOO) impacts of motif_id over allowed graphs."""
         mc = mask_cache.get(motif_id, {})
-        probs_orig = orig_probs
         impacts = []
-        for smi, graph_mask in mc.items():
-            if smi not in allowed_smiles:
+        for gi, graph_mask in mc.items():
+            if gi not in allowed:
                 continue
-            data = d.get(smi)
-            orig_p = probs_orig.get(smi)
-            if data is None or orig_p is None:
+            data = data_list[gi]
+            if orig_probs.get(gi) is None:
                 continue
             # Removal (_ablate_motif) disabled — zero-weight LOO only.
-            nw = loo_impact(model, data, graph_mask, base_W, p_full_W,
+            nw = loo_impact(model, gi, data, graph_mask, base_W, p_full_W,
                             device, task_type)
             if nw is None:
-                skipped_pairs.add((motif_id, smi))
+                skipped_pairs.add((motif_id, gi))
                 continue
             impacts.append(nw)
         return impacts

@@ -33,6 +33,66 @@ from .motif_eval import (
 )
 
 
+def explainability_summary_fields(
+    results: Dict,
+    *,
+    scope: str = 'test',
+    corr_by_agg: Optional[Dict[str, Dict]] = None,
+) -> Dict[str, float]:
+    """Flat summary.json fields for pearson / spearman / GT-ROC.
+
+    scope 'test' — headline test-split metrics (``pearson``, ``gt_roc_*``).
+    scope 'all'  — pooled train+valid+test metrics (``pearson_all``, …).
+    """
+    nan = float('nan')
+    suffix = '_all' if scope == 'all' else ''
+    tag = 'all' if scope == 'all' else ''
+
+    def _corr_block() -> Dict:
+        if corr_by_agg is not None:
+            _mean = corr_by_agg.get('mean', {})
+            out: Dict[str, float] = {
+                f'pearson{suffix}':  _mean.get('pearson', nan),
+                f'spearman{suffix}': _mean.get('spearman', nan),
+                f'pearson_motif{suffix}':  _mean.get('pearson_motif', nan),
+                f'spearman_motif{suffix}': _mean.get('spearman_motif', nan),
+            }
+            for agg in ('mean', 'max'):
+                c = corr_by_agg.get(agg, {})
+                out[f'pearson_node_{agg}{suffix}']  = c.get('pearson', nan)
+                out[f'spearman_node_{agg}{suffix}'] = c.get('spearman', nan)
+            return out
+        corr = results.get(f'correlation_{tag}' if tag else 'correlation', {})
+        return {
+            f'pearson{suffix}':  corr.get('pearson', nan),
+            f'spearman{suffix}': corr.get('spearman', nan),
+            # motif-level aggregated (grouped) score-vs-impact — Table 3.4 metric
+            f'pearson_motif{suffix}':  corr.get('pearson_motif', nan),
+            f'spearman_motif{suffix}': corr.get('spearman_motif', nan),
+            f'pearson_node_mean{suffix}':  corr.get('pearson', nan),
+            f'pearson_node_max{suffix}':   corr.get('pearson', nan),
+            f'spearman_node_mean{suffix}': corr.get('spearman', nan),
+            f'spearman_node_max{suffix}':  corr.get('spearman', nan),
+        }
+
+    gt     = results.get(f'gt_roc_{tag}' if tag else 'gt_roc', {})
+    gt_node = results.get(f'gt_roc_node_{tag}' if tag else 'gt_roc_node', {})
+    gt_edge = results.get(f'gt_roc_edge_{tag}' if tag else 'gt_roc_edge', {})
+    gt_nm   = results.get(f'gt_roc_node_mean_{tag}' if tag else 'gt_roc_node_mean', {})
+    gt_nx   = results.get(f'gt_roc_node_max_{tag}' if tag else 'gt_roc_node_max', {})
+
+    fields = _corr_block()
+    fields.update({
+        f'gt_roc_auc_mean{suffix}':            gt.get('auc_mean', nan),
+        f'gt_roc_n_graphs{suffix}':            gt.get('n_graphs', 0),
+        f'gt_roc_node_auc_mean{suffix}':       gt_node.get('auc_mean', nan),
+        f'gt_roc_node_mean_auc_mean{suffix}':  gt_nm.get('auc_mean', nan),
+        f'gt_roc_node_max_auc_mean{suffix}':   gt_nx.get('auc_mean', nan),
+        f'gt_roc_edge_auc_mean{suffix}':       gt_edge.get('auc_mean', nan),
+    })
+    return fields
+
+
 class EvalPipeline:
     """Evaluation pipeline for motif-based GNN explainers.
 
@@ -64,6 +124,12 @@ class EvalPipeline:
     gt_eval_list : list of Data or None
         Subset of test graphs for GT-ROC only (e.g. mutag test mutagens).
         When None, GT-ROC uses the full ``test_list``.
+    all_list : list of Data or None
+        Train+valid+test graphs for pooled explainability metrics
+        (``pearson_all``, ``gt_roc_*_all``). When None, pooled metrics are
+        skipped.
+    gt_eval_all_list : list of Data or None
+        GT-ROC graph subset for ``all_list`` (e.g. mutag mutagens across splits).
     """
 
     def __init__(
@@ -81,12 +147,16 @@ class EvalPipeline:
         gt_level: str = 'node',
         denorm: Optional[tuple] = None,
         gt_eval_list: Optional[List] = None,
+        all_list: Optional[List] = None,
+        gt_eval_all_list: Optional[List] = None,
     ):
         self.model = model
         self.vocab = vocab
         self.test_loader = test_loader
         self.test_list = test_list
         self.gt_eval_list = gt_eval_list
+        self.all_list = all_list
+        self.gt_eval_all_list = gt_eval_all_list
         self.device = device
         self.task_type = task_type
         self.max_motifs_eval = max_motifs_eval
@@ -102,15 +172,62 @@ class EvalPipeline:
 
     def _has_ground_truth(self) -> bool:
         """Check whether GT eval graphs have node_label or edge_label annotations."""
+        return self._has_ground_truth_on(self._gt_graphs())
+
+    @staticmethod
+    def _has_ground_truth_on(data_list: List) -> bool:
         return any(
             getattr(d, 'edge_label', None) is not None
             or getattr(d, 'node_label', None) is not None
-            for d in self._gt_graphs()
+            for d in data_list
         )
+
+    def _compute_explainability(
+        self,
+        data_list: List,
+        gt_eval_list: Optional[List],
+        motif_scores: Optional[Dict[int, float]],
+        run_motif_impact: bool,
+    ) -> Dict:
+        """Pearson/Spearman + GT-ROC (+ impacts) on an arbitrary graph list."""
+        block: Dict = {}
+        gt_graphs = gt_eval_list if gt_eval_list is not None else data_list
+        if self._has_ground_truth_on(gt_graphs):
+            block['gt_roc_node'] = compute_gt_roc(
+                self.model, gt_graphs, self.device,
+                node_att_fn=self.node_att_fn, level='node',
+            )
+            block['gt_roc_edge'] = compute_gt_roc(
+                self.model, gt_graphs, self.device,
+                node_att_fn=self.node_att_fn, level='edge',
+            )
+            block['gt_roc'] = (block['gt_roc_node']
+                               if self.gt_level == 'node'
+                               else block['gt_roc_edge'])
+            _base_att = self.node_att_fn or model_node_att_fn(self.model, self.device)
+            for _agg in ('mean', 'max'):
+                block[f'gt_roc_node_{_agg}'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
+                    level='node',
+                )
+
+        if run_motif_impact and motif_scores is not None:
+            impacts = compute_motif_impact(
+                self.model, data_list, self.vocab, self.device,
+                task_type=self.task_type,
+                max_motifs=self.max_motifs_eval,
+            )
+            if impacts:
+                block['motif_impact'] = impacts
+                block['correlation'] = score_impact_correlation(
+                    motif_scores, impacts)
+        return block
 
     def run(
         self,
         motif_scores: Optional[Dict[int, float]] = None,
+        motif_scores_all: Optional[Dict[int, float]] = None,
         run_motif_impact: bool = True,
         gt_motif_ids: Optional[Set[int]] = None,
     ) -> Dict:
@@ -121,6 +238,9 @@ class EvalPipeline:
         motif_scores : dict[motif_id -> score] or None
             Learned importance scores.  Enables correlation, top/bottom,
             and GT vs outside-GT evaluations.
+        motif_scores_all : dict[motif_id -> score] or None
+            Scores for pooled train+valid+test correlation (defaults to
+            ``motif_scores`` when omitted).
         run_motif_impact : bool
             Set False to skip the (potentially expensive) motif-removal pass.
         gt_motif_ids : set[int] or None
@@ -186,7 +306,7 @@ class EvalPipeline:
         if run_motif_impact:
             results['motif_impact'] = compute_motif_impact(
                 self.model, self.test_list, self.vocab, self.device,
-                split='test', task_type=self.task_type,
+                task_type=self.task_type,
                 max_motifs=self.max_motifs_eval,
             )
 
@@ -215,7 +335,6 @@ class EvalPipeline:
                 model=self.model,
                 vocab=self.vocab,
                 device=self.device,
-                split='test',
                 task_type=self.task_type,
                 threshold=self.correct_pred_threshold,
             )
@@ -227,7 +346,7 @@ class EvalPipeline:
         if self.task_type == 'BinaryClass':
             try:
                 disc = motif_class_discriminativeness(
-                    self.test_list, self.vocab, split='test',
+                    self.test_list, self.vocab,
                     max_motifs=self.max_motifs_eval,
                 )
                 if disc:
@@ -238,6 +357,15 @@ class EvalPipeline:
                         )
             except Exception as e:
                 print(f'  [warn] discriminativeness check failed: {e}')
+
+        # 8. Pooled train+valid+test explainability (pearson / spearman / GT-ROC).
+        if self.all_list:
+            ms_all = (motif_scores_all if motif_scores_all is not None
+                      else motif_scores)
+            pooled = self._compute_explainability(
+                self.all_list, self.gt_eval_all_list, ms_all, run_motif_impact)
+            for key, val in pooled.items():
+                results[f'{key}_all'] = val
 
         # Stash scores so to_dataframe can emit the joined score_vs_impact table.
         if motif_scores is not None:

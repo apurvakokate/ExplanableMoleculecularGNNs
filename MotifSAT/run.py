@@ -24,7 +24,7 @@ from SharedModules.data.vocab import load_vocab
 from SharedModules.data.loader import (
     get_loaders, compute_pos_weights, apply_gt_loaders, TASK_TYPE
 )
-from SharedModules.evaluation.pipeline import EvalPipeline
+from SharedModules.evaluation.pipeline import EvalPipeline, explainability_summary_fields
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger, build_impact_cache_from_eval
 from SharedModules.evaluation.wandb_logger import WandbLogger
 from SharedModules.evaluation.metrics import evaluate_predictions
@@ -406,15 +406,22 @@ def run(cfg: MotifSATConfig) -> dict:
     # Determine GT ROC level: edge for learn_edge_att, node otherwise
     gt_level = "edge" if cfg.learn_edge_att else "node"
     test_list = list(test_ds)
+    train_list = list(loaders['train'].dataset)
+    valid_list = list(loaders['valid'].dataset)
+    all_list = train_list + valid_list + test_list
     from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
     _gt_eval = (mutag_gt_eval_graphs(test_list)
                 if cfg.dataset == 'mutag' else None)
+    _gt_eval_all = (mutag_gt_eval_graphs(all_list)
+                    if cfg.dataset == 'mutag' else None)
     pipeline = EvalPipeline(
         model, vocab, loaders["test"], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         gt_level=gt_level,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
+        all_list=all_list,
+        gt_eval_all_list=_gt_eval_all,
     )
     # For base GSAT (learn_edge_att=True, motif_method='none') aggregate node
     # attention to vocabulary-level scores (mean and max) for correlation eval.
@@ -422,6 +429,11 @@ def run(cfg: MotifSATConfig) -> dict:
     if cfg.motif_method == "none":   # base GSAT: node att OR edge att
         gsat_agg = _aggregate_att_to_motif(
             model, test_list, device,
+            learn_edge_att=cfg.learn_edge_att,
+            max_graphs=cfg.max_motifs_eval or 500,
+        )
+        gsat_agg_all = _aggregate_att_to_motif(
+            model, all_list, device,
             learn_edge_att=cfg.learn_edge_att,
             max_graphs=cfg.max_motifs_eval or 500,
         )
@@ -442,13 +454,17 @@ def run(cfg: MotifSATConfig) -> dict:
         # Run pipeline twice — once per aggregation; mean run feeds summary.json
         results = None
         corr_by_agg: dict = {}
+        corr_by_agg_all: dict = {}
         for agg in ("mean", "max"):
             agg_scores = gsat_agg[agg]
+            agg_scores_all = gsat_agg_all.get(agg, {})
             r = pipeline.run(
                 motif_scores=agg_scores if agg_scores else None,
+                motif_scores_all=agg_scores_all if agg_scores_all else None,
                 run_motif_impact=cfg.run_motif_impact,
             )
             corr_by_agg[agg] = r.get("correlation", {})
+            corr_by_agg_all[agg] = r.get("correlation_all", {})
             dfs_agg = pipeline.to_dataframe(r)
             for name, df in dfs_agg.items():
                 df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
@@ -466,15 +482,24 @@ def run(cfg: MotifSATConfig) -> dict:
             learn_edge_att=cfg.learn_edge_att,
             max_graphs=cfg.max_motifs_eval or 500,
         )
+        motif_agg_all = _aggregate_att_to_motif(
+            model, all_list, device,
+            learn_edge_att=cfg.learn_edge_att,
+            max_graphs=cfg.max_motifs_eval or 500,
+        )
         results = None
         corr_by_agg: dict = {}
+        corr_by_agg_all: dict = {}
         for agg in ("mean", "max"):
             agg_scores = motif_agg.get(agg, {})
+            agg_scores_all = motif_agg_all.get(agg, {})
             r = pipeline.run(
                 motif_scores=agg_scores if agg_scores else None,
+                motif_scores_all=agg_scores_all if agg_scores_all else None,
                 run_motif_impact=cfg.run_motif_impact,
             )
             corr_by_agg[agg] = r.get("correlation", {})
+            corr_by_agg_all[agg] = r.get("correlation_all", {})
             for name, df in pipeline.to_dataframe(r).items():
                 df.to_csv(out_dir / f"{name}_att_{agg}.csv", index=False)
             if agg == "mean":
@@ -507,12 +532,6 @@ def run(cfg: MotifSATConfig) -> dict:
         df.to_csv(out_dir / f"{name}.csv", index=False)
 
     pred = results.get("prediction", {})
-    corr = results.get("correlation", {})
-    gt   = results.get("gt_roc", {})
-    gt_node = results.get("gt_roc_node", {})
-    gt_node_mean = results.get("gt_roc_node_mean", {})
-    gt_node_max  = results.get("gt_roc_node_max", {})
-    gt_edge = results.get("gt_roc_edge", {})
     tdc  = results.get("top_disc_check", {})
     from SharedModules.evaluation.metrics import motif_score_stats
     sstats = motif_score_stats(summary_scores)
@@ -549,22 +568,11 @@ def run(cfg: MotifSATConfig) -> dict:
         # classification tasks
         "rmse_orig": split_metrics.get("test", {}).get("rmse_orig", float("nan")),
         "mae_orig":  split_metrics.get("test", {}).get("mae_orig",  float("nan")),
-        # correlation (score vs impact). 'pearson'/'spearman' stay the mean-pooled
-        # headline; *_node_mean/max carry BOTH node->motif poolings for the
-        # per-pooling report tables (mean == max for motif-level scores).
-        "pearson":  corr.get("pearson",  float("nan")),
-        "spearman": corr.get("spearman", float("nan")),
-        "pearson_node_mean":  corr_by_agg.get("mean", {}).get("pearson",  float("nan")),
-        "pearson_node_max":   corr_by_agg.get("max",  {}).get("pearson",  float("nan")),
-        "spearman_node_mean": corr_by_agg.get("mean", {}).get("spearman", float("nan")),
-        "spearman_node_max":  corr_by_agg.get("max",  {}).get("spearman", float("nan")),
-        # GT ROC (primary = configured level; node & edge reported alongside)
-        "gt_roc_auc_mean": gt.get("auc_mean", float("nan")),
-        "gt_roc_n_graphs": gt.get("n_graphs", 0),
-        "gt_roc_node_auc_mean": gt_node.get("auc_mean", float("nan")),
-        "gt_roc_node_mean_auc_mean": gt_node_mean.get("auc_mean", float("nan")),
-        "gt_roc_node_max_auc_mean":  gt_node_max.get("auc_mean", float("nan")),
-        "gt_roc_edge_auc_mean": gt_edge.get("auc_mean", float("nan")),
+        # explainability (test + pooled train+valid+test)
+        **explainability_summary_fields(
+            results, scope='test', corr_by_agg=corr_by_agg),
+        **explainability_summary_fields(
+            results, scope='all', corr_by_agg=corr_by_agg_all),
         # top-scored motifs class-discriminative?
         "top_k_abs_disc":      tdc.get("top_k_abs_disc", float("nan")),
         "mean_abs_disc":       tdc.get("mean_abs_disc", float("nan")),

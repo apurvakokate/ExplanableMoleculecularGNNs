@@ -115,6 +115,7 @@ if _shared not in sys.path:
 # Single source of truth — no local fallback. If SharedModules is not importable
 # the run must fail loudly rather than silently use a stale duplicate schema.
 from data.dataset_schema import DATASET_COLUMN, TASK_TYPE   # type: ignore
+from data.dataset import reject_wildcard_smiles_in_csv          # type: ignore
 from data.threshold_config import (
     CHOSEN_THRESHOLD,
     get_chosen_threshold,
@@ -1150,6 +1151,7 @@ def _load_csv(data_root: str, dataset: str, fold: int) -> pd.DataFrame:
             f"Not found: {path}\n"
             f"Expected: {{data_root}}/{{dataset}}_{{fold}}.csv")
     df = pd.read_csv(path)
+    reject_wildcard_smiles_in_csv(path)
     label_col = DATASET_COLUMN.get(dataset)
     if label_col is None:
         raise KeyError(

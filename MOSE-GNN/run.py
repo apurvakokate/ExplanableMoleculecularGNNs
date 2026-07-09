@@ -22,7 +22,7 @@ from SharedModules.data.vocab import load_vocab
 from SharedModules.data.loader import (
     get_loaders, compute_pos_weights, apply_gt_loaders, TASK_TYPE
 )
-from SharedModules.evaluation.pipeline import EvalPipeline
+from SharedModules.evaluation.pipeline import EvalPipeline, explainability_summary_fields
 from SharedModules.evaluation.embedding_viz import EmbeddingVizLogger, build_impact_cache_from_eval
 from SharedModules.evaluation.wandb_logger import WandbLogger
 from SharedModules.evaluation.metrics import evaluate_predictions
@@ -43,7 +43,7 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
             f"OGB multi-label benchmarks (e.g. ogbg-moltox21) are excluded.")
 
     common = dict(
-        x_dim=meta.x_dim,                 # 52 (CSV), 14 (mutag), 9 (OGB)
+        x_dim=meta.x_dim,                 # 51 (CSV), 14 (mutag), 9 (OGB)
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,
         backbone=cfg.backbone,
@@ -264,9 +264,14 @@ def run(cfg: MOSEConfig) -> dict:
             print(f'  {split_name}: {m}')
 
     test_list = list(test_ds)
+    train_list = list(loaders['train'].dataset)
+    valid_list = list(loaders['valid'].dataset)
+    all_list = train_list + valid_list + test_list
     from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
     _gt_eval = (mutag_gt_eval_graphs(test_list)
                 if cfg.dataset == 'mutag' else None)
+    _gt_eval_all = (mutag_gt_eval_graphs(all_list)
+                    if cfg.dataset == 'mutag' else None)
     motif_scores = model.get_motif_scores() if hasattr(model, 'get_motif_scores') else None
     # For MultiLabel, average across classes for correlation
     if isinstance(motif_scores, dict) and motif_scores and isinstance(
@@ -286,6 +291,8 @@ def run(cfg: MOSEConfig) -> dict:
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
+        all_list=all_list,
+        gt_eval_all_list=_gt_eval_all,
     )
     results = pipeline.run(
         motif_scores=flat_scores,
@@ -307,11 +314,6 @@ def run(cfg: MOSEConfig) -> dict:
 
     pred = results.get('prediction', {})
     corr = results.get('correlation', {})
-    gt   = results.get('gt_roc', {})
-    gt_node = results.get('gt_roc_node', {})
-    gt_node_mean = results.get('gt_roc_node_mean', {})
-    gt_node_max  = results.get('gt_roc_node_max', {})
-    gt_edge = results.get('gt_roc_edge', {})
     tdc  = results.get('top_disc_check', {})
     from SharedModules.evaluation.metrics import motif_score_stats
     sstats = motif_score_stats(flat_scores)
@@ -348,22 +350,9 @@ def run(cfg: MOSEConfig) -> dict:
         # classification tasks
         'rmse_orig': split_metrics.get('test', {}).get('rmse_orig', float('nan')),
         'mae_orig':  split_metrics.get('test', {}).get('mae_orig',  float('nan')),
-        # correlation (score vs impact). MOSE scores are motif-level (no
-        # node->motif pooling), so mean == max — emit both so the per-pooling
-        # report tables include MOSE in each.
-        'pearson':   corr.get('pearson',  float('nan')),
-        'spearman':  corr.get('spearman', float('nan')),
-        'pearson_node_mean':  corr.get('pearson',  float('nan')),
-        'pearson_node_max':   corr.get('pearson',  float('nan')),
-        'spearman_node_mean': corr.get('spearman', float('nan')),
-        'spearman_node_max':  corr.get('spearman', float('nan')),
-        # GT ROC (primary = configured level; node & edge reported alongside)
-        'gt_roc_auc_mean': gt.get('auc_mean', float('nan')),
-        'gt_roc_n_graphs': gt.get('n_graphs', 0),
-        'gt_roc_node_auc_mean': gt_node.get('auc_mean', float('nan')),
-        'gt_roc_node_mean_auc_mean': gt_node_mean.get('auc_mean', float('nan')),
-        'gt_roc_node_max_auc_mean':  gt_node_max.get('auc_mean', float('nan')),
-        'gt_roc_edge_auc_mean': gt_edge.get('auc_mean', float('nan')),
+        # explainability (test + pooled train+valid+test)
+        **explainability_summary_fields(results, scope='test'),
+        **explainability_summary_fields(results, scope='all'),
         # top-scored motifs class-discriminative?
         'top_k_abs_disc':      tdc.get('top_k_abs_disc', float('nan')),
         'mean_abs_disc':       tdc.get('mean_abs_disc', float('nan')),
@@ -379,7 +368,10 @@ def run(cfg: MOSEConfig) -> dict:
         print(f'    {k}: {v:.4f}')
     if 'correlation' in results:
         c = results['correlation']
-        print(f"    pearson={c['pearson']:.3f}  spearman={c['spearman']:.3f}")
+        _nan = float('nan')
+        print(f"    pearson={c['pearson']:.3f}  spearman={c['spearman']:.3f}  (instance-level)")
+        print(f"    pearson_motif={c.get('pearson_motif', _nan):.3f}  "
+              f"spearman_motif={c.get('spearman_motif', _nan):.3f}  (motif-level aggregated)")
 
     # Log final results to W&B
     if wandb_logger is not None:

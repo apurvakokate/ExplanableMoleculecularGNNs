@@ -246,6 +246,19 @@ class TestAnalysisInvariants(unittest.TestCase):
         self.assertIn('gnnexplainer', fams)
         self.assertNotIn('baselines', fams)
 
+    def test_expand_posthoc_includes_pooled_metrics(self):
+        df = pd.DataFrame([
+            _run(family='baselines',
+                 gnnexplainer_mean_pearson=0.4,
+                 gnnexplainer_mean_pearson_all=0.5,
+                 gnnexplainer_mean_gt_roc_node_auc_mean_all=0.65,
+                 exp_dir='baselines/BBBP/fold0/rbrics/bb-GIN_enc-onehot'),
+        ])
+        out = expand_posthoc_explainer_rows(df)
+        row = out[out['family'] == 'gnnexplainer'].iloc[0]
+        self.assertEqual(row['pearson_all'], 0.5)
+        self.assertEqual(row['gt_roc_node_auc_mean_all'], 0.65)
+
 
 if __name__ == '__main__':
     unittest.main()

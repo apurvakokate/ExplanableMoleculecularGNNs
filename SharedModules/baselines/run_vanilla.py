@@ -274,14 +274,22 @@ def run(cfg: VanillaConfig) -> dict:
 
     # ── EvalPipeline: motif impact + correlation ──────────────────────────────
     test_list = list(test_ds)
+    train_list = list(loaders['train'].dataset)
+    valid_list = list(loaders['valid'].dataset)
+    all_list = train_list + valid_list + test_list
     from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
     _gt_eval = (mutag_gt_eval_graphs(test_list)
                 if cfg.dataset == 'mutag' else None)
+    _gt_eval_all = (mutag_gt_eval_graphs(all_list)
+                    if cfg.dataset == 'mutag' else None)
+    from SharedModules.evaluation.pipeline import EvalPipeline, explainability_summary_fields
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
         denorm=_denorm,
         gt_eval_list=_gt_eval,
+        all_list=all_list,
+        gt_eval_all_list=_gt_eval_all,
     )
     eval_results = pipeline.run(run_motif_impact=cfg.run_motif_impact)
     dfs = pipeline.to_dataframe(eval_results)
@@ -363,21 +371,15 @@ def run(cfg: VanillaConfig) -> dict:
         except Exception as e:
             print(f'  [warn] MAGE failed: {e}')
 
-    # ── Summary JSON ──────────────────────────────────────────────────────────
-    pred  = all_preds.get('test', {})
-    corr  = eval_results.get('correlation', {})
-    gt    = eval_results.get('gt_roc', {})
-    gt_node = eval_results.get('gt_roc_node', {})
-    gt_edge = eval_results.get('gt_roc_edge', {})
-
     # Per-explainer score-vs-impact correlation, top-motif discriminativeness,
     # and score distribution. The post-hoc explainer's attribution IS its motif
     # score, so we correlate each against the same mask-based impact / the
     # label-aware discriminativeness computed in eval_results.
     from SharedModules.evaluation.motif_eval import (
         score_impact_correlation, top_motifs_discriminative_check,
-        compute_motif_impact, _impact_values)
+        compute_motif_impact, _impact_values, compute_gt_roc)
     from SharedModules.evaluation.metrics import motif_score_stats
+    pred  = all_preds.get('test', {})
     _impacts = eval_results.get('motif_impact', {})
     _disc    = eval_results.get('discriminativeness', {})
     _topk = cfg.top_k if hasattr(cfg, 'top_k') else 10
@@ -402,12 +404,17 @@ def run(cfg: VanillaConfig) -> dict:
     # original. The per-explainer score_vs_impact.csv carries both as long-form
     # rows tagged by a 'method' column.
     _uniform_impacts = {}
+    _uniform_impacts_all = {}
     if cfg.run_motif_impact:
         def _ones_node_att_fn(_d):
             return torch.ones(_d.num_nodes)
         try:
             _uniform_impacts = compute_motif_impact(
-                model, test_list, vocab, device, split='test',
+                model, test_list, vocab, device,
+                task_type=task_type, max_motifs=cfg.max_motifs_eval,
+                base_att_fn=_ones_node_att_fn)
+            _uniform_impacts_all = compute_motif_impact(
+                model, all_list, vocab, device,
                 task_type=task_type, max_motifs=cfg.max_motifs_eval,
                 base_att_fn=_ones_node_att_fn)
         except Exception as _e:
@@ -420,10 +427,15 @@ def run(cfg: VanillaConfig) -> dict:
                 continue
             _pfx = f'{_ex}_{_agg}'   # e.g. gnnexplainer_mean, gnnexplainer_max
             _ex_impacts = _impacts
+            _ex_impacts_all = eval_results.get('motif_impact_all', {})
             if cfg.run_motif_impact:
                 try:
                     _ex_impacts = compute_motif_impact(
-                        model, test_list, vocab, device, split='test',
+                        model, test_list, vocab, device,
+                        task_type=task_type, max_motifs=cfg.max_motifs_eval,
+                        base_att_fn=_motif_score_node_att_fn(_sc))
+                    _ex_impacts_all = compute_motif_impact(
+                        model, all_list, vocab, device,
                         task_type=task_type, max_motifs=cfg.max_motifs_eval,
                         base_att_fn=_motif_score_node_att_fn(_sc))
                 except Exception as _e:
@@ -432,13 +444,25 @@ def run(cfg: VanillaConfig) -> dict:
 
             # Both impact definitions: correlation metrics + long-form rows.
             _svi_rows = []
-            for _kind, _imp in (('own', _ex_impacts), ('agnostic', _uniform_impacts)):
+            for _kind, _imp, _imp_all in (
+                ('own', _ex_impacts, _ex_impacts_all),
+                ('agnostic', _uniform_impacts, _uniform_impacts_all),
+            ):
                 if not _imp:
                     continue
                 _c = score_impact_correlation(_sc, _imp)
                 _suffix = '' if _kind == 'own' else '_agnostic'  # 'own' = legacy keys
                 explainer_metrics[f'{_pfx}_pearson{_suffix}']  = _c.get('pearson', float('nan'))
                 explainer_metrics[f'{_pfx}_spearman{_suffix}'] = _c.get('spearman', float('nan'))
+                # motif-level aggregated (grouped) — Table 3.4 metric
+                explainer_metrics[f'{_pfx}_pearson_motif{_suffix}']  = _c.get('pearson_motif', float('nan'))
+                explainer_metrics[f'{_pfx}_spearman_motif{_suffix}'] = _c.get('spearman_motif', float('nan'))
+                if _imp_all:
+                    _c_all = score_impact_correlation(_sc, _imp_all)
+                    explainer_metrics[f'{_pfx}_pearson{_suffix}_all']  = _c_all.get('pearson', float('nan'))
+                    explainer_metrics[f'{_pfx}_spearman{_suffix}_all'] = _c_all.get('spearman', float('nan'))
+                    explainer_metrics[f'{_pfx}_pearson_motif{_suffix}_all']  = _c_all.get('pearson_motif', float('nan'))
+                    explainer_metrics[f'{_pfx}_spearman_motif{_suffix}_all'] = _c_all.get('spearman_motif', float('nan'))
                 if cfg.run_motif_impact:
                     for _mid in sorted(set(_sc) & set(_imp)):
                         _stats = _imp[_mid]
@@ -481,6 +505,8 @@ def run(cfg: VanillaConfig) -> dict:
     )
     if _gt_present:
         _gt_roc_list = _gt_eval if _gt_eval is not None else test_list
+        _gt_roc_list_all = (_gt_eval_all if _gt_eval_all is not None
+                            else all_list)
         for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
             for _agg in ('mean', 'max'):
                 _sc = results.get(f'{_ex}_{_agg}', {})
@@ -493,6 +519,12 @@ def run(cfg: VanillaConfig) -> dict:
                                      node_att_fn=_fn, level='edge')
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_node_auc_mean'] = _gn['auc_mean']
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_edge_auc_mean'] = _ge['auc_mean']
+                _gn_all = compute_gt_roc(model, _gt_roc_list_all, device,
+                                         node_att_fn=_fn, level='node')
+                _ge_all = compute_gt_roc(model, _gt_roc_list_all, device,
+                                         node_att_fn=_fn, level='edge')
+                explainer_metrics[f'{_ex}_{_agg}_gt_roc_node_auc_mean_all'] = _gn_all['auc_mean']
+                explainer_metrics[f'{_ex}_{_agg}_gt_roc_edge_auc_mean_all'] = _ge_all['auc_mean']
 
     summary = {
         'dataset':          cfg.dataset,
@@ -517,12 +549,8 @@ def run(cfg: VanillaConfig) -> dict:
         'mae_orig':         pred.get('mae_orig', float('nan')),
         'train_auc':        all_preds.get('train', {}).get('auc', float('nan')),
         'val_auc':          all_preds.get('valid', {}).get('auc', float('nan')),
-        'pearson':          corr.get('pearson', float('nan')),
-        'spearman':         corr.get('spearman', float('nan')),
-        'gt_roc_auc_mean':  gt.get('auc_mean', float('nan')),
-        'gt_roc_n_graphs': gt.get('n_graphs', 0),
-        'gt_roc_node_auc_mean': gt_node.get('auc_mean', float('nan')),
-        'gt_roc_edge_auc_mean': gt_edge.get('auc_mean', float('nan')),
+        **explainability_summary_fields(eval_results, scope='test'),
+        **explainability_summary_fields(eval_results, scope='all'),
         **training_summary_extras(cfg),
         **explainer_metrics,
     }

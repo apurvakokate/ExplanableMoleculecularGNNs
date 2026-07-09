@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch_geometric.loader import DataLoader
 
-from .dataset import MolDataset, NUM_ATOM_TYPES, EDGE_FEAT_DIM
+from .dataset import MolDataset, NUM_ATOM_TYPES, EDGE_FEAT_DIM, reject_wildcard_smiles_in_csv
 from .vocab import VocabData
 
 from .dataset_schema import DATASET_COLUMN  # unified schema (single source of truth)
@@ -33,9 +33,10 @@ NUM_CLASSES: Dict[str, int] = {
 }
 
 # mutag TUDataset node feature dimension.
-# The pre-baked PKL stores a 14-dim one-hot over
-# {C, N, O, F, I, Cl, Br, S, P, Na, K, Li, Ca, ?}.
-# We accept this as-is and set x_dim=14 so models are initialised correctly.
+# The pre-baked PKL (or node_labels.txt one-hot) uses 14 types indexed 0–13
+# per Mutagenicity_label_readme.txt / MUTAG_ATOM_TYPE_MAP in graph_to_smiles.py:
+#   0:C  1:O  2:Cl  3:H  4:N  5:F  6:Br  7:S  8:P  9:I  10:Na  11:K  12:Li  13:Ca
+# Index 3 is explicit H (separate graph nodes). Unknown type ints are dropped at export.
 MUTAG_X_DIM = 14
 MUTAG_EDGE_DIM = 0   # TUDataset adjacency has no bond-type features
 
@@ -542,6 +543,7 @@ def _get_mutag_loaders(
             index_maps = pickle.load(f)
 
     if smiles_csv_path and Path(smiles_csv_path).exists():
+        reject_wildcard_smiles_in_csv(smiles_csv_path)
         import pandas as pd
         df_smi = pd.read_csv(smiles_csv_path)
         for _, row in df_smi.iterrows():
@@ -886,6 +888,8 @@ def get_loaders(
     proc_base = f'{processed_root}/{dataset}_fold{fold}'
     if proc_tag:
         proc_base = f'{proc_base}/{proc_tag}'
+
+    reject_wildcard_smiles_in_csv(csv)
 
     # Training split — compute normalisation stats from training data
     train_ds = MolDataset(

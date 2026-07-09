@@ -94,7 +94,7 @@ def _collect_motif_snapshot(
     data: Data,
     device: torch.device,
     motif_scores: Optional[Dict[int, float]],
-    impact_cache: Optional[Dict[int, Dict[str, float]]],
+    impact_cache: Optional[Dict[int, Dict[int, float]]],
 ) -> Optional[dict]:
     """Extract per-motif-instance embeddings, importance, and impact from one batch.
 
@@ -228,9 +228,8 @@ def _collect_motif_snapshot(
         for k, uid in enumerate(unique_ids.tolist()):
             mid  = uid % max_mid
             gidx = uid // max_mid
-            if mid in impact_cache and gidx < len(smiles_arr):
-                smi = smiles_arr[gidx]
-                v   = impact_cache[mid].get(smi)
+            if mid in impact_cache and gidx in impact_cache[mid]:
+                v   = impact_cache[mid][gidx]
                 if v is not None:
                     impact_arr[k] = float(v)
 
@@ -337,7 +336,7 @@ class EmbeddingVizLogger:
     max_annotations : int
         Maximum labelled points per panel.
     impact_cache : dict or None
-        From compute_motif_impact — maps motif_id → {smiles → impact}.
+        From faithful LOO impact — maps motif_id → {graph_idx → impact}.
         Updated externally; can be None for the first few epochs.
     wandb_run : wandb.Run or None
         Active wandb run.  If None, W&B is looked up via wandb.run.
@@ -356,7 +355,7 @@ class EmbeddingVizLogger:
         max_points: int = 3000,
         max_batches: int = 12,
         max_annotations: int = 150,
-        impact_cache: Optional[Dict[int, Dict[str, float]]] = None,
+        impact_cache: Optional[Dict[int, Dict[int, float]]] = None,
         wandb_run=None,
         dpi: int = 150,
     ):
@@ -378,7 +377,7 @@ class EmbeddingVizLogger:
         """Call after each training epoch to update MOSE-GNN importance scores."""
         self.motif_scores = scores
 
-    def update_impact_cache(self, impact_cache: Dict[int, Dict[str, float]]) -> None:
+    def update_impact_cache(self, impact_cache: Dict[int, Dict[int, float]]) -> None:
         """Call after running compute_motif_impact to refresh impact colours."""
         self.impact_cache = impact_cache
 
@@ -559,37 +558,29 @@ def build_impact_cache_from_eval(
     vocab,
     device: torch.device,
     task_type: str = 'BinaryClass',
-    split: str = 'valid',
-) -> Dict[int, Dict[str, float]]:
-    """Run compute_motif_impact and return the raw per-graph impact dict
-    structured as {motif_id: {smiles: impact_value}} for use as impact_cache.
+) -> Dict[int, Dict[int, float]]:
+    """Run faithful LOO impact and return per-graph values keyed by list index.
 
-    This is the 'ground truth' impact for colouring — run every N epochs.
+    Structure: ``{motif_id: {graph_idx: impact_value}}`` for embedding viz.
     """
     from .motif_eval import (
-        build_graph_mask_cache, _get_probs,
+        build_graph_mask_cache,
         build_faithful_loo_baseline, loo_impact,
     )
 
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
-    smi_to_data = {d.smiles: d for d in data_list}
-    orig_probs  = _get_probs(model, data_list, device, task_type)
-    # Same faithful zero-weight LOO as compute_motif_impact (shared helpers).
     base_W, p_full_W = build_faithful_loo_baseline(model, data_list, device, task_type)
 
-    cache: Dict[int, Dict[str, float]] = {}
+    cache: Dict[int, Dict[int, float]] = {}
     for mid, motif_masks in mask_cache.items():
-        per_smi: Dict[str, float] = {}
-        for smi, graph_mask in motif_masks.items():
-            d = smi_to_data.get(smi)
-            op = orig_probs.get(smi)
-            if d is None or op is None:
-                continue
-            nw = loo_impact(model, d, graph_mask, base_W, p_full_W, device, task_type)
+        per_graph: Dict[int, float] = {}
+        for gi, graph_mask in motif_masks.items():
+            d = data_list[gi]
+            nw = loo_impact(model, gi, d, graph_mask, base_W, p_full_W, device, task_type)
             if nw is not None:
-                per_smi[smi] = nw
-        if per_smi:
-            cache[mid] = per_smi
+                per_graph[gi] = nw
+        if per_graph:
+            cache[mid] = per_graph
 
     return cache

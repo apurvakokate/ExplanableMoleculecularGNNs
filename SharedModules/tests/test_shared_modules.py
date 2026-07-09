@@ -27,7 +27,8 @@ from torch_geometric.data import Data, Batch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from SharedModules.data.dataset import (
-    build_graph, ATOMS, BONDS, NUM_ATOM_TYPES, EDGE_FEAT_DIM, MolDataset
+    build_graph, ATOMS, BONDS, NUM_ATOM_TYPES, EDGE_FEAT_DIM, MolDataset,
+    assert_no_wildcard_smiles,
 )
 from SharedModules.data.vocab import VocabData, compute_mask_cache
 from SharedModules.data.loader import compute_pos_weights, MutagTUDataset, MUTAG_X_DIM, MUTAG_EDGE_DIM, OGB_DATASET_NAMES, LoaderMeta
@@ -91,12 +92,19 @@ class TestAtomEncoding(unittest.TestCase):
     def test_all_atoms_unique(self):
         self.assertEqual(len(set(ATOMS.values())), len(ATOMS))
 
-    def test_wildcard_has_own_index(self):
-        self.assertIn('*', ATOMS)
-        self.assertNotEqual(ATOMS['*'], ATOMS['H'])  # wildcard ≠ hydrogen
+    def test_wildcard_not_in_atom_vocab(self):
+        self.assertNotIn('*', ATOMS)
 
     def test_num_atom_types_matches(self):
         self.assertEqual(NUM_ATOM_TYPES, max(ATOMS.values()) + 1)
+        self.assertEqual(NUM_ATOM_TYPES, 51)
+
+    def test_wildcard_smiles_raises(self):
+        from SharedModules.data.dataset import WildcardAtomError
+        with self.assertRaises(WildcardAtomError):
+            build_graph('C*C', torch.tensor([0.0]), None)
+        with self.assertRaises(WildcardAtomError):
+            assert_no_wildcard_smiles('[*]CC', source='test')
 
 
 class TestBuildGraph(unittest.TestCase):
@@ -558,6 +566,32 @@ class TestMetrics(unittest.TestCase):
         self.assertIn('auc', metrics)
         self.assertFalse(np.isnan(metrics['auc']))
 
+    def test_evaluate_predictions_binary_skips_nan_labels(self):
+        """NaN binary labels are dropped before AUC (remaining rows scored)."""
+        from torch_geometric.loader import DataLoader
+        from torch_geometric.data import Data
+
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
+        model.eval()
+        data_list = [
+            Data(x=torch.randn(4, NUM_ATOM_TYPES),
+                 edge_index=torch.tensor([[0, 1], [1, 0]], dtype=torch.long),
+                 y=torch.tensor([0.0]),
+                 nodes_to_motifs=torch.full((4,), -1, dtype=torch.long)),
+            Data(x=torch.randn(4, NUM_ATOM_TYPES),
+                 edge_index=torch.tensor([[0, 1], [1, 0]], dtype=torch.long),
+                 y=torch.tensor([float('nan')]),
+                 nodes_to_motifs=torch.full((4,), -1, dtype=torch.long)),
+            Data(x=torch.randn(4, NUM_ATOM_TYPES),
+                 edge_index=torch.tensor([[0, 1], [1, 0]], dtype=torch.long),
+                 y=torch.tensor([1.0]),
+                 nodes_to_motifs=torch.full((4,), -1, dtype=torch.long)),
+        ]
+        loader = DataLoader(data_list, batch_size=3)
+        metrics = evaluate_predictions(model, loader, DEVICE, 'BinaryClass')
+        self.assertIn('auc', metrics)
+        self.assertFalse(np.isnan(metrics['auc']))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # evaluation/motif_eval.py
@@ -591,7 +625,7 @@ class TestMotifEval(unittest.TestCase):
         vocab.mask_cache = {}   # ensure the pickle path is NOT used
         results = compute_motif_impact(
             model, data_list, vocab, DEVICE,
-            split='test', task_type='BinaryClass',
+            task_type='BinaryClass',
             base_att_fn=self._ones_att,
         )
         self.assertIsInstance(results, dict)
@@ -601,7 +635,7 @@ class TestMotifEval(unittest.TestCase):
         vocab, model, data_list = self._make_eval_setup()
         results = compute_motif_impact(
             model, data_list, vocab, DEVICE,
-            split='test', task_type='BinaryClass',
+            task_type='BinaryClass',
             base_att_fn=self._ones_att,
         )
         self.assertIsInstance(results, dict)
@@ -618,7 +652,7 @@ class TestMotifEval(unittest.TestCase):
         vocab, model, data_list = self._make_eval_setup()
         results = compute_motif_impact(
             model, data_list, vocab, DEVICE,
-            split='test', task_type='BinaryClass',
+            task_type='BinaryClass',
         )
         self.assertEqual(results, {})
 
@@ -637,9 +671,54 @@ class TestMotifEval(unittest.TestCase):
         )
         cache = build_graph_mask_cache([d])
         self.assertEqual(set(cache.keys()), {0, 1})   # -1 excluded
-        self.assertEqual(cache[0]['C[N:2]O'].numel(), 4)
-        self.assertTrue(bool(cache[0]['C[N:2]O'][0]) and bool(cache[0]['C[N:2]O'][1]))
-        self.assertTrue(bool(cache[1]['C[N:2]O'][2]))
+        self.assertEqual(cache[0][0].numel(), 4)
+        self.assertTrue(bool(cache[0][0][0]) and bool(cache[0][0][1]))
+        self.assertTrue(bool(cache[1][0][2]))
+
+    def test_build_graph_mask_cache_keeps_duplicate_smiles(self):
+        """Same SMILES in train+val+test must not collapse to one graph."""
+        from torch_geometric.data import Data
+        from SharedModules.evaluation.motif_eval import build_graph_mask_cache
+
+        d0 = Data(
+            x=torch.randn(3, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+            y=torch.tensor([0.0]),
+            smiles='CCO',
+            nodes_to_motifs=torch.tensor([0, 0, 1], dtype=torch.long),
+        )
+        d1 = Data(
+            x=torch.randn(3, NUM_ATOM_TYPES),
+            edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+            y=torch.tensor([1.0]),
+            smiles='CCO',
+            nodes_to_motifs=torch.tensor([0, 1, 1], dtype=torch.long),
+        )
+        cache = build_graph_mask_cache([d0, d1])
+        self.assertEqual(set(cache[0].keys()), {0, 1})
+        self.assertEqual(set(cache[1].keys()), {0, 1})
+
+    def test_compute_motif_impact_counts_duplicate_smiles(self):
+        """Pooled all_list: recurring SMILES contribute once per occurrence."""
+        from torch_geometric.data import Data
+
+        vocab = _make_fake_vocab()
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=16, num_layers=2)
+        model.eval()
+        smi = SMILES['benzene']
+        graphs = []
+        for _ in range(2):
+            d = build_graph(smi, torch.tensor([1.0]), vocab.lookup_train)
+            self.assertIsNotNone(d)
+            graphs.append(d)
+        results = compute_motif_impact(
+            model, graphs, vocab, DEVICE,
+            task_type='BinaryClass',
+            base_att_fn=self._ones_att,
+        )
+        self.assertGreater(len(results), 0)
+        for info in results.values():
+            self.assertEqual(info['n_graphs'], 2)
 
     def test_compute_motif_impact_derives_masks_from_graph(self):
         """compute_motif_impact uses nodes_to_motifs (no vocab mask cache)."""
@@ -657,7 +736,7 @@ class TestMotifEval(unittest.TestCase):
         )
         results = compute_motif_impact(
             model, [d], vocab, DEVICE,
-            split='test', task_type='BinaryClass',
+            task_type='BinaryClass',
             base_att_fn=self._ones_att,
         )
         self.assertEqual(set(results.keys()), {0, 1})
@@ -1116,6 +1195,43 @@ class TestEvalPipelineDataframes(unittest.TestCase):
         self.assertIn('prediction', dfs)
 
 
+class TestExplainabilitySummaryFields(unittest.TestCase):
+    def test_test_and_all_scopes(self):
+        from SharedModules.evaluation.pipeline import explainability_summary_fields
+        results = {
+            'correlation': {'pearson': 0.5, 'spearman': 0.4},
+            'correlation_all': {'pearson': 0.6, 'spearman': 0.55},
+            'gt_roc': {'auc_mean': 0.7, 'n_graphs': 10},
+            'gt_roc_all': {'auc_mean': 0.72, 'n_graphs': 30},
+            'gt_roc_node': {'auc_mean': 0.71},
+            'gt_roc_node_all': {'auc_mean': 0.73},
+            'gt_roc_edge': {'auc_mean': 0.69},
+            'gt_roc_edge_all': {'auc_mean': 0.70},
+            'gt_roc_node_mean': {'auc_mean': 0.68},
+            'gt_roc_node_mean_all': {'auc_mean': 0.71},
+            'gt_roc_node_max': {'auc_mean': 0.72},
+            'gt_roc_node_max_all': {'auc_mean': 0.74},
+        }
+        test = explainability_summary_fields(results, scope='test')
+        all_ = explainability_summary_fields(results, scope='all')
+        self.assertEqual(test['pearson'], 0.5)
+        self.assertEqual(all_['pearson_all'], 0.6)
+        self.assertEqual(test['gt_roc_node_auc_mean'], 0.71)
+        self.assertEqual(all_['gt_roc_node_auc_mean_all'], 0.73)
+        self.assertEqual(all_['gt_roc_n_graphs_all'], 30)
+
+    def test_corr_by_agg_override(self):
+        from SharedModules.evaluation.pipeline import explainability_summary_fields
+        corr = {
+            'mean': {'pearson': 0.1, 'spearman': 0.2},
+            'max':  {'pearson': 0.3, 'spearman': 0.4},
+        }
+        fields = explainability_summary_fields(
+            {}, scope='all', corr_by_agg=corr)
+        self.assertEqual(fields['pearson_all'], 0.1)
+        self.assertEqual(fields['pearson_node_max_all'], 0.3)
+
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1291,13 +1407,13 @@ class TestMutagTUDataset(unittest.TestCase):
         self.assertEqual(g.shape, (1, 32))   # 1 graph
         self.assertEqual(h.shape, (n, 32))
 
-    def test_52dim_model_rejects_14dim_input(self):
-        """A model built with x_dim=52 must fail on 14-dim input —
+    def test_51dim_model_rejects_14dim_input(self):
+        """A model built with x_dim=51 must fail on 14-dim input —
         confirms that MUTAG_X_DIM=14 must be passed explicitly."""
         from SharedModules.models.gnn_base import BaseGNN
         gnn = BaseGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=32, num_layers=2,
                       backbone='GIN')
-        x = torch.randn(9, MUTAG_X_DIM)   # 14-dim, wrong for 52-dim model
+        x = torch.randn(9, MUTAG_X_DIM)   # 14-dim, wrong for 51-dim model
         edge_index = torch.tensor([[0,1],[1,0]], dtype=torch.long)
         batch = torch.zeros(9, dtype=torch.long)
         with self.assertRaises((RuntimeError, ValueError)):
@@ -1325,9 +1441,9 @@ class TestLoaderMetaNodeEncoder(unittest.TestCase):
         )
 
     def test_csv_dataset_is_onehot(self):
-        meta = self._meta('Mutagenicity', 52, 'onehot')
+        meta = self._meta('Mutagenicity', NUM_ATOM_TYPES, 'onehot')
         self.assertEqual(meta.node_encoder, 'onehot')
-        self.assertEqual(meta.x_dim, 52)
+        self.assertEqual(meta.x_dim, NUM_ATOM_TYPES)
 
     def test_ogb_dataset_is_atom_encoder(self):
         meta = self._meta('ogbg-molhiv', 9, 'atom_encoder')
@@ -1343,7 +1459,7 @@ class TestLoaderMetaNodeEncoder(unittest.TestCase):
     def test_default_is_onehot(self):
         """node_encoder defaults to 'onehot' when not specified."""
         from SharedModules.data.loader import LoaderMeta
-        meta = LoaderMeta(x_dim=52, edge_attr_dim=8, num_classes=1,
+        meta = LoaderMeta(x_dim=NUM_ATOM_TYPES, edge_attr_dim=8, num_classes=1,
                           task_type='BinaryClass', dataset='test', fold=0)
         self.assertEqual(meta.node_encoder, 'onehot')
 
@@ -1380,7 +1496,7 @@ class TestLoaderMetaNodeEncoder(unittest.TestCase):
         from SharedModules.data.loader import LoaderMeta
 
         # Simulate what run.py does for a CSV dataset
-        meta = LoaderMeta(x_dim=52, edge_attr_dim=8, num_classes=1,
+        meta = LoaderMeta(x_dim=NUM_ATOM_TYPES, edge_attr_dim=8, num_classes=1,
                           task_type='BinaryClass', dataset='Mutagenicity',
                           fold=0, node_encoder='onehot')
         model = BaseGNN(x_dim=meta.x_dim, hidden_dim=32, num_layers=2,
@@ -2083,7 +2199,7 @@ class TestPGExplainer(unittest.TestCase):
 
         def _graph(seed, n=6):
             torch.manual_seed(seed)
-            x = torch.randn(n, 52)
+            x = torch.randn(n, NUM_ATOM_TYPES)
             ei = torch.tensor([[i, (i + 1) % n] for i in range(n)], dtype=torch.long).t()
             ea = torch.zeros(ei.size(1), 8)
             n2m = torch.randint(0, 3, (n,))
@@ -2096,7 +2212,7 @@ class TestPGExplainer(unittest.TestCase):
             'train': DataLoader(train, batch_size=8),
             'valid': DataLoader(test, batch_size=8),
         }
-        model = VanillaGNN(x_dim=52, hidden_dim=32, num_layers=2,
+        model = VanillaGNN(x_dim=NUM_ATOM_TYPES, hidden_dim=32, num_layers=2,
                          backbone='GIN', edge_dim=8)
         device = torch.device('cpu')
         train_vanilla_gnn(model, loaders, 'BinaryClass', device,

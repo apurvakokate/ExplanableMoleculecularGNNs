@@ -1,8 +1,7 @@
 """dataset.py — PyG InMemoryDataset for molecular property prediction.
 
 Builds Data objects with:
-    x              float [N, 52]   atom one-hot features (51 elements + wildcard;
-                                    or raw for linear encoder)
+    x              float [N, 51]   atom one-hot features (or raw for linear encoder)
     edge_index     long  [2, E]
     edge_attr      float [E, 8]    bond type (4) + stereo (4)
     y              float           label(s)
@@ -11,6 +10,9 @@ Builds Data objects with:
 
 The dataset is keyed by the exact CSV SMILES string, never re-canonicalised,
 so atom indices match the vocabulary lookup.
+
+Wildcard/dummy atoms (``*``) in molecular SMILES are rejected — motif SMARTS
+may use ``[*]``, but full-molecule graphs must not contain RDKit dummy atoms.
 """
 
 from __future__ import annotations
@@ -31,6 +33,34 @@ from tqdm import tqdm
 RDLogger.DisableLog('rdApp.*')
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Wildcard guard (molecular graphs only — not motif SMARTS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WildcardAtomError(ValueError):
+    """Molecular SMILES contains a RDKit wildcard/dummy atom (``*``)."""
+
+
+def assert_no_wildcard_smiles(smiles: str, *, source: str = '') -> None:
+    """Fail fast if *smiles* contains a wildcard atom marker."""
+    if '*' in str(smiles):
+        ctx = f' ({source})' if source else ''
+        raise WildcardAtomError(
+            f"Wildcard '*' atoms are not supported in molecular SMILES{ctx}: "
+            f"{smiles!r}. Remove dummy atoms from the dataset CSV."
+        )
+
+
+def reject_wildcard_smiles_in_csv(csv_path: Union[str, Path]) -> None:
+    """Scan a fold CSV and raise if any row's smiles column contains ``*``."""
+    path = Path(csv_path)
+    df = pd.read_csv(path)
+    if 'smiles' not in df.columns:
+        return
+    for row_idx, smi in enumerate(df['smiles'].astype(str)):
+        assert_no_wildcard_smiles(smi, source=f'{path} row {row_idx}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Atom / bond vocabulary
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -44,10 +74,8 @@ ATOMS: Dict[str, int] = {
     'Se': 37, 'Cd': 38, 'Li': 39, 'Mg': 40, 'Pt': 41, 'Gd': 42,
     'V': 43, 'Ge': 44, 'Mo': 45, 'Ag': 46, 'Ba': 47, 'Pb': 48,
     'Sr': 49, 'Pd': 50,
-    # wildcard/dummy atom mapped to a dedicated index
-    '*': 51,
 }
-NUM_ATOM_TYPES = 52   # 51 real elements + 1 wildcard
+NUM_ATOM_TYPES = len(ATOMS)   # 51 real elements
 
 BONDS = {
     Chem.rdchem.BondType.SINGLE: 0,
@@ -71,11 +99,13 @@ def _atom_features(mol) -> Optional[torch.Tensor]:
     for atom in mol.GetAtoms():
         sym = atom.GetSymbol()
         if sym == '*':
-            idx = ATOMS['*']
-        else:
-            idx = ATOMS.get(sym)
-            if idx is None:
-                return None
+            raise WildcardAtomError(
+                "Parsed molecule contains a wildcard '*' atom. "
+                "Molecular graphs must not include RDKit dummy atoms."
+            )
+        idx = ATOMS.get(sym)
+        if idx is None:
+            return None
         indices.append(idx)
     return F.one_hot(torch.tensor(indices), num_classes=NUM_ATOM_TYPES).float()
 
@@ -110,7 +140,9 @@ def build_graph(
         {smiles: {node_idx: (smarts, motif_id)}}.  None → all nodes get -1.
 
     Returns None if the molecule cannot be parsed or contains unknown atoms/bonds.
+    Raises WildcardAtomError if the SMILES contains wildcard (``*``) atoms.
     """
+    assert_no_wildcard_smiles(smiles)
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
@@ -274,6 +306,8 @@ class MolDataset(InMemoryDataset):
         self.lookup = lookup
         self._num_classes = num_classes
         self.normalize = normalize
+
+        reject_wildcard_smiles_in_csv(csv_file)
 
         df = pd.read_csv(csv_file)
         df = df[df['group'] == split].reset_index(drop=True)

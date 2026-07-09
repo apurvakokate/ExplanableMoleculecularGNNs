@@ -33,7 +33,7 @@ class BaseGNN(nn.Module):
     Parameters
     ----------
     x_dim : int
-        Input node feature dimension (``NUM_ATOM_TYPES`` = 52 by default).
+        Input node feature dimension (``NUM_ATOM_TYPES`` = 51 by default).
     hidden_dim : int
         Hidden dimension for conv layers and MLP.
     num_layers : int

@@ -66,8 +66,10 @@ def frag_key(mol, atomset):
     fr=Chem.FragmentOnBonds(mol,cross,addDummies=True)
     for pa,pm in zip(Chem.GetMolFrags(fr,asMols=False),Chem.GetMolFrags(fr,asMols=True,sanitizeFrags=False)):
         if {a for a in pa if a<N}==aset:
-            try: Chem.SanitizeMol(pm)
-            except: pass
+            try:
+                Chem.SanitizeMol(pm)
+            except Exception:
+                pass
             return _strip(Chem.MolToSmiles(pm, isomericSmiles=False))
     return None
 
@@ -100,8 +102,10 @@ def submol_dummies(mol, atomset):
     fr=Chem.FragmentOnBonds(mol,cross,addDummies=True)
     for pa,pm in zip(Chem.GetMolFrags(fr,asMols=False),Chem.GetMolFrags(fr,asMols=True,sanitizeFrags=False)):
         if {a for a in pa if a<N}==aset:
-            try: Chem.SanitizeMol(pm)
-            except: pass
+            try:
+                Chem.SanitizeMol(pm)
+            except Exception:
+                pass
             return pm,{newi:pa[newi] for newi in range(len(pa))}
     return None,None
 

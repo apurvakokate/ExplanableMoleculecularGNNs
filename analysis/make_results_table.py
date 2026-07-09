@@ -43,6 +43,8 @@ NODE_POOL_SRC = {'mean': 'gt_roc_node_mean_auc_mean', 'max': 'gt_roc_node_max_au
 CORR_POOL_SRC = {
     'pearson':  {'mean': 'pearson_node_mean',  'max': 'pearson_node_max'},
     'spearman': {'mean': 'spearman_node_mean', 'max': 'spearman_node_max'},
+    'pearson_all':  {'mean': 'pearson_node_mean_all',  'max': 'pearson_node_max_all'},
+    'spearman_all': {'mean': 'spearman_node_mean_all', 'max': 'spearman_node_max_all'},
 }
 # Metrics that get split into separate per-pooling report tables (see step_table).
 POOLED_TABLE_METRICS = frozenset(CORR_POOL_SRC)

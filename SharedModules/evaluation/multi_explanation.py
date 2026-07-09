@@ -183,7 +183,6 @@ def build_per_graph_impact_df_from_masks(
 
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
-    smi_to_data = {d.smiles: d for d in data_list}
     orig_probs = _get_probs(model, data_list, device, task_type)
     # mask_nodes, mask_edges = _injection_modes(model)   # removal impact disabled
     # Shared faithful-LOO baseline (model's own attention, or explainer weights
@@ -200,10 +199,10 @@ def build_per_graph_impact_df_from_masks(
         score = motif_scores.get(mid, float("nan"))
         smarts = (vocab.motif_list[mid]
                   if vocab.motif_list and mid < len(vocab.motif_list) else str(mid))
-        for smi, graph_mask in mask_cache[mid].items():
-            d = smi_to_data.get(smi)
-            orig_p = orig_probs.get(smi)
-            if d is None or orig_p is None:
+        for gi, graph_mask in mask_cache[mid].items():
+            d = data_list[gi]
+            orig_p = orig_probs.get(gi)
+            if orig_p is None:
                 continue
             # ── Removal-based (graph-ablation) impact — COMMENTED OUT ─────────
             # Impact is the zero-weight faithful LOO only (never node/edge removal).
@@ -213,13 +212,14 @@ def build_per_graph_impact_df_from_masks(
             #     continue
             # masked_p = _single_prob(model, masked, device, task_type)
 
-            nw = loo_impact(model, d, graph_mask, base_W, p_full_W, device, task_type)
+            nw = loo_impact(model, gi, d, graph_mask, base_W, p_full_W, device, task_type)
             if nw is None:
                 n_skipped += 1
                 continue
             label = float(d.y.view(-1)[0].item()) if d.y is not None else float("nan")
+            smi = getattr(d, 'smiles', str(gi))
             row = {
-                "graph_id":           smi + f"_{split}",
+                "graph_id":           f"{smi}#{gi}_{split}",
                 "smiles":             smi,
                 "motif_id":           int(mid),
                 "motif":              smarts,
