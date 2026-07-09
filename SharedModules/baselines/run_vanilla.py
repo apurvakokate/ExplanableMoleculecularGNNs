@@ -323,6 +323,11 @@ def run(cfg: VanillaConfig) -> dict:
                       f'NaN. Likely explainer mask collapse; check the model was '
                       f'not contaminated by a prior explainer.')
 
+    # Per-graph node attributions (gi -> [N] tensor) captured from each
+    # instance-based explainer, for the TRUE per-instance score-vs-impact
+    # correlation (per-graph attribution vs per-graph faithful-LOO impact).
+    explainer_node_atts: Dict[str, Dict[int, torch.Tensor]] = {}
+
     # GNNExplainer
     if cfg.run_gnnexplainer:
         try:
@@ -332,11 +337,12 @@ def run(cfg: VanillaConfig) -> dict:
                           else f'first {cfg.gnnex_max_graphs} test graphs')
             print(f'    settings: max_graphs={cfg.gnnex_max_graphs!r} → {_gnnex_cap}, '
                   f'epochs={cfg.gnnex_epochs} (test split only, not train/valid)')
-            gnnex_scores = run_gnnexplainer(
+            gnnex_scores, _gnnex_atts = run_gnnexplainer(
                 _clean_model(), test_list, vocab, device, task_type,
                 epochs=cfg.gnnex_epochs,
                 max_graphs=cfg.gnnex_max_graphs,
-                verbose=cfg.verbose)
+                verbose=cfg.verbose, return_node_atts=True)
+            explainer_node_atts['gnnexplainer'] = _gnnex_atts
             _warn_if_collapsed('GNNExplainer', gnnex_scores)
             _save_explainer_scores(gnnex_scores, out_dir / 'gnnexplainer_motif_scores', vocab)
             results['gnnexplainer_mean'] = gnnex_scores.get('mean', {})
@@ -348,10 +354,11 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_pgexplainer:
         try:
             print('\n  Running PGExplainer ...')
-            pgex_scores = run_pgexplainer(
+            pgex_scores, _pgex_atts = run_pgexplainer(
                 _clean_model(), loaders, test_list, vocab, device, task_type,
                 max_graphs=cfg.pgex_max_graphs,
-                explain_model=cfg.pgex_explain_model)
+                explain_model=cfg.pgex_explain_model, return_node_atts=True)
+            explainer_node_atts['pgexplainer'] = _pgex_atts
             _warn_if_collapsed('PGExplainer', pgex_scores)
             _save_explainer_scores(pgex_scores, out_dir / 'pgexplainer_motif_scores', vocab)
             results['pgexplainer_mean'] = pgex_scores.get('mean', {})
@@ -363,7 +370,10 @@ def run(cfg: VanillaConfig) -> dict:
     if cfg.run_mage:
         try:
             print('\n  Running MAGE ...')
-            mage_scores = run_mage(_clean_model(), test_list, vocab, device, task_type)
+            mage_scores, _mage_pi = run_mage(
+                _clean_model(), test_list, vocab, device, task_type,
+                return_per_instance=True)
+            explainer_node_atts['mage_per_instance'] = _mage_pi  # {mid:{gi:dist}}
             _warn_if_collapsed('MAGE', mage_scores)
             _save_explainer_scores(mage_scores, out_dir / 'mage_motif_scores', vocab)
             results['mage_mean'] = mage_scores.get('mean', {})
@@ -489,6 +499,102 @@ def run(cfg: VanillaConfig) -> dict:
             _st = motif_score_stats(_sc)
             explainer_metrics[f'{_pfx}_score_mean'] = _st['score_mean']
             explainer_metrics[f'{_pfx}_score_std']  = _st['score_std']
+
+    # ── TRUE per-instance score-vs-impact correlation (per explainer) ──────────
+    # Instance-based explainers attribute a DIFFERENT weight to a motif in each
+    # graph; the grouped/instance-repeated pearson above discards that. The score
+    # (x) is the explainer's per-(motif, graph) attribution; the impact (y) is the
+    # aligned per-(motif, graph) faithful LOO under TWO weightings, reported
+    # separately for every explainer:
+    #   OWN      ({ex}_pearson_instance)          — LOO weighted by the explainer's
+    #            own attribution (per-node mask for GNN/PG; the motif-level score
+    #            broadcast to the motif's nodes for MAGE — masking is motif-level,
+    #            so a motif-level weight is sufficient).
+    #   AGNOSTIC ({ex}_pearson_instance_agnostic) — LOO with uniform weights; the
+    #            model-only, common y-axis across all methods.
+    if cfg.run_motif_impact:
+        from SharedModules.evaluation.motif_eval import (
+            per_instance_correlation_from_caches,
+            build_motif_score_cache_from_atts, build_graph_mask_cache)
+        from SharedModules.evaluation.embedding_viz import build_impact_cache_from_eval
+        _mask_cache = build_graph_mask_cache(test_list)
+
+        def _ones_fn(_d):
+            return torch.ones(_d.num_nodes)
+        try:                                     # shared agnostic (uniform-W) impact
+            _agn_impact = build_impact_cache_from_eval(
+                model, test_list, vocab, device, task_type, base_att_fn=_ones_fn)
+        except Exception as _e:
+            print(f'  [warn] agnostic per-instance impact failed ({_e}).')
+            _agn_impact = {}
+
+        def _own_impact_from_attr():
+            """Build the OWN-weight impact cache from whatever per-node weights are
+            currently attached to test_list graphs as ``_pi_att``."""
+            _base = (lambda _d: getattr(_d, '_pi_att', None))
+            try:
+                return build_impact_cache_from_eval(
+                    model, test_list, vocab, device, task_type, base_att_fn=_base)
+            except Exception as _e:
+                print(f'  [warn] own per-instance impact failed ({_e}).')
+                return {}
+            finally:
+                for _d in test_list:
+                    if hasattr(_d, '_pi_att'):
+                        delattr(_d, '_pi_att')
+
+        def _record(ex, score_cache, own_impact):
+            _own = (per_instance_correlation_from_caches(score_cache, own_impact)
+                    if own_impact else {})
+            _agn = (per_instance_correlation_from_caches(score_cache, _agn_impact)
+                    if _agn_impact else {})
+            nanv = float('nan')
+            _vals = {
+                'pearson_instance':           _own.get('pearson_instance', nanv),
+                'spearman_instance':          _own.get('spearman_instance', nanv),
+                'pearson_instance_agnostic':  _agn.get('pearson_instance', nanv),
+                'spearman_instance_agnostic': _agn.get('spearman_instance', nanv),
+            }
+            # The per-instance score is a MEAN node->motif reduction, so it is
+            # agg-independent. Emit the flat key (kept in all_results by collect)
+            # AND under both {ex}_mean_/{ex}_max_ prefixes (same value) so the
+            # aggregate_experiments post-hoc expansion — which keys on
+            # {ex}_{agg}_{metric} — propagates it onto the explainer family rows.
+            # NOTE: test-scope only (explainers run on test_list, not all_list),
+            # so there is deliberately no *_instance_all for baselines.
+            for _m, _v in _vals.items():
+                explainer_metrics[f'{ex}_{_m}'] = _v
+                explainer_metrics[f'{ex}_mean_{_m}'] = _v
+                explainer_metrics[f'{ex}_max_{_m}'] = _v
+
+        # GNNExplainer / PGExplainer — per-node masks.
+        for _ex in ('gnnexplainer', 'pgexplainer'):
+            _atts = explainer_node_atts.get(_ex)
+            if not _atts:
+                continue
+            _score_cache = build_motif_score_cache_from_atts(_atts, _mask_cache)
+            for _gi, _a in _atts.items():
+                if _gi < len(test_list):
+                    setattr(test_list[_gi], '_pi_att', _a)
+            _record(_ex, _score_cache, _own_impact_from_attr())
+
+        # MAGE — native per-(motif, graph) cosine distance as the score; OWN impact
+        # broadcasts that motif-level score to the motif's nodes as W.
+        _mage_pi = explainer_node_atts.get('mage_per_instance')
+        if _mage_pi:
+            for _gi in range(len(test_list)):
+                _d = test_list[_gi]
+                _n2m = getattr(_d, 'nodes_to_motifs', None)
+                if _n2m is None:
+                    continue
+                _n2m = _n2m.view(-1)
+                _w = torch.zeros(_n2m.numel())
+                for _mid, _gmap in _mage_pi.items():
+                    _val = _gmap.get(_gi)
+                    if _val is not None:
+                        _w[_n2m == _mid] = float(_val)
+                setattr(_d, '_pi_att', _w)
+            _record('mage', _mage_pi, _own_impact_from_attr())
 
     # ── Per-explainer GT-ROC (node & edge) ─────────────────────────────────────
     # The vanilla model has no intrinsic node attention, so its GT-ROC comes from

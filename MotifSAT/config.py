@@ -71,6 +71,7 @@ class MotifSATConfig:
     batch_size: int = 128
     patience: int = 20
     min_epochs: int = 20
+    early_stop_metric: str = 'loss'  # loss=smoothed val loss (train past AUC plateau); auc=legacy
     clip_grad: float = 2.0
     seed: int = 42
 

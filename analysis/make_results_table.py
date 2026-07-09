@@ -193,10 +193,15 @@ def main():
                          'train_auc, rmse_orig, mae_orig, gt_roc_auc_mean, '
                          'gt_roc_node_auc_mean, gt_roc_edge_auc_mean, '
                          'gt_roc_node_mean_auc_mean, gt_roc_node_max_auc_mean, '
-                         'gt_roc_n_graphs, pearson, spearman, '
+                         'gt_roc_n_graphs, pearson, spearman, pearson_motif, '
+                         'pearson_instance (TRUE per-instance, own LOO), '
+                         'pearson_instance_agnostic (per-instance, uniform LOO — '
+                         'the model-agnostic axis for fair cross-method comparison), '
                          'top_k_abs_disc, score_disc_spearman; baseline columns '
-                         'like gnnexplainer_mean_pearson and '
-                         'gnnexplainer_mean_gt_roc_node_auc_mean (also _max_) work.')
+                         'like gnnexplainer_mean_pearson, '
+                         'gnnexplainer_mean_pearson_instance(_agnostic) and '
+                         'gnnexplainer_mean_gt_roc_node_auc_mean (also _max_) work. '
+                         'Baseline per-instance is TEST-scope (no *_instance_all).')
     ap.add_argument('--mode', choices=('auto', 'prediction', 'explanation'),
                     default='auto',
                     help='prediction drops baselines duplicates (E8); '

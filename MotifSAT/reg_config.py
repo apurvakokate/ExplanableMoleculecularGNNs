@@ -81,22 +81,43 @@ DEFAULT_DECAY_INTERVAL = _DECAY_INTERVAL_SMALL
 DEFAULT_DECAY_R = 0.1
 
 # ── Per-dataset information-loss coefficient (motif IB strength) ──────────────
-# Set from the MotifSAT sweep (readout + noise=motif + info_loss_level=motif):
-# a soft coefficient (0.5) jointly maximised prediction AUC, node GT-AUC and
-# score-vs-impact across datasets/backbones — a stronger 1.0 over-compressed the
-# attention, and none (IB off) left the SAGE/PNA explanations anti-explanatory.
-# This is the MotifSAT analogue of MOSE's per-dataset (ent_reg, size_reg).
-# An explicit --info_loss_coef always overrides the table.
-_INFO_LOSS_COEF_DEFAULT = 0.5
+# MotifSAT analogue of MOSE's per-dataset (ent_reg, size_reg). An explicit
+# --info_loss_coef always overrides the table.
+#
+# HISTORY / why this changed 2026-07-09:
+#   The old default 0.5 was tuned under the *val-AUC* early-stop regime, which
+#   stopped training before the attention converged (undertraining). Under the
+#   corrected *smoothed-val-loss* early-stop, coef=0.5 UNDER-regularises: the
+#   per-motif attention SATURATES toward 1.0 (mean score_median 0.83; GIN ~0.98
+#   -> almost every motif "on"), which flattens score discrimination. A 5-arch x
+#   5-config grid on mutag (source GT, the sound explanation metric) showed
+#   coef=1.0/final_r=0.5 is the sweet spot:
+#       config (coef,final_r)   mean gt_roc_node   pearson_motif   auc
+#         (1.0, 0.5)  <-- best        0.791             0.338      0.956
+#         (1.0, 0.3)                  0.786             0.269      0.948
+#         (2.0, 0.5)  over-compress   0.775             0.238      0.951
+#         (0.5, 0.5)  old default     0.774            -0.031      0.961
+#         (0.5, 0.3)  worst           0.763             0.061      0.952
+#   coef=1.0 rescues the saturating GIN case most (gt_roc 0.711 -> 0.789,
+#   score_median 0.96 -> 0.61) at negligible AUC cost (0.961 -> 0.956), and is
+#   >= old default for every backbone. coef=2.0 over-compresses; lowering final_r
+#   alone hurts. So the binary molecular classification datasets move to 1.0.
+#   CAVEAT: GT validation is mutag-only (single fold, 5 archs); the *saturation*
+#   itself is reproduced on BBBP/Alkane_Carbonyl/Mutagenicity (all archs, 3 folds).
+#   Regression / multitask / OGB stay at 0.5 (untested here; OGB uses r=0.7 floor).
+_INFO_LOSS_COEF_DEFAULT = 1.0
 
 INFO_LOSS_COEF_BY_DATASET = {
-    "mutag": 0.5,
-    "Mutagenicity": 0.5,
-    "BBBP": 0.5,
-    "hERG": 0.5,
-    "Benzene": 0.5,
-    "Alkane_Carbonyl": 0.5,
-    "Fluoride_Carbonyl": 0.5,
+    # Binary molecular classification: coef=1.0 (mutag-GT validated; saturation
+    # reproduced on BBBP/Alkane_Carbonyl/Mutagenicity). Was 0.5 pre-2026-07-09.
+    "mutag": 1.0,
+    "Mutagenicity": 1.0,
+    "BBBP": 1.0,
+    "hERG": 1.0,
+    "Benzene": 1.0,
+    "Alkane_Carbonyl": 1.0,
+    "Fluoride_Carbonyl": 1.0,
+    # Regression / multitask: unchanged (no GT-ROC signal to tune against here).
     "Lipophilicity": 0.5,
     "esol": 0.5,
     "freesolv": 0.5,

@@ -22,6 +22,8 @@ from .metrics import evaluate_predictions
 from .motif_eval import (
     compute_motif_impact,
     score_impact_correlation,
+    per_instance_correlation_from_caches,
+    caches_from_motif_impact,
     top_bottom_motif_eval,
     gt_vs_outside_gt_eval,
     compute_gt_roc,
@@ -56,6 +58,12 @@ def explainability_summary_fields(
                 f'spearman{suffix}': _mean.get('spearman', nan),
                 f'pearson_motif{suffix}':  _mean.get('pearson_motif', nan),
                 f'spearman_motif{suffix}': _mean.get('spearman_motif', nan),
+                # TRUE per-instance (per-graph weight vs per-graph impact):
+                # OWN impact (model's own attention LOO) + AGNOSTIC (uniform-W LOO)
+                f'pearson_instance{suffix}':  _mean.get('pearson_instance', nan),
+                f'spearman_instance{suffix}': _mean.get('spearman_instance', nan),
+                f'pearson_instance_agnostic{suffix}':  _mean.get('pearson_instance_agnostic', nan),
+                f'spearman_instance_agnostic{suffix}': _mean.get('spearman_instance_agnostic', nan),
             }
             for agg in ('mean', 'max'):
                 c = corr_by_agg.get(agg, {})
@@ -69,6 +77,12 @@ def explainability_summary_fields(
             # motif-level aggregated (grouped) score-vs-impact — Table 3.4 metric
             f'pearson_motif{suffix}':  corr.get('pearson_motif', nan),
             f'spearman_motif{suffix}': corr.get('spearman_motif', nan),
+            # TRUE per-instance (per-graph weight vs per-graph impact):
+            # OWN impact (model's own attention LOO) + AGNOSTIC (uniform-W LOO)
+            f'pearson_instance{suffix}':  corr.get('pearson_instance', nan),
+            f'spearman_instance{suffix}': corr.get('spearman_instance', nan),
+            f'pearson_instance_agnostic{suffix}':  corr.get('pearson_instance_agnostic', nan),
+            f'spearman_instance_agnostic{suffix}': corr.get('spearman_instance_agnostic', nan),
             f'pearson_node_mean{suffix}':  corr.get('pearson', nan),
             f'pearson_node_max{suffix}':   corr.get('pearson', nan),
             f'spearman_node_mean{suffix}': corr.get('spearman', nan),
@@ -182,6 +196,36 @@ class EvalPipeline:
             for d in data_list
         )
 
+    def _per_instance(self, data_list: List, motif_impact: Dict) -> Dict:
+        """Per-instance score-vs-impact correlation at BOTH y-axes:
+          pearson_instance          — OWN impact (LOO weighted by the model's own
+                                       per-node attention; the x is that same
+                                       per-instance attention).
+          pearson_instance_agnostic — AGNOSTIC impact (LOO with uniform weights;
+                                       model-only, the common fair y across
+                                       methods). Same x.
+        The OWN pair is free (reuses motif_impact); the agnostic adds one
+        uniform-weight impact pass."""
+        from .embedding_viz import build_impact_cache_from_eval
+        score_cache, own_impact = caches_from_motif_impact(motif_impact)
+        own = per_instance_correlation_from_caches(score_cache, own_impact)
+        out = {
+            'pearson_instance':   own['pearson_instance'],
+            'spearman_instance':  own['spearman_instance'],
+            'n_instances':        own['n_instances'],
+        }
+        try:
+            _ones = lambda d: torch.ones(d.num_nodes)
+            agn_impact = build_impact_cache_from_eval(
+                self.model, data_list, self.vocab, self.device,
+                self.task_type, base_att_fn=_ones)
+            agn = per_instance_correlation_from_caches(score_cache, agn_impact)
+            out['pearson_instance_agnostic']  = agn['pearson_instance']
+            out['spearman_instance_agnostic'] = agn['spearman_instance']
+        except Exception as _e:
+            print(f'  [warn] agnostic per-instance impact failed ({_e}).')
+        return out
+
     def _compute_explainability(
         self,
         data_list: List,
@@ -222,6 +266,8 @@ class EvalPipeline:
                 block['motif_impact'] = impacts
                 block['correlation'] = score_impact_correlation(
                     motif_scores, impacts)
+                # TRUE per-instance correlation (own + agnostic y), merged in.
+                block['correlation'].update(self._per_instance(data_list, impacts))
         return block
 
     def run(
@@ -318,6 +364,9 @@ class EvalPipeline:
             results['correlation'] = score_impact_correlation(
                 motif_scores, results['motif_impact']
             )
+            # TRUE per-instance correlation (own + agnostic y-axis)
+            results['correlation'].update(
+                self._per_instance(self.test_list, results['motif_impact']))
 
         # 5. Top-K vs Bottom-K
         if has_scores and has_impacts:
@@ -395,11 +444,12 @@ class EvalPipeline:
 
         if 'motif_impact' in results:
             # motif_impact.csv stays one scalar row per motif — strip the
-            # per-graph ``*_values`` lists (used only for instance-level plots /
-            # correlation) so they don't get stringified into cells.
+            # per-graph lists (``*_values`` and the aligned ``graph_indices``,
+            # used only for instance-level correlation) so they don't get
+            # stringified into cells.
+            _list_keys = lambda k: k.endswith('_values') or k == 'graph_indices'
             rows = [{'motif_id': mid,
-                     **{k: v for k, v in stats.items()
-                        if not k.endswith('_values')}}
+                     **{k: v for k, v in stats.items() if not _list_keys(k)}}
                     for mid, stats in results['motif_impact'].items()]
             if rows:
                 dfs['motif_impact'] = (

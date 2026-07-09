@@ -47,6 +47,7 @@ def run_gnnexplainer(
     epochs: int = 200,
     max_graphs: Optional[int] = None,
     verbose: bool = True,
+    return_node_atts: bool = False,
 ) -> NodeScoreResult:
     """Per-motif importance scores from GNNExplainer node masks.
 
@@ -94,6 +95,9 @@ def run_gnnexplainer(
     mean_cnt: Dict[int, int]   = {}
     max_sum:  Dict[int, float] = {}
     max_cnt:  Dict[int, int]   = {}
+    # Per-graph node attributions (gi -> [N] tensor), kept for the TRUE
+    # per-instance score-vs-impact correlation. gi indexes ``data_list``.
+    node_atts: Dict[int, torch.Tensor] = {}
 
     graphs = data_list[:max_graphs] if max_graphs else data_list
     n_test = len(data_list)
@@ -135,6 +139,7 @@ def run_gnnexplainer(
 
         node_mask = node_mask.view(-1)
         n2m_cpu   = n2m.cpu()
+        node_atts[gi] = node_mask.clone()
 
         for mid in n2m_cpu[n2m_cpu >= 0].unique().tolist():
             mask_m = node_mask[n2m_cpu == mid]
@@ -149,12 +154,13 @@ def run_gnnexplainer(
             max_sum[mid]  = max_sum.get(mid, 0.0)  + local_max
             max_cnt[mid]  = max_cnt.get(mid, 0)    + 1
 
-    return {
+    scores = {
         'mean': {mid: mean_sum[mid] / mean_cnt[mid]
                  for mid in mean_sum if mean_cnt[mid] > 0},
         'max':  {mid: max_sum[mid]  / max_cnt[mid]
                  for mid in max_sum  if max_cnt[mid]  > 0},
     }
+    return (scores, node_atts) if return_node_atts else scores
 
 
 def _gradient_saliency(model, data, device) -> Optional[torch.Tensor]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -44,6 +45,25 @@ def _val_score(metrics: Dict, task_type: str) -> float:
     elif task_type == 'MultiLabel':
         return metrics.get('auc_mean', 0.0)
     return metrics.get('auc', 0.0)
+
+
+@torch.no_grad()
+def _val_task_loss(model, criterion, loader, device, task_type,
+                   motif_lengths=None) -> float:
+    """Mean validation TASK (prediction) loss — no info/motif regularisers.
+    Used as the early-stop / LR-scheduler signal: val AUC saturates long before
+    the GSAT/MotifSAT attention converges, so stopping on AUC undertrains the
+    explainer (val loss keeps improving after AUC plateaus)."""
+    model.eval()
+    tot, n = 0.0, 0
+    for data in loader:
+        data = data.to(device)
+        logits, _, _ = model(
+            data.x, data.edge_index, data.batch, data.nodes_to_motifs,
+            getattr(data, 'edge_attr', None), epoch=1, motif_lengths=motif_lengths)
+        tot += float(_task_loss(criterion, logits, data.y, task_type).item())
+        n += 1
+    return tot / max(n, 1)
 
 
 def train_one_epoch(
@@ -102,6 +122,7 @@ def train_gsat(
     motif_lengths: Optional[list] = None,
     patience: int = 20,
     min_epochs: int = 20,
+    early_stop_metric: str = 'loss',
     clip_grad: float = 2.0,
     save_path: Optional[str] = None,
     verbose: bool = True,
@@ -122,10 +143,16 @@ def train_gsat(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr,
                                  weight_decay=weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, patience=10, factor=0.5,
-                                  min_lr=1e-5)
+    # Early-stop / LR-scheduler signal. 'loss' (default) = smoothed val task
+    # loss: val AUC saturates well before the attention converges, so stopping
+    # on AUC undertrains the explainer (memory: training length is the lever).
+    _stop_on_loss = str(early_stop_metric).lower() == 'loss'
+    scheduler = ReduceLROnPlateau(optimizer, patience=(5 if _stop_on_loss else 10),
+                                  factor=0.5, min_lr=1e-5)
 
-    best_val = float('inf') if task_type == 'Regression' else 0.0
+    best_val = float('inf') if task_type == 'Regression' else 0.0  # checkpoint metric
+    best_stop = float('inf')                 # smoothed val loss (min is better)
+    loss_queue: deque = deque(maxlen=5)
     no_improve = 0
     best_state = deepcopy(model.state_dict())
     history: Dict = {}
@@ -145,16 +172,31 @@ def train_gsat(
         val_score = _val_score(val_m, task_type)
         history.setdefault('val_metric', []).append(val_score)
 
-        scheduler.step(val_score if task_type == 'Regression' else -val_score)
+        # Smoothed validation task loss (early-stop / scheduler signal).
+        vloss = _val_task_loss(model, criterion, loaders['valid'], device,
+                               task_type, motif_lengths)
+        loss_queue.append(vloss)
+        smoothed_loss = sum(loss_queue) / len(loss_queue)
+        history.setdefault('val_loss', []).append(smoothed_loss)
 
+        # Checkpoint is ALWAYS the best val AUC (classification) / RMSE
+        # (regression) snapshot, decoupled from the early-stop signal.
         is_better = (val_score < best_val if task_type == 'Regression'
                      else val_score > best_val)
         if is_better:
             best_val = val_score
-            no_improve = 0
             best_state = deepcopy(model.state_dict())
+
+        if _stop_on_loss:
+            scheduler.step(smoothed_loss)
+            if smoothed_loss < best_stop - 1e-4:
+                best_stop = smoothed_loss
+                no_improve = 0
+            else:
+                no_improve += 1
         else:
-            no_improve += 1
+            scheduler.step(val_score if task_type == 'Regression' else -val_score)
+            no_improve = 0 if is_better else no_improve + 1
 
         # W&B logging
         if wandb_logger is not None:

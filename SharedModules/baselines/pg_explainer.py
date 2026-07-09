@@ -134,15 +134,18 @@ def _aggregate_motif_scores(
     device: torch.device,
     edge_masks_fn,
     max_graphs: Optional[int],
+    return_node_atts: bool = False,
 ) -> NodeScoreResult:
     """Shared node→motif reduction given a per-graph edge-mask callback."""
     mean_sum: Dict[int, float] = {}
     mean_cnt: Dict[int, int] = {}
     max_sum: Dict[int, float] = {}
     max_cnt: Dict[int, int] = {}
+    # Per-graph node attributions (gi -> [N]) for the per-instance correlation.
+    node_atts: Dict[int, torch.Tensor] = {}
 
     graphs = test_list[:max_graphs] if max_graphs else test_list
-    for data in graphs:
+    for gi, data in enumerate(graphs):
         data = data.to(device)
         n = data.x.size(0)
         n2m = getattr(data, 'nodes_to_motifs', None)
@@ -164,6 +167,7 @@ def _aggregate_motif_scores(
             node_cnt[s] += 1
             node_cnt[d] += 1
         node_score = node_score / node_cnt.clamp(min=1)
+        node_atts[gi] = node_score.clone()
 
         n2m_cpu = n2m.cpu()
         for mid in n2m_cpu[n2m_cpu >= 0].unique().tolist():
@@ -177,12 +181,13 @@ def _aggregate_motif_scores(
             max_sum[mid] = max_sum.get(mid, 0.0) + local_max
             max_cnt[mid] = max_cnt.get(mid, 0) + 1
 
-    return {
+    scores = {
         'mean': {mid: mean_sum[mid] / mean_cnt[mid]
                  for mid in mean_sum if mean_cnt[mid] > 0},
         'max': {mid: max_sum[mid] / max_cnt[mid]
                 for mid in max_sum if max_cnt[mid] > 0},
     }
+    return (scores, node_atts) if return_node_atts else scores
 
 
 def run_pgexplainer(
@@ -196,22 +201,31 @@ def run_pgexplainer(
     max_graphs: Optional[int] = None,
     max_train_graphs: Optional[int] = None,
     explain_model: bool = True,
+    return_node_atts: bool = False,
 ) -> NodeScoreResult:
     """Per-motif importance scores from PGExplainer edge masks.
 
     Returns
     -------
     dict with keys 'mean' and 'max', each mapping motif_id -> float.
+    When ``return_node_atts`` is set, returns ``(scores, node_atts)`` where
+    ``node_atts`` maps graph index -> per-node attribution (for the per-instance
+    score-vs-impact correlation).
     """
     model.eval()
     model.to(device)
+
+    # Per-graph node attributions captured from the winning attempt.
+    _captured: Dict[str, Dict[int, torch.Tensor]] = {}
+    def _ret(sc):
+        return (sc, _captured.get('node_atts', {})) if return_node_atts else sc
 
     try:
         from torch_geometric.explain import Explainer, PGExplainer as _PGEx
     except ImportError:
         print('  [warn] PGExplainer requires PyG >= 2.3; skipping (no gradient '
               'fallback — PGExplainer results must be genuine PGExplainer).')
-        return {'mean': {}, 'max': {}}
+        return _ret({'mean': {}, 'max': {}})
 
     class _Wrapper(torch.nn.Module):
         def __init__(self, inner):
@@ -266,8 +280,10 @@ def run_pgexplainer(
                 index=0, **kwargs)
             return expl.edge_mask.detach().cpu()
 
-        scores = _aggregate_motif_scores(
-            test_list, device, edge_masks_fn=_explain_graph, max_graphs=max_graphs)
+        scores, _na = _aggregate_motif_scores(
+            test_list, device, edge_masks_fn=_explain_graph, max_graphs=max_graphs,
+            return_node_atts=True)
+        _captured['node_atts'] = _na
         return scores, None, train_fail
 
     print(f'    Training PGExplainer ({epochs} epochs) ...')
@@ -283,11 +299,11 @@ def run_pgexplainer(
         except Exception as e:
             print(f'  [warn] PGExplainer attempt (edge_size={edge_size}) failed '
                   f'({e}); skipping — no gradient fallback.')
-            return {'mean': {}, 'max': {}}
+            return _ret({'mean': {}, 'max': {}})
         if scores is None:  # training produced no successful steps
             print(f'  [warn] PGExplainer training failed ({err}); skipping — no '
                   f'gradient fallback (would masquerade as PGExplainer).')
-            return {'mean': {}, 'max': {}}
+            return _ret({'mean': {}, 'max': {}})
         if train_fail:
             print(f'    PGExplainer (edge_size={edge_size}): {train_fail} train step(s) skipped/failed')
         if not (scores['mean'] or scores['max']):
@@ -298,7 +314,7 @@ def run_pgexplainer(
             if i > 0:
                 print(f'    PGExplainer recovered from mask collapse at '
                       f'edge_size={edge_size} (default {schedule[0]}).')
-            return scores
+            return _ret(scores)
         # collapsed → retry with a smaller sparsity penalty if any remain
         if i < len(schedule) - 1:
             print(f'    [info] PGExplainer mask collapsed at edge_size={edge_size}; '
@@ -310,7 +326,7 @@ def run_pgexplainer(
     print(f'  [warn] PGExplainer mask collapsed at every edge_size in '
           f'{schedule} — reporting the collapsed PGExplainer result (no gradient '
           f'fallback). Score-vs-impact will be NaN for this run.')
-    return last_scores
+    return _ret(last_scores)
 
 
 def _iter_train_graphs(loaders: Dict, max_graphs: Optional[int] = None):

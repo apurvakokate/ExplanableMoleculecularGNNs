@@ -343,6 +343,16 @@ def compute_motif_impact(
     for mid in motif_ids:
         # impacts = []          # removal-based impact — DISABLED (see below)
         nw_impacts = []
+        # Per-(motif, graph) SCORE for the TRUE per-instance correlation: the
+        # mean of the explanation's per-node weight W over THIS motif instance's
+        # nodes in THIS graph. Same W that loo_impact zeroes below, so score and
+        # impact are aligned by construction and share the model's own weighting
+        # (node attention for MOSE/MotifSAT/GSAT; the explainer's broadcast
+        # per-node scores for GNNExplainer/PGExplainer/MAGE via base_att_fn).
+        # For a global-score method (MOSE) W is constant within a motif, so its
+        # per-instance score degenerates to the global score — the fair baseline.
+        nw_scores = []
+        nw_gis = []          # graph index aligned with nw_impacts / nw_scores
         for gi, graph_mask in mask_cache[mid].items():
             d = data_list[gi]
             orig_p = orig_probs.get(gi)
@@ -365,6 +375,14 @@ def compute_motif_impact(
                 model, gi, d, graph_mask, base_W, p_full_W, device, task_type)
             if nw is not None:
                 nw_impacts.append(nw)
+                nw_gis.append(int(gi))
+                # Aligned per-instance score: mean W over this motif's nodes.
+                # W is guaranteed present here (loo_impact only returns non-None
+                # when base_W[gi] exists).
+                _W = base_W[gi]
+                _m = graph_mask.to(_W.device).bool()
+                _sv = _W[_m]
+                nw_scores.append(float(_sv.mean()) if _sv.numel() else float('nan'))
 
         if nw_impacts:
             smarts = vocab.motif_list[mid] if mid < len(vocab.motif_list) else '?'
@@ -382,6 +400,12 @@ def compute_motif_impact(
                 'masking_without_removal':        mean_nw,
                 'masking_without_removal_std':    std_nw,
                 'masking_without_removal_values': vals_nw,
+                # Per-(motif, graph) explanation weight, aligned 1:1 with
+                # impact_values (same loop, same skip condition).
+                'score_values':                   nw_scores,
+                # Graph index aligned with impact_values/score_values, so gi-keyed
+                # caches (per_instance own/agnostic) can be built from this dict.
+                'graph_indices':                  list(nw_gis),
             }
             results[mid] = entry
 
@@ -468,6 +492,91 @@ def score_impact_correlation(
         'pearson_motif':  _safe(pearsonr,  s_m, imp_m),
         'spearman_motif': _safe(spearmanr, s_m, imp_m),
         'n_motifs':       int(len(s_m)),
+    }
+
+
+def caches_from_motif_impact(
+    motif_impacts: Dict[int, Dict[str, float]],
+) -> Tuple[Dict[int, Dict[int, float]], Dict[int, Dict[int, float]]]:
+    """Split a ``compute_motif_impact`` result into gi-keyed
+    ``(score_cache, impact_cache)`` maps ``{motif_id: {graph_idx: value}}`` using
+    the aligned ``graph_indices`` / ``score_values`` / impact lists. Lets the
+    per-instance OWN correlation and any agnostic re-pairing reuse the impact
+    pass already run (no extra forward passes for the own case)."""
+    score_cache: Dict[int, Dict[int, float]] = {}
+    impact_cache: Dict[int, Dict[int, float]] = {}
+    for mid, e in motif_impacts.items():
+        gis = e.get('graph_indices')
+        sv = e.get('score_values')
+        iv = e.get('masking_without_removal_values')
+        if iv is None:
+            iv = e.get('impact_values')
+        if not gis or sv is None or iv is None:
+            continue
+        if not (len(gis) == len(sv) == len(iv)):
+            continue
+        for gi, s_i, i_i in zip(gis, sv, iv):
+            score_cache.setdefault(mid, {})[gi] = float(s_i)
+            impact_cache.setdefault(mid, {})[gi] = float(i_i)
+    return score_cache, impact_cache
+
+
+def build_motif_score_cache_from_atts(
+    node_atts: Dict[int, torch.Tensor],
+    mask_cache: Dict[int, Dict[int, torch.Tensor]],
+) -> Dict[int, Dict[int, float]]:
+    """Per-(motif, graph) score = mean per-node attribution over the motif's
+    nodes. ``node_atts`` maps graph_idx -> [N] attribution (an explainer's own
+    per-graph mask); ``mask_cache`` is ``build_graph_mask_cache`` output. Returns
+    ``{motif_id: {graph_idx: mean_att}}`` — the x-axis for the post-hoc
+    per-instance correlation, decoupled from any particular impact y."""
+    cache: Dict[int, Dict[int, float]] = {}
+    for mid, gmap in mask_cache.items():
+        for gi, node_mask in gmap.items():
+            att = node_atts.get(gi)
+            if att is None:
+                continue
+            m = node_mask.view(-1).bool()
+            if att.numel() != m.numel():
+                continue
+            vals = att.view(-1)[m]
+            if vals.numel():
+                cache.setdefault(mid, {})[gi] = float(vals.float().mean())
+    return cache
+
+
+def per_instance_correlation_from_caches(
+    score_by_mg: Dict[int, Dict[int, float]],
+    impact_by_mg: Dict[int, Dict[int, float]],
+) -> Dict[str, float]:
+    """Per-instance correlation from two ``{motif_id: {graph_idx: value}}`` maps.
+
+    Used when a method's per-instance SCORE is native per-(motif, graph) rather
+    than a per-node weight — e.g. MAGE's per-graph embedding cosine distance.
+    Pairs are formed over the common (motif, graph) keys, so alignment is by the
+    shared graph index. Returns ``pearson_instance`` / ``spearman_instance`` /
+    ``n_instances``.
+    """
+    from scipy.stats import pearsonr, spearmanr
+
+    nan = float('nan')
+    xs: List[float] = []
+    ys: List[float] = []
+    for mid in set(score_by_mg) & set(impact_by_mg):
+        s_map, i_map = score_by_mg[mid], impact_by_mg[mid]
+        for gi in set(s_map) & set(i_map):
+            s_i, i_i = s_map[gi], i_map[gi]
+            if np.isfinite(s_i) and np.isfinite(i_i):
+                xs.append(float(s_i)); ys.append(float(i_i))
+    if len(xs) < 3:
+        return {'pearson_instance': nan, 'spearman_instance': nan,
+                'n_instances': len(xs)}
+    a = np.array(xs); b = np.array(ys)
+    ok = np.std(a) > 0 and np.std(b) > 0
+    return {
+        'pearson_instance':  float(pearsonr(a, b)[0])  if ok else nan,
+        'spearman_instance': float(spearmanr(a, b)[0]) if ok else nan,
+        'n_instances':       int(len(a)),
     }
 
 

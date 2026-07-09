@@ -558,10 +558,14 @@ def build_impact_cache_from_eval(
     vocab,
     device: torch.device,
     task_type: str = 'BinaryClass',
+    base_att_fn=None,
 ) -> Dict[int, Dict[int, float]]:
     """Run faithful LOO impact and return per-graph values keyed by list index.
 
-    Structure: ``{motif_id: {graph_idx: impact_value}}`` for embedding viz.
+    Structure: ``{motif_id: {graph_idx: impact_value}}`` for embedding viz and
+    the per-instance correlation. ``base_att_fn`` selects the weight vector W
+    (defaults to the model's own node attention; pass e.g. an all-ones fn for a
+    method-agnostic impact when the method has no per-node weights, like MAGE).
     """
     from .motif_eval import (
         build_graph_mask_cache,
@@ -570,7 +574,8 @@ def build_impact_cache_from_eval(
 
     model.eval()
     mask_cache = build_graph_mask_cache(data_list)
-    base_W, p_full_W = build_faithful_loo_baseline(model, data_list, device, task_type)
+    base_W, p_full_W = build_faithful_loo_baseline(
+        model, data_list, device, task_type, base_att_fn=base_att_fn)
 
     cache: Dict[int, Dict[int, float]] = {}
     for mid, motif_masks in mask_cache.items():

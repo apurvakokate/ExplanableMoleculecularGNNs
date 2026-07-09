@@ -47,6 +47,8 @@ from SharedModules.evaluation.metrics import (
 from SharedModules.evaluation.motif_eval import (
     compute_motif_impact, score_impact_correlation, explainer_roc_vs_gt,
     top_bottom_motif_eval, gt_vs_outside_gt_eval, compute_gt_roc,
+    caches_from_motif_impact, per_instance_correlation_from_caches,
+    build_motif_score_cache_from_atts,
 )
 from SharedModules.evaluation.multi_explanation import (
     assign_hypothesis_flags, compute_h1_h2_ratios, classify_motif_category,
@@ -802,6 +804,79 @@ class TestMotifEval(unittest.TestCase):
         self.assertEqual(corr['n_points'], 9)   # 3 motifs x 3 graphs
         self.assertFalse(np.isnan(corr['pearson']))
         self.assertFalse(np.isnan(corr['pearson_motif']))
+
+    # ── per-instance correlation path (own + agnostic) ──────────────────────
+    def test_caches_from_motif_impact_splits_aligned(self):
+        # graph_indices / score_values / impact lists are unzipped into two
+        # gi-keyed {mid:{gi:val}} caches, aligned entry-for-entry.
+        mi = {
+            7: {'graph_indices': [0, 2, 5],
+                'score_values': [0.1, 0.5, 0.9],
+                'masking_without_removal_values': [0.2, 0.4, 0.8]},
+        }
+        sc, ic = caches_from_motif_impact(mi)
+        self.assertEqual(sc[7], {0: 0.1, 2: 0.5, 5: 0.9})
+        self.assertEqual(ic[7], {0: 0.2, 2: 0.4, 5: 0.8})
+
+    def test_caches_from_motif_impact_skips_misaligned(self):
+        # Mismatched list lengths (or missing graph_indices) are skipped, not
+        # silently mis-paired.
+        mi = {1: {'graph_indices': [0, 1], 'score_values': [0.1],
+                  'masking_without_removal_values': [0.2, 0.3]},
+              2: {'score_values': [0.1, 0.2],
+                  'masking_without_removal_values': [0.2, 0.3]}}  # no graph_indices
+        sc, ic = caches_from_motif_impact(mi)
+        self.assertEqual(sc, {})
+        self.assertEqual(ic, {})
+
+    def test_per_instance_correlation_from_caches(self):
+        # Correlates over the shared (motif, graph) keys only.
+        score = {1: {0: 0.1, 1: 0.9}, 2: {0: 0.5}}
+        impact = {1: {0: 0.15, 1: 0.85}, 2: {0: 0.55}, 3: {0: 0.0}}  # mid 3 unshared
+        out = per_instance_correlation_from_caches(score, impact)
+        self.assertEqual(out['n_instances'], 3)       # (1,0),(1,1),(2,0)
+        self.assertGreater(out['pearson_instance'], 0.9)
+
+    def test_per_instance_correlation_too_few_is_nan(self):
+        out = per_instance_correlation_from_caches({1: {0: 0.5}}, {1: {0: 0.5}})
+        self.assertTrue(np.isnan(out['pearson_instance']))
+        self.assertEqual(out['n_instances'], 1)
+
+    def test_per_instance_correlation_constant_score_is_nan(self):
+        # Zero variance on either axis → NaN (a saturated/constant explainer).
+        score = {1: {0: 0.7, 1: 0.7, 2: 0.7}}
+        impact = {1: {0: 0.1, 1: 0.2, 2: 0.3}}
+        out = per_instance_correlation_from_caches(score, impact)
+        self.assertTrue(np.isnan(out['pearson_instance']))
+        self.assertEqual(out['n_instances'], 3)
+
+    def test_build_motif_score_cache_from_atts(self):
+        # Per-node attributions aggregate to a per-(motif, graph) mean over the
+        # motif's nodes, keyed by the mask_cache's (mid, gi).
+        node_atts = {0: torch.tensor([0.2, 0.4, 1.0, 0.0])}
+        mask_cache = {
+            5: {0: torch.tensor([True, True, False, False])},   # mean(0.2,0.4)=0.3
+            8: {0: torch.tensor([False, False, True, False])},  # mean(1.0)=1.0
+        }
+        sc = build_motif_score_cache_from_atts(node_atts, mask_cache)
+        self.assertAlmostEqual(sc[5][0], 0.3, places=5)
+        self.assertAlmostEqual(sc[8][0], 1.0, places=5)
+
+    def test_per_instance_summary_field_emission(self):
+        # explainability_summary_fields surfaces pearson_instance + agnostic from
+        # a correlation dict, at both scopes.
+        from SharedModules.evaluation.pipeline import explainability_summary_fields
+        results = {'correlation': {'pearson': 0.5, 'pearson_motif': 0.4,
+                                   'pearson_instance': 0.6,
+                                   'pearson_instance_agnostic': 0.3}}
+        f = explainability_summary_fields(results, scope='test')
+        self.assertAlmostEqual(f['pearson_instance'], 0.6)
+        self.assertAlmostEqual(f['pearson_instance_agnostic'], 0.3)
+        # pooled scope reads correlation_all (absent here → NaN, but key present)
+        results['correlation_all'] = {'pearson_instance': 0.55}
+        fa = explainability_summary_fields(results, scope='all')
+        self.assertIn('pearson_instance_all', fa)
+        self.assertAlmostEqual(fa['pearson_instance_all'], 0.55)
 
     def test_explainer_roc_vs_gt(self):
         n = 6

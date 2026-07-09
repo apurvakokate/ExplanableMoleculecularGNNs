@@ -392,6 +392,7 @@ def run(cfg: MotifSATConfig) -> dict:
             motif_lengths=vocab.motif_lengths if vocab else None,
             patience=cfg.patience,
             min_epochs=cfg.min_epochs,
+            early_stop_metric=getattr(cfg, 'early_stop_metric', 'loss'),
             clip_grad=cfg.clip_grad,
             save_path=str(out_dir / "best_model.pt"),
             verbose=cfg.verbose,

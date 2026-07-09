@@ -44,6 +44,7 @@ def run_mage(
     device: torch.device,
     task_type: str = 'BinaryClass',
     max_graphs_per_motif: Optional[int] = 300,
+    return_per_instance: bool = False,
 ) -> NodeScoreResult:
     """Per-motif importance scores from embedding-space cosine distances.
 
@@ -52,10 +53,14 @@ def run_mage(
     dict[motif_id -> float]
         Mean cosine distance when masking each motif type, in [0, 1].
         Not normalised — higher = more important to the model's representation.
+    When ``return_per_instance`` is set, also returns a second dict
+    ``{motif_id: {graph_idx: cosine_distance}}`` — MAGE's native per-(motif,
+    graph) score, for the per-instance correlation. graph_idx indexes
+    ``test_list``.
     """
     if not hasattr(model, 'get_emb'):
         print('  [warn] MAGE requires model.get_emb(x, edge_index, batch) -> node_emb')
-        return {}
+        return ({}, {}) if return_per_instance else {}
 
     model.eval()
     model.to(device)
@@ -72,22 +77,24 @@ def run_mage(
             smi_to_data[str(smi)] = d
 
     # Collect all (motif_id, graph) pairs via nodes_to_motifs
-    # Structure: motif_id -> list of Data objects containing it
-    motif_to_graphs: Dict[int, List[Data]] = {}
-    for d in test_list:
+    # Structure: motif_id -> list of (graph_idx, Data) containing it. graph_idx
+    # indexes test_list so the per-instance dist aligns with the impact cache.
+    motif_to_graphs: Dict[int, List] = {}
+    for _gi, d in enumerate(test_list):
         n2m = getattr(d, 'nodes_to_motifs', None)
         if n2m is None:
             continue
         for mid in n2m[n2m >= 0].unique().tolist():
-            motif_to_graphs.setdefault(int(mid), []).append(d)
+            motif_to_graphs.setdefault(int(mid), []).append((_gi, d))
 
     motif_scores: Dict[int, float] = {}
+    per_instance: Dict[int, Dict[int, float]] = {}
 
     for mid, graphs in motif_to_graphs.items():
         cap     = max_graphs_per_motif or len(graphs)
         dists   = []
 
-        for data in graphs[:cap]:
+        for _gi, data in graphs[:cap]:
             data = data.to(device)
             n    = data.x.size(0)
             n2m  = data.nodes_to_motifs
@@ -118,13 +125,16 @@ def run_mage(
             cos_sim = F.cosine_similarity(g_full, g_masked, dim=-1)
             dist    = float((1.0 - cos_sim).clamp(min=0).item())
             dists.append(dist)
+            if _gi is not None:
+                per_instance.setdefault(mid, {})[_gi] = dist
 
         if dists:
             motif_scores[mid] = float(sum(dists) / len(dists))
 
     # MAGE operates at motif level (cosine distance per motif, not per node),
     # so mean and max are identical — both expose the same score.
-    return {
+    scores = {
         'mean': motif_scores,
         'max':  motif_scores,
     }
+    return (scores, per_instance) if return_per_instance else scores

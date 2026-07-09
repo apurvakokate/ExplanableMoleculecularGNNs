@@ -49,3 +49,5 @@ reports/
 
 analysis/build_vocab_report.py
 analysis/vocab_report.html
+
+sweep/

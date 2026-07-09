@@ -314,6 +314,13 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         ('spearman_motif', 'spearman_motif'),
         ('pearson_motif_all', 'pearson_motif_all'),
         ('spearman_motif_all', 'spearman_motif_all'),
+        # Per-instance is TEST-scope for post-hoc baselines (explainers run on
+        # test_list only), so no *_instance_all here — those exist for ante-hoc
+        # trainers (via all_list) and come straight off their summary columns.
+        ('pearson_instance', 'pearson_instance'),
+        ('spearman_instance', 'spearman_instance'),
+        ('pearson_instance_agnostic', 'pearson_instance_agnostic'),
+        ('spearman_instance_agnostic', 'spearman_instance_agnostic'),
         ('gt_roc_node_auc_mean', 'gt_roc_node_auc_mean'),
         ('gt_roc_edge_auc_mean', 'gt_roc_edge_auc_mean'),
         ('gt_roc_node_auc_mean_all', 'gt_roc_node_auc_mean_all'),
