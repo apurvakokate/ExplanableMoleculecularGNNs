@@ -30,12 +30,35 @@ the whole batch while only one graph's loss is optimised, collapsing masks to 0.
 
 from __future__ import annotations
 
+import copy
+import statistics
 from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch_geometric.data import Data
 
 NodeScoreResult = Dict[str, Dict[int, float]]
+
+# PGExplainer's edge-mask is regularised by an ``edge_size`` sparsity penalty
+# (loss += edge_size * sum(sigmoid(mask))). When the prediction-loss gradient is
+# weak — e.g. the model is confident regardless of masking, the common case for
+# the phenomenon/model-prediction target — this penalty dominates and drives the
+# WHOLE mask to 0 (mask collapse → near-constant per-motif scores → NaN
+# score-vs-impact). We retry with a progressively smaller ``edge_size`` so the
+# prediction loss has room to keep informative edges, and keep the first
+# non-collapsed solution. Default PyG edge_size is 0.05 (first entry).
+_PGEX_EDGE_SIZE_SCHEDULE = (0.05, 0.01, 0.002, 0.0005)
+# A mean-pooled per-motif score set with std below this is treated as collapsed.
+_PGEX_COLLAPSE_STD = 1e-6
+
+
+def _scores_collapsed(scores: NodeScoreResult,
+                      thresh: float = _PGEX_COLLAPSE_STD) -> bool:
+    """True if the (mean-pooled) per-motif scores are effectively constant."""
+    vals = list((scores or {}).get('mean', {}).values())
+    if len(vals) < 2:
+        return False  # too few motifs to judge — not treated as collapse
+    return statistics.pstdev(vals) < thresh
 
 
 def _pg_model_mode(task_type: str) -> str:
@@ -200,12 +223,17 @@ def run_pgexplainer(
             out = self._inner(x, edge_index, batch, n2m)
             return out[0] if isinstance(out, (tuple, list)) else out
 
-    wrapped = _Wrapper(model).to(device)
-
-    try:
+    # One training+scoring attempt at a given edge_size sparsity coefficient.
+    # Each attempt gets its OWN fresh model copy: PyG's explainer instruments the
+    # model in place (MessagePassing.explain rewrites propagate/inspector), so a
+    # retry on the same object would be contaminated by the previous attempt.
+    def _attempt(edge_size: float):
+        m = copy.deepcopy(model).to(device)
+        m.eval()
+        wrapped = _Wrapper(m).to(device)
         explainer = Explainer(
             model=wrapped,
-            algorithm=_PGEx(epochs=epochs, lr=0.003),
+            algorithm=_PGEx(epochs=epochs, lr=0.003, edge_size=edge_size),
             explanation_type='phenomenon',
             edge_mask_type='object',
             node_mask_type=None,
@@ -216,23 +244,11 @@ def run_pgexplainer(
             ),
         )
         explainer.algorithm.to(device)
-
-        print(f'    Training PGExplainer ({epochs} epochs) ...')
-        if explain_model:
-            print('    PGExplainer target: model predictions '
-                  '(phenomenon API workaround for model-level explanation)')
-        else:
-            print('    PGExplainer target: ground-truth graph labels (phenomenon)')
         train_ok, train_fail, last_err = _train_pgexplainer(
             explainer, wrapped, loaders, device, epochs, task_type, explain_model,
             max_train_graphs=max_train_graphs)
         if train_ok == 0:
-            msg = last_err or 'no successful train steps'
-            print(f'  [warn] PGExplainer training failed ({msg}); skipping — no '
-                  f'gradient fallback (would masquerade as PGExplainer).')
-            return {'mean': {}, 'max': {}}
-        if train_fail:
-            print(f'    PGExplainer train: {train_ok} ok, {train_fail} skipped/failed')
+            return None, (last_err or 'no successful train steps'), train_fail
 
         def _explain_graph(data: Data) -> Optional[torch.Tensor]:
             data = data.to(device)
@@ -246,32 +262,55 @@ def run_pgexplainer(
                 wrapped, data, device, task_type, explain_model,
                 batch=batch, **kwargs)
             expl = explainer(
-                data.x, data.edge_index,
-                batch=batch,
-                target=target,
-                index=0,
-                **kwargs,
-            )
+                data.x, data.edge_index, batch=batch, target=target,
+                index=0, **kwargs)
             return expl.edge_mask.detach().cpu()
 
         scores = _aggregate_motif_scores(
-            test_list, device,
-            edge_masks_fn=lambda data: _explain_graph(data),
-            max_graphs=max_graphs,
-        )
-        # Return the genuine PGExplainer scores — even a degenerate / near-constant
-        # (collapsed-mask) solution is reported AS PGExplainer so it is honestly
-        # recorded and flagged downstream (see _warn_if_collapsed in run_vanilla),
-        # never silently swapped for gradient saliency.
-        if scores['mean'] or scores['max']:
-            return scores
-        print('  [warn] PGExplainer produced no motif scores after training; '
-              'skipping — no gradient fallback.')
-        return {'mean': {}, 'max': {}}
+            test_list, device, edge_masks_fn=_explain_graph, max_graphs=max_graphs)
+        return scores, None, train_fail
 
-    except Exception as e:
-        print(f'  [warn] PGExplainer failed ({e}); skipping — no gradient fallback.')
-        return {'mean': {}, 'max': {}}
+    print(f'    Training PGExplainer ({epochs} epochs) ...')
+    print('    PGExplainer target: '
+          + ('model predictions (phenomenon API workaround)' if explain_model
+             else 'ground-truth graph labels (phenomenon)'))
+
+    last_scores: NodeScoreResult = {'mean': {}, 'max': {}}
+    schedule = _PGEX_EDGE_SIZE_SCHEDULE
+    for i, edge_size in enumerate(schedule):
+        try:
+            scores, err, train_fail = _attempt(edge_size)
+        except Exception as e:
+            print(f'  [warn] PGExplainer attempt (edge_size={edge_size}) failed '
+                  f'({e}); skipping — no gradient fallback.')
+            return {'mean': {}, 'max': {}}
+        if scores is None:  # training produced no successful steps
+            print(f'  [warn] PGExplainer training failed ({err}); skipping — no '
+                  f'gradient fallback (would masquerade as PGExplainer).')
+            return {'mean': {}, 'max': {}}
+        if train_fail:
+            print(f'    PGExplainer (edge_size={edge_size}): {train_fail} train step(s) skipped/failed')
+        if not (scores['mean'] or scores['max']):
+            last_scores = scores
+            continue
+        last_scores = scores
+        if not _scores_collapsed(scores):
+            if i > 0:
+                print(f'    PGExplainer recovered from mask collapse at '
+                      f'edge_size={edge_size} (default {schedule[0]}).')
+            return scores
+        # collapsed → retry with a smaller sparsity penalty if any remain
+        if i < len(schedule) - 1:
+            print(f'    [info] PGExplainer mask collapsed at edge_size={edge_size}; '
+                  f'retrying with edge_size={schedule[i + 1]}.')
+
+    # Every edge_size in the schedule collapsed. Return the genuine (collapsed)
+    # PGExplainer scores so it is honestly recorded and flagged downstream
+    # (_warn_if_collapsed in run_vanilla) — never a gradient-saliency substitute.
+    print(f'  [warn] PGExplainer mask collapsed at every edge_size in '
+          f'{schedule} — reporting the collapsed PGExplainer result (no gradient '
+          f'fallback). Score-vs-impact will be NaN for this run.')
+    return last_scores
 
 
 def _iter_train_graphs(loaders: Dict, max_graphs: Optional[int] = None):
