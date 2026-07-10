@@ -587,7 +587,9 @@ def run(cfg: VanillaConfig) -> dict:
                 _n2m = getattr(_d, 'nodes_to_motifs', None)
                 if _n2m is None:
                     continue
-                _n2m = _n2m.view(-1)
+                # .cpu(): nodes_to_motifs may be CUDA-resident; build the weight
+                # vector on CPU so the boolean mask and _w share a device.
+                _n2m = _n2m.view(-1).cpu()
                 _w = torch.zeros(_n2m.numel())
                 for _mid, _gmap in _mage_pi.items():
                     _val = _gmap.get(_gi)

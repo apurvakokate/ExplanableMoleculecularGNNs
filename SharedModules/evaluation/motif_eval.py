@@ -536,10 +536,14 @@ def build_motif_score_cache_from_atts(
             att = node_atts.get(gi)
             if att is None:
                 continue
-            m = node_mask.view(-1).bool()
-            if att.numel() != m.numel():
+            # Device-safe: the explainer att and the mask can live on different
+            # devices (att is CPU; masks come from GPU-resident graphs on CUDA).
+            # Aggregate on CPU — it is a cheap mean, no need for the accelerator.
+            m = node_mask.view(-1).bool().cpu()
+            a = att.view(-1).detach().cpu()
+            if a.numel() != m.numel():
                 continue
-            vals = att.view(-1)[m]
+            vals = a[m]
             if vals.numel():
                 cache.setdefault(mid, {})[gi] = float(vals.float().mean())
     return cache

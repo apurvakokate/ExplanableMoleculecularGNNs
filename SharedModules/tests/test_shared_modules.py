@@ -862,6 +862,22 @@ class TestMotifEval(unittest.TestCase):
         self.assertAlmostEqual(sc[5][0], 0.3, places=5)
         self.assertAlmostEqual(sc[8][0], 1.0, places=5)
 
+    @unittest.skipUnless(torch.cuda.is_available(),
+                         'needs CUDA to exercise the cross-device index path')
+    def test_build_motif_score_cache_cross_device(self):
+        # Regression for the GPU/HPC bug: the explainer att is CPU while the
+        # motif mask comes from CUDA-resident graphs. Pre-fix this raised
+        # "indices should be on cpu or same device". Test BOTH directions.
+        node_atts = {0: torch.tensor([0.2, 0.4, 1.0, 0.0])}            # CPU att
+        mask_cuda = {5: {0: torch.tensor([True, True, False, False]).cuda()}}
+        sc = build_motif_score_cache_from_atts(node_atts, mask_cuda)   # att CPU, mask CUDA
+        self.assertAlmostEqual(sc[5][0], 0.3, places=5)
+
+        node_atts_cuda = {0: torch.tensor([0.2, 0.4, 1.0, 0.0]).cuda()}
+        mask_cpu = {5: {0: torch.tensor([True, True, False, False])}}
+        sc2 = build_motif_score_cache_from_atts(node_atts_cuda, mask_cpu)  # att CUDA, mask CPU
+        self.assertAlmostEqual(sc2[5][0], 0.3, places=5)
+
     def test_per_instance_summary_field_emission(self):
         # explainability_summary_fields surfaces pearson_instance + agnostic from
         # a correlation dict, at both scopes.
