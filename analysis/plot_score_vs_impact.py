@@ -480,7 +480,7 @@ def main():
     if count_rows:
         ct_df = pd.DataFrame(count_rows)
         ct_path = (Path(args.counts_table) if args.counts_table
-                   else save_dir / f'score_impact_counts_{args.agg}.csv')
+                   else save_dir / f'score_impact_counts_{args.agg}_{args.impact_kind}.csv')
         ct_df.to_csv(ct_path, index=False)
         print('wrote', ct_path, f'({len(ct_df)} rows)')
         try:

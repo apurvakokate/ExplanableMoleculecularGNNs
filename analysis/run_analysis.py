@@ -575,29 +575,34 @@ def step_probe(args) -> int:
 
 
 def step_plots(args) -> int:
-    # Emit BOTH aggregations: per-instance (plots_instance/) and per-motif global
-    # (plots_global/). If --save_dir is given, append the mode so they never
-    # overwrite each other; otherwise the plotter defaults to
-    # <out_root>/plots_{instance,global}.
+    # Emit the full matrix: {instance, global} aggregation × {own, agnostic}
+    # baseline impact. Directories split by AGGREGATION (plots_instance/,
+    # plots_global/); within each, own & agnostic figures coexist via distinct
+    # filenames (..._own_..., ..._agnostic_...). Motif-aware models (MOSE/
+    # MotifSAT/GSAT) have a single impact, so their figures are identical across
+    # own/agnostic (harmless repeat). If --save_dir is given, the aggregation is
+    # appended so instance/global never overwrite each other.
     rc = 0
     for impact_agg in ('instance', 'global'):
-        cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
-               '--out_root', args.out_root,
-               '--nbins', str(args.nbins),
-               '--impact_agg', impact_agg]
-        extra = getattr(args, 'extra_out_root', None) or []
-        if extra:
-            cmd += ['--extra_out_root', *extra]
-        if getattr(args, 'score_min', None) is not None:
-            cmd += ['--score_min', str(args.score_min)]
-        if getattr(args, 'score_max', None) is not None:
-            cmd += ['--score_max', str(args.score_max)]
-        if args.save_dir:
-            cmd += ['--save_dir', f'{args.save_dir.rstrip("/")}_{impact_agg}']
-        if _datasets_arg(args):
-            cmd += ['--dataset', *_datasets_arg(args)]
-        print(f'\n=== score-vs-impact plots ({impact_agg}) + count table ===')
-        rc = subprocess.run(cmd).returncode or rc
+        for impact_kind in ('own', 'agnostic'):
+            cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
+                   '--out_root', args.out_root,
+                   '--nbins', str(args.nbins),
+                   '--impact_agg', impact_agg,
+                   '--impact_kind', impact_kind]
+            extra = getattr(args, 'extra_out_root', None) or []
+            if extra:
+                cmd += ['--extra_out_root', *extra]
+            if getattr(args, 'score_min', None) is not None:
+                cmd += ['--score_min', str(args.score_min)]
+            if getattr(args, 'score_max', None) is not None:
+                cmd += ['--score_max', str(args.score_max)]
+            if args.save_dir:
+                cmd += ['--save_dir', f'{args.save_dir.rstrip("/")}_{impact_agg}']
+            if _datasets_arg(args):
+                cmd += ['--dataset', *_datasets_arg(args)]
+            print(f'\n=== score-vs-impact plots ({impact_agg}, {impact_kind} impact) ===')
+            rc = subprocess.run(cmd).returncode or rc
     return rc
 
 
