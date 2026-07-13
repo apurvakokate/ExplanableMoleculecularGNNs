@@ -231,6 +231,9 @@ def training_summary_extras(cfg) -> Dict:
         'epochs': getattr(cfg, 'epochs', None),
         'patience': getattr(cfg, 'patience', None),
         'min_epochs': getattr(cfg, 'min_epochs', None),
+        # K for top-K vs bottom-K (top_bottom); recorded so collect-time
+        # reconstruction (_topbot_from_svi) uses the run's actual K, not a default.
+        'top_k': getattr(cfg, 'top_k', 10),
     }
     wvv = getattr(cfg, 'weight_vocab_variant', None)
     if wvv not in (None, ''):

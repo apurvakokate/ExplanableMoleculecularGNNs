@@ -182,6 +182,10 @@ def build(df: pd.DataFrame, metric: str, *, mode: str = 'auto') -> pd.DataFrame:
         df['explainer_agg'] = ''
     # non-node-scoring rows have no pooling variant → blank level (single value)
     df['explainer_agg'] = df['explainer_agg'].fillna('').astype(str)
+    if metric not in df.columns:
+        # No family provided this metric (e.g. a per-explainer metric with no
+        # baselines rows in this slice) — return empty rather than KeyError.
+        return pd.DataFrame()
     return _pivot(df, metric, index=PIVOT_INDEX + ['explainer_agg'])
 
 

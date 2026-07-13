@@ -114,6 +114,13 @@ export WANDB_FLAGS="${WANDB_FLAGS:-}"
 # export GNNEX_MAX_GRAPHS=200
 export GNNEX_EPOCHS="${GNNEX_EPOCHS:-200}"
 # export PGEX_MAX_GRAPHS=   # unset = all test graphs
+# Reuse mode: augment ALREADY-COMPLETED baseline runs with the newer metrics
+# (top_bottom / gt_vs_outside) by LOADING their saved explainer scores instead of
+# re-optimizing the masks. Skips the expensive GNNExplainer/PGExplainer step and
+# processes completed runs WITHOUT FORCE_RERUN (incomplete runs are skipped).
+#   REUSE_EXPLAINER_SCORES=1 bash run_experiments.sh phase5_baselines
+#   REUSE_EXPLAINER_SCORES=1 bash run_experiments.sh phase5_baselines_gt
+export REUSE_EXPLAINER_SCORES="${REUSE_EXPLAINER_SCORES:-0}"
 
 # ── Confirmation ──────────────────────────────────────────────────────────────
 echo "experiment_config.sh loaded"

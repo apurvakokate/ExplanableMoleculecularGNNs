@@ -489,7 +489,23 @@ _baseline_explainer_flags() {
     [ -n "${GNNEX_EPOCHS:-}" ] && flags="$flags --gnnex_epochs $GNNEX_EPOCHS"
     [ -n "${PGEX_MAX_GRAPHS:-}" ] && flags="$flags --pgex_max_graphs $PGEX_MAX_GRAPHS"
     [ -n "${EXPLAINER_MAX_GRAPHS:-}" ] && flags="$flags --explainer_max_graphs $EXPLAINER_MAX_GRAPHS"
+    # REUSE_EXPLAINER_SCORES=1 → load prior saved scores, skip mask optimization
+    # (augments completed baseline runs with top_bottom/gt_vs_outside cheaply).
+    [ "${REUSE_EXPLAINER_SCORES:-0}" = "1" ] && flags="$flags --reuse_explainer_scores"
     echo "$flags"
+}
+
+# In reuse mode we AUGMENT already-completed baseline runs (load their saved
+# scores) rather than skipping them — so process a run iff it is complete, and
+# skip incomplete ones (nothing to reuse). Outside reuse mode, fall back to the
+# normal SKIP_EXISTING behaviour. Returns 0 = SKIP this run, 1 = process it.
+_baseline_skip() {
+    local out_dir=$1
+    if [ "${REUSE_EXPLAINER_SCORES:-0}" = "1" ]; then
+        _run_dir_complete "$out_dir" && return 1   # complete → process (reuse)
+        return 0                                    # incomplete → skip
+    fi
+    _should_skip_existing && _run_dir_complete "$out_dir"
 }
 
 # ── Helper: training runners ───────────────────────────────────────────────────
@@ -793,7 +809,7 @@ run_baselines() {
                     echo "  [skip] $ds fold$eff_fold — no vanilla checkpoint: $wdir/best_model.pt"
                     continue
                 fi
-                if _should_skip_existing && _run_dir_complete "$out_dir"; then
+                if _baseline_skip "$out_dir"; then
                     echo "  [skip existing] baselines $ds fold$eff_fold $backbone → $out_dir"
                     n_skip=$((n_skip + 1))
                     continue
@@ -850,7 +866,7 @@ run_baselines_gt() {
                     echo "  [skip] $ds fold$eff_fold — no GT vanilla checkpoint: $wdir/best_model.pt"
                     continue
                 fi
-                if _should_skip_existing && _run_dir_complete "$out_dir"; then
+                if _baseline_skip "$out_dir"; then
                     echo "  [skip existing] Baselines+GT $ds fold$eff_fold $backbone → $out_dir"
                     n_skip=$((n_skip + 1))
                     continue

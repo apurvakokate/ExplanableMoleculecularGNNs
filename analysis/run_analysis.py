@@ -110,13 +110,33 @@ def discover_table_metrics(df) -> list[str]:
             continue
         if not pd.api.types.is_numeric_dtype(df[c]):
             continue
-        # Auto-add only bare score_* distribution stats; explainer-prefixed
-        # columns are intentionally excluded (no dedicated per-explainer tables).
+        # Auto-add bare score_* distribution stats and the diagnostic sidecar
+        # families (topbot_* = top-K vs bottom-K impact; gtvo_* = GT vs non-GT
+        # motif discrimination). Explainer-prefixed columns are excluded (no
+        # dedicated per-explainer tables — they surface as family rows instead).
         if c.startswith(_EXPLAINER_PREFIXES):
             continue
-        if c.startswith('score_'):
+        if c.startswith(('score_', 'topbot_', 'gtvo_')):
             metrics.append(c)
             seen.add(c)
+    # Register the GENERIC topbot_/gtvo_ metric when only the per-explainer
+    # (prefixed) columns exist — e.g. baselines were re-run but the ante-hoc
+    # runs (which write the unprefixed columns via sidecar) were not. build()'s
+    # expand_posthoc then surfaces the baseline rows for these tables.
+    for c in df.columns:
+        if not c.startswith(_EXPLAINER_PREFIXES):
+            continue
+        for pref in _EXPLAINER_PREFIXES:
+            if c.startswith(pref):
+                tail = c[len(pref):]
+                for agg in ('mean_', 'max_'):
+                    if tail.startswith(agg):
+                        gen = tail[len(agg):]
+                        if gen.startswith(('topbot_', 'gtvo_')) and gen not in seen:
+                            metrics.append(gen)
+                            seen.add(gen)
+                        break
+                break
     return metrics
 
 
@@ -156,6 +176,134 @@ def _fill_pooled_correlation(d: dict, run_dir) -> None:
                 val = d.get(base)  # motif-level headline (mean == max)
             if _present(val):
                 d[key] = val
+
+
+def _fill_diagnostic_sidecars(d: dict, run_dir) -> None:
+    """Aggregate per-run diagnostic CSVs into flat summary columns so the analysis
+    phase can table them WITHOUT re-running eval. Ante-hoc trainers
+    (MOSE/MotifSAT/GSAT) write these next to summary.json:
+
+      * ``top_bottom_summary.csv`` → ``topbot_*`` (top-K vs bottom-K impact:
+        do the highest-scored motifs actually have the largest removal impact?)
+      * ``gt_vs_outside.csv``      → ``gtvo_<subset>_*`` + subset-invariant
+        ``gtvo_score_auc`` / ``gtvo_gt_impact_rank`` (do GT motifs outrank
+        non-GT motifs in score and impact, over 3 example subsets).
+
+    Uses setdefault so anything already promoted into summary.json wins.
+    """
+    import math
+    import pandas as pd
+
+    def _num(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(f) else f
+
+    # top_bottom_summary.csv — one row of scalar summaries.
+    tb = run_dir / 'top_bottom_summary.csv'
+    if tb.exists():
+        try:
+            row = pd.read_csv(tb).iloc[0]
+            for c in ('top_mean_score', 'bottom_mean_score', 'top_mean_impact',
+                      'bottom_mean_impact', 'impact_ratio'):
+                v = _num(row.get(c))
+                if v is not None:
+                    d.setdefault(f'topbot_{c}', v)
+        except Exception:
+            pass
+
+    # gt_vs_outside.csv — one row per example subset.
+    gv = run_dir / 'gt_vs_outside.csv'
+    if gv.exists():
+        try:
+            g = pd.read_csv(gv)
+            per_subset = ('gt_mean_impact', 'non_gt_mean_impact',
+                          'gt_mean_score', 'non_gt_mean_score')
+            for _, r in g.iterrows():
+                subset = str(r.get('subset', '')).strip()
+                if not subset:
+                    continue
+                for c in per_subset:
+                    v = _num(r.get(c))
+                    if v is not None:
+                        d.setdefault(f'gtvo_{subset}_{c}', v)
+            # score_auc / gt_impact_rank are subset-invariant — record once.
+            for c in ('score_auc', 'gt_impact_rank'):
+                if c in g.columns:
+                    for _, r in g.iterrows():
+                        v = _num(r.get(c))
+                        if v is not None:
+                            d.setdefault(f'gtvo_{c}', v)
+                            break
+        except Exception:
+            pass
+
+    # Baseline explainers: reconstruct per-explainer top_bottom from the saved
+    # {ex}_{agg}_score_vs_impact.csv (score + per-motif impact_mean) WITHOUT
+    # re-running the explainers — writes PREFIXED {ex}_{agg}_topbot_* so
+    # expand_posthoc surfaces baseline rows in the topbot_* tables. (gt_vs_outside
+    # needs the model + per-graph structure, so it is NOT reconstructable here —
+    # use run_vanilla --reuse_explainer_scores for that.)
+    # K for top-K vs bottom-K — use the run's recorded top_k (summary field) so
+    # the reconstruction matches what the native run computed; default 10.
+    _topbot_k = 10
+    try:
+        _topbot_k = int(d.get('top_k') or 10)
+    except (TypeError, ValueError):
+        _topbot_k = 10
+
+    def _topbot_from_svi(path, k: int) -> dict | None:
+        try:
+            sv = pd.read_csv(path)
+        except Exception:
+            return None
+        if 'method' in sv.columns:
+            sv = sv[sv['method'].astype(str) == 'own']  # own-LOO impact (headline)
+        if not {'motif_id', 'score'}.issubset(sv.columns):
+            return None
+        imp_col = ('impact_mean' if 'impact_mean' in sv.columns
+                   else 'impact' if 'impact' in sv.columns else None)
+        if imp_col is None or sv.empty:
+            return None
+        # score + impact_mean are constant per motif → one value each.
+        scores, impacts = {}, {}
+        for mid, sub in sv.dropna(subset=['motif_id']).groupby('motif_id'):
+            s = _num(sub['score'].iloc[0]); imp = _num(sub[imp_col].iloc[0])
+            if s is not None:
+                scores[int(mid)] = s
+            if imp is not None:
+                impacts[int(mid)] = imp
+        common = sorted(set(scores) & set(impacts))
+        if len(common) < 2:
+            return None
+        ranked = sorted(common, key=lambda m: scores[m], reverse=True)
+        k = min(k, len(ranked) // 2)               # top/bottom must not overlap
+        if k < 1:
+            return None
+        top, bot = ranked[:k], ranked[-k:]
+        _mean = lambda xs: sum(xs) / len(xs)
+        tmi, bmi = _mean([impacts[m] for m in top]), _mean([impacts[m] for m in bot])
+        return {
+            'top_mean_score':     _mean([scores[m] for m in top]),
+            'bottom_mean_score':  _mean([scores[m] for m in bot]),
+            'top_mean_impact':    tmi,
+            'bottom_mean_impact': bmi,
+            'impact_ratio':       (tmi / bmi) if bmi > 1e-9 else float('nan'),
+        }
+
+    for ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+        for agg in ('mean', 'max'):
+            if f'{ex}_{agg}_topbot_impact_ratio' in d:
+                continue  # already promoted into summary.json (real / reuse run)
+            svi = run_dir / f'{ex}_{agg}_score_vs_impact.csv'
+            if not svi.exists():
+                continue
+            tb = _topbot_from_svi(svi, _topbot_k)
+            if tb:
+                for kk, vv in tb.items():
+                    d.setdefault(f'{ex}_{agg}_topbot_{kk}', vv)
 
 
 def _regenerate_families(args) -> list[str]:
@@ -251,6 +399,7 @@ def step_collect(args) -> int:
                 except Exception as e:
                     print(f'  [warn] skip corrupt config {cfg_path}: {e}')
             _fill_pooled_correlation(d, p.parent)
+            _fill_diagnostic_sidecars(d, p.parent)
             d['results_root'] = str(root)
             d['exp_dir'] = str(p.parent.relative_to(root))
             rows.append(d)

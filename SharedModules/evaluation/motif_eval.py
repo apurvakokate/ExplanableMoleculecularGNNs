@@ -814,6 +814,31 @@ def _infer_positive_class(data_list: List[Data]) -> int:
     return labels.pop() if len(labels) == 1 else 1
 
 
+def gt_motif_ids_from_labels(data_list: List[Data]) -> Set[int]:
+    """Derive the set of GT vocab-motif ids from per-node GT labels.
+
+    A motif is "ground-truth" if any of its atoms carries ``node_label == 1`` on
+    a GT-annotated graph (the synthetic-GT / source-GT cache sets ``node_label``).
+    Returns an empty set when no graph carries node labels — callers treat that
+    as "no GT available", so ``gt_vs_outside`` is skipped rather than wrong.
+    """
+    ids: Set[int] = set()
+    for d in data_list:
+        nl = getattr(d, 'node_label', None)
+        n2m = getattr(d, 'nodes_to_motifs', None)
+        if nl is None or n2m is None:
+            continue
+        nl = nl.view(-1)
+        n2m = n2m.view(-1)
+        m = min(nl.numel(), n2m.numel())
+        for i in range(m):
+            if float(nl[i]) > 0.5:
+                mid = int(n2m[i])
+                if mid >= 0:
+                    ids.add(mid)
+    return ids
+
+
 def gt_vs_outside_gt_eval(
     motif_scores: Dict[int, float],
     motif_impacts: Dict[int, Dict[str, float]],

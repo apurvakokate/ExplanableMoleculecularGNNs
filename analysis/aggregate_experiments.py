@@ -328,6 +328,19 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         ('top_k_abs_disc', 'top_k_abs_disc'),
         ('score_disc_spearman', 'score_disc_spearman'),
     ]
+    # top_bottom (top-K vs bottom-K impact) + gt_vs_outside (GT vs non-GT motif
+    # discrimination) per explainer — run_vanilla writes {ex}_{agg}_topbot_* /
+    # {ex}_{agg}_gtvo_*; map them onto the generic columns so baseline explainer
+    # rows populate the topbot_*/gtvo_* tables like the ante-hoc families do.
+    for _k in ('top_mean_score', 'bottom_mean_score', 'top_mean_impact',
+               'bottom_mean_impact', 'impact_ratio'):
+        metric_map.append((f'topbot_{_k}', f'topbot_{_k}'))
+    for _sub in ('all', 'positive_class', 'correct_positive_class'):
+        for _k in ('gt_mean_impact', 'non_gt_mean_impact',
+                   'gt_mean_score', 'non_gt_mean_score'):
+            metric_map.append((f'gtvo_{_sub}_{_k}', f'gtvo_{_sub}_{_k}'))
+    for _k in ('score_auc', 'gt_impact_rank'):
+        metric_map.append((f'gtvo_{_k}', f'gtvo_{_k}'))
     for ex in POSTHOC_EXPLAINERS:
         for agg in EXPLAINER_AGGS:
             sub = bl.copy()
@@ -364,10 +377,21 @@ PERF = 'performance'
 # Metrics reported per experiment by default (filtered to those present). This is
 # the FULL result set, not just model performance: prediction + every
 # explainability metric the eval pipeline writes into summary.json.
-DEFAULT_REPORT_METRICS = [PERF, 'pearson', 'spearman',
+DEFAULT_REPORT_METRICS = [PERF, 'train_auc', 'val_auc',
+                          'pearson', 'spearman',
                           'pearson_all', 'spearman_all',
                           'pearson_motif', 'spearman_motif',
                           'pearson_motif_all', 'spearman_motif_all',
+                          # TRUE per-instance (per-graph weight vs per-graph impact)
+                          # score-vs-impact — the instance-based counterpart of the
+                          # mean-over-motifs (motif) tables above. 'own' = model's
+                          # own-attention LOO impact; '_agnostic' = uniform-weight
+                          # LOO impact. Baseline per-instance is test-scope only
+                          # (ante-hoc also emit *_instance_all over all splits).
+                          'pearson_instance', 'spearman_instance',
+                          'pearson_instance_agnostic', 'spearman_instance_agnostic',
+                          'pearson_instance_all', 'spearman_instance_all',
+                          'pearson_instance_agnostic_all', 'spearman_instance_agnostic_all',
                           'gt_roc_auc_mean', 'gt_roc_node_auc_mean', 'gt_roc_edge_auc_mean',
                           'gt_roc_auc_mean_all', 'gt_roc_node_auc_mean_all',
                           'gt_roc_edge_auc_mean_all',

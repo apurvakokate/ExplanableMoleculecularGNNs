@@ -77,6 +77,11 @@ class VanillaConfig:
     gnnex_epochs: int = 200
     pgex_max_graphs: Optional[int] = None
     pgex_explain_model: bool = True
+    # Reuse the per-explainer scores saved by a PRIOR baselines run instead of
+    # re-optimizing the masks (skips the expensive GNNExplainer/PGExplainer step);
+    # downstream metrics — correlation, top_bottom, gt_vs_outside — are recomputed
+    # from the loaded scores (needs the model checkpoint + out_dir with the CSVs).
+    reuse_explainer_scores: bool = False
     max_motifs_eval: Optional[int] = None
     load_weights_from: Optional[str] = None  # dir containing best_model.pt
     weight_vocab_variant: Optional[str] = None  # vocab variant of loaded weights
@@ -328,8 +333,33 @@ def run(cfg: VanillaConfig) -> dict:
     # correlation (per-graph attribution vs per-graph faithful-LOO impact).
     explainer_node_atts: Dict[str, Dict[int, torch.Tensor]] = {}
 
+    # ── Reuse mode: load per-explainer scores saved by a PRIOR baselines run
+    # instead of re-optimizing masks. Per-instance metrics need per-graph node
+    # attributions (not saved), so we seed from the prior summary.json to preserve
+    # them and skip the per-instance block below; everything else (correlation,
+    # top_bottom, gt_vs_outside, gt_roc, score stats) is recomputed from the loaded
+    # motif scores + the model checkpoint.
+    _prior_summary: Dict = {}
+    if cfg.reuse_explainer_scores:
+        _sj = out_dir / 'summary.json'
+        if _sj.exists():
+            try:
+                with open(_sj, encoding='utf-8') as _f:
+                    _prior_summary = json.load(_f)
+            except Exception:
+                _prior_summary = {}
+        for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+            _loaded = _load_saved_explainer_scores(out_dir / f'{_ex}_motif_scores')
+            if _loaded.get('mean') or _loaded.get('max'):
+                results[f'{_ex}_mean'] = _loaded.get('mean', {})
+                results[f'{_ex}_max']  = _loaded.get('max', {})
+                print(f'  [reuse] loaded saved {_ex} scores '
+                      f'({len(_loaded.get("mean", {}))} motifs) — skipped mask optimization')
+            else:
+                print(f'  [warn] reuse: no saved {_ex} scores under {out_dir}; skipping {_ex}')
+
     # GNNExplainer
-    if cfg.run_gnnexplainer:
+    if cfg.run_gnnexplainer and not cfg.reuse_explainer_scores:
         try:
             print('\n  Running GNNExplainer ...')
             _gnnex_cap = ('all test graphs'
@@ -351,7 +381,7 @@ def run(cfg: VanillaConfig) -> dict:
             print(f'  [warn] GNNExplainer failed: {e}')
 
     # PGExplainer
-    if cfg.run_pgexplainer:
+    if cfg.run_pgexplainer and not cfg.reuse_explainer_scores:
         try:
             print('\n  Running PGExplainer ...')
             pgex_scores, _pgex_atts = run_pgexplainer(
@@ -367,7 +397,7 @@ def run(cfg: VanillaConfig) -> dict:
             print(f'  [warn] PGExplainer failed: {e}')
 
     # MAGE
-    if cfg.run_mage:
+    if cfg.run_mage and not cfg.reuse_explainer_scores:
         try:
             print('\n  Running MAGE ...')
             mage_scores, _mage_pi = run_mage(
@@ -387,13 +417,24 @@ def run(cfg: VanillaConfig) -> dict:
     # label-aware discriminativeness computed in eval_results.
     from SharedModules.evaluation.motif_eval import (
         score_impact_correlation, top_motifs_discriminative_check,
+        top_bottom_motif_eval, gt_vs_outside_gt_eval, gt_motif_ids_from_labels,
         compute_motif_impact, _impact_values, compute_gt_roc)
     from SharedModules.evaluation.metrics import motif_score_stats
     pred  = all_preds.get('test', {})
     _impacts = eval_results.get('motif_impact', {})
     _disc    = eval_results.get('discriminativeness', {})
     _topk = cfg.top_k if hasattr(cfg, 'top_k') else 10
+    # GT motif ids (from per-node GT labels) for per-explainer gt_vs_outside;
+    # empty when this run has no GT annotations (then gt_vs_outside is skipped).
+    _gt_motif_ids = gt_motif_ids_from_labels(test_list)
     explainer_metrics = {}
+    if cfg.reuse_explainer_scores and _prior_summary:
+        # Preserve prior per-explainer metrics that can't be recomputed without
+        # the (unsaved) per-graph node attributions — chiefly *_pearson_instance*.
+        # Everything the loop below recomputes from the loaded scores overlays.
+        for _k, _v in _prior_summary.items():
+            if _k.startswith(('gnnexplainer_', 'pgexplainer_', 'mage_')):
+                explainer_metrics[_k] = _v
     # Each post-hoc explainer produces NODE-level attributions; we aggregate
     # them to motif level by both mean and max over the motif's atoms. Report
     # correlation/discriminativeness/score-stats for BOTH aggregations so the
@@ -500,6 +541,34 @@ def run(cfg: VanillaConfig) -> dict:
             explainer_metrics[f'{_pfx}_score_mean'] = _st['score_mean']
             explainer_metrics[f'{_pfx}_score_std']  = _st['score_std']
 
+            # top-K vs bottom-K impact separation (own-LOO impact), per explainer,
+            # so baselines populate the topbot_* tables alongside the ante-hoc models.
+            if _sc and _ex_impacts:
+                _tb = top_bottom_motif_eval(_sc, _ex_impacts, k=_topk)
+                for _bk in ('top_mean_score', 'bottom_mean_score', 'top_mean_impact',
+                            'bottom_mean_impact', 'impact_ratio'):
+                    explainer_metrics[f'{_pfx}_topbot_{_bk}'] = _tb.get(_bk, float('nan'))
+
+            # GT vs non-GT motif discrimination, per explainer (GT-annotated runs
+            # only; _gt_motif_ids is empty otherwise → gtvo_* stays NaN/blank).
+            if _sc and _ex_impacts and _gt_motif_ids:
+                try:
+                    _gv = gt_vs_outside_gt_eval(
+                        motif_scores=_sc, motif_impacts=_ex_impacts,
+                        gt_motif_ids=_gt_motif_ids, data_list=test_list,
+                        model=model, vocab=vocab, device=device,
+                        task_type=task_type,
+                        threshold=getattr(cfg, 'correct_pred_threshold', 0.5))
+                    for _sub, _ss in _gv.items():
+                        for _gk in ('gt_mean_impact', 'non_gt_mean_impact',
+                                    'gt_mean_score', 'non_gt_mean_score'):
+                            explainer_metrics[f'{_pfx}_gtvo_{_sub}_{_gk}'] = _ss.get(_gk, float('nan'))
+                    _one = next(iter(_gv.values()), {})
+                    explainer_metrics[f'{_pfx}_gtvo_score_auc']     = _one.get('score_auc', float('nan'))
+                    explainer_metrics[f'{_pfx}_gtvo_gt_impact_rank'] = _one.get('gt_impact_rank', float('nan'))
+                except Exception as _e:
+                    print(f'  [warn] {_pfx} gt_vs_outside failed ({_e})')
+
     # ── TRUE per-instance score-vs-impact correlation (per explainer) ──────────
     # Instance-based explainers attribute a DIFFERENT weight to a motif in each
     # graph; the grouped/instance-repeated pearson above discards that. The score
@@ -512,7 +581,9 @@ def run(cfg: VanillaConfig) -> dict:
     #            so a motif-level weight is sufficient).
     #   AGNOSTIC ({ex}_pearson_instance_agnostic) — LOO with uniform weights; the
     #            model-only, common y-axis across all methods.
-    if cfg.run_motif_impact:
+    # Skipped in reuse mode (no per-graph attributions were saved); the prior
+    # summary's per-instance values were seeded into explainer_metrics above.
+    if cfg.run_motif_impact and not cfg.reuse_explainer_scores:
         from SharedModules.evaluation.motif_eval import (
             per_instance_correlation_from_caches,
             build_motif_score_cache_from_atts, build_graph_mask_cache)
@@ -748,6 +819,27 @@ def _save_explainer_scores(
                 Path(str(stem) + f'_{agg}.csv'), index=False)
 
 
+def _load_saved_explainer_scores(stem: Path) -> Dict[str, Dict[int, float]]:
+    """Inverse of _save_explainer_scores: read stem_{mean,max}.csv back into
+    ``{'mean': {motif_id: score}, 'max': {...}}``. Missing files → empty aggs."""
+    import pandas as pd
+    out: Dict[str, Dict[int, float]] = {'mean': {}, 'max': {}}
+    for agg in ('mean', 'max'):
+        p = Path(str(stem) + f'_{agg}.csv')
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            continue
+        col = f'score_{agg}'
+        if 'motif_id' in df.columns and col in df.columns:
+            out[agg] = {int(r['motif_id']): float(r[col])
+                        for _, r in df.iterrows()
+                        if pd.notna(r['motif_id']) and pd.notna(r[col])}
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description='VanillaGNN + post-hoc explainers')
     parser.add_argument('--dataset',         default='Mutagenicity')
@@ -795,6 +887,11 @@ def main():
     parser.add_argument('--pgex_max_graphs', type=int, default=None,
                         help='Cap test graphs for PGExplainer (default: all test graphs). '
                              '0 or negative = all test graphs.')
+    parser.add_argument('--reuse_explainer_scores', action='store_true',
+                        help='Load per-explainer scores saved by a prior baselines '
+                             'run (out_dir/{explainer}_motif_scores_{mean,max}.csv) '
+                             'instead of re-optimizing masks; recomputes downstream '
+                             'metrics (correlation, top_bottom, gt_vs_outside) from them.')
     parser.add_argument('--explainer_max_graphs', type=int, default=None,
                         help='Set both GNNExplainer and PGExplainer graph caps '
                              '(overrides --gnnex_max_graphs / --pgex_max_graphs).')
@@ -855,6 +952,7 @@ def main():
         gnnex_epochs=gnnex_epochs,
         pgex_max_graphs=pgex_max,
         run_mage=not args.no_mage,
+        reuse_explainer_scores=args.reuse_explainer_scores,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,
         final_out_dir=args.final_out_dir,

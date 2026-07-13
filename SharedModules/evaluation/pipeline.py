@@ -26,6 +26,7 @@ from .motif_eval import (
     caches_from_motif_impact,
     top_bottom_motif_eval,
     gt_vs_outside_gt_eval,
+    gt_motif_ids_from_labels,
     compute_gt_roc,
     model_node_att_fn,
     motif_broadcast_att_fn,
@@ -375,6 +376,13 @@ class EvalPipeline:
             )
 
         # 6. GT vs outside-GT
+        # Derive GT motif ids from per-node GT labels when not supplied, so
+        # gt_vs_outside runs automatically on any GT-annotated run (ante-hoc and
+        # vanilla/baselines alike) instead of only when a caller passes them.
+        if gt_motif_ids is None:
+            _derived = gt_motif_ids_from_labels(self.test_list)
+            if _derived:
+                gt_motif_ids = _derived
         if has_scores and has_impacts and gt_motif_ids is not None:
             results['gt_vs_outside'] = gt_vs_outside_gt_eval(
                 motif_scores=motif_scores,
