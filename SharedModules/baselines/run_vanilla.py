@@ -558,6 +558,12 @@ def run(cfg: VanillaConfig) -> dict:
                         gt_motif_ids=_gt_motif_ids, data_list=test_list,
                         model=model, vocab=vocab, device=device,
                         task_type=task_type,
+                        # A vanilla model has no intrinsic node attention, so supply
+                        # the explainer's own per-motif attribution as the LOO
+                        # weighting (same base_att_fn used for _ex_impacts). Without
+                        # this, base_W is empty and every ablation is skipped → the
+                        # impact-based gtvo_* metrics come out NaN.
+                        base_att_fn=_motif_score_node_att_fn(_sc),
                         threshold=getattr(cfg, 'correct_pred_threshold', 0.5))
                     for _sub, _ss in _gv.items():
                         for _gk in ('gt_mean_impact', 'non_gt_mean_impact',
