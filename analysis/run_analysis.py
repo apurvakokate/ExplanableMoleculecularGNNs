@@ -575,22 +575,30 @@ def step_probe(args) -> int:
 
 
 def step_plots(args) -> int:
-    cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
-           '--out_root', args.out_root,
-           '--nbins', str(args.nbins)]
-    extra = getattr(args, 'extra_out_root', None) or []
-    if extra:
-        cmd += ['--extra_out_root', *extra]
-    if getattr(args, 'score_min', None) is not None:
-        cmd += ['--score_min', str(args.score_min)]
-    if getattr(args, 'score_max', None) is not None:
-        cmd += ['--score_max', str(args.score_max)]
-    if args.save_dir:
-        cmd += ['--save_dir', args.save_dir]
-    if _datasets_arg(args):
-        cmd += ['--dataset', *_datasets_arg(args)]
-    print('\n=== score-vs-impact plots + count table ===')
-    return subprocess.run(cmd).returncode
+    # Emit BOTH aggregations: per-instance (plots_instance/) and per-motif global
+    # (plots_global/). If --save_dir is given, append the mode so they never
+    # overwrite each other; otherwise the plotter defaults to
+    # <out_root>/plots_{instance,global}.
+    rc = 0
+    for impact_agg in ('instance', 'global'):
+        cmd = [sys.executable, str(ANALYSIS / 'plot_score_vs_impact.py'),
+               '--out_root', args.out_root,
+               '--nbins', str(args.nbins),
+               '--impact_agg', impact_agg]
+        extra = getattr(args, 'extra_out_root', None) or []
+        if extra:
+            cmd += ['--extra_out_root', *extra]
+        if getattr(args, 'score_min', None) is not None:
+            cmd += ['--score_min', str(args.score_min)]
+        if getattr(args, 'score_max', None) is not None:
+            cmd += ['--score_max', str(args.score_max)]
+        if args.save_dir:
+            cmd += ['--save_dir', f'{args.save_dir.rstrip("/")}_{impact_agg}']
+        if _datasets_arg(args):
+            cmd += ['--dataset', *_datasets_arg(args)]
+        print(f'\n=== score-vs-impact plots ({impact_agg}) + count table ===')
+        rc = subprocess.run(cmd).returncode or rc
+    return rc
 
 
 # ── dispatch ──────────────────────────────────────────────────────────────────

@@ -219,8 +219,15 @@ def _assign_bins(scores: np.ndarray, edges: np.ndarray) -> np.ndarray:
     return np.clip(np.digitize(scores, edges_ext) - 1, 0, nbin - 1)
 
 
-def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray):
-    """Single-run panel: impact boxes + motif-count strip."""
+def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray,
+              impact_agg: str = 'instance'):
+    """Single-run panel: impact boxes + motif-count strip.
+
+    ``impact_agg`` controls what each boxed point is:
+      * ``instance`` — every (motif, graph) impact is its own point (default).
+      * ``global``   — collapse each motif to ONE point = its mean impact across
+                       the graphs containing it (the original MOSE-GNN boxplot).
+    """
     nbin = len(edges) - 1
     if cell.empty:
         ax.text(0.5, 0.5, 'no data', ha='center', va='center',
@@ -243,18 +250,24 @@ def plot_cell(ax, ax_top, cell: pd.DataFrame, edges: np.ndarray):
         ax_top.set_yticks([])
         return [0] * nbin
 
+    # GLOBAL mode: collapse each motif to one point (mean impact over its graphs),
+    # so the boxplot per bin shows the distribution of per-motif MEAN impacts.
+    if impact_agg == 'global' and 'motif_id' in sub.columns:
+        sub = (sub.groupby('motif_id', as_index=False)
+                  .agg(score=('score', 'mean'), impact=('impact', 'mean')))
+
     sub['_bin'] = _assign_bins(sub['score'].values, edges)
     data, pos = [], []
     counts = []
     has_mid = 'motif_id' in sub.columns
     for b in range(nbin):
         in_bin = sub['_bin'] == b
-        # Boxplot is instance-level: every (motif, graph) impact is a point.
+        # instance mode: one point per (motif, graph); global mode: one per motif.
         vals = sub.loc[in_bin, 'impact'].values
         data.append(vals if len(vals) else [np.nan])
         pos.append(float(b))
-        # Count strip stays a *motif* count (unique motifs in the bin), not the
-        # per-graph instance count, so the label remains accurate.
+        # Count strip is a *motif* count either way (unique motifs in the bin;
+        # in global mode each row is already one motif).
         counts.append(int(sub.loc[in_bin, 'motif_id'].nunique()) if has_mid
                       else int(in_bin.sum()))
 
@@ -316,6 +329,7 @@ def plot_algorithm_figure(
     agg: str,
     count_rows: list[dict],
     impact_kind: str = 'own',
+    impact_agg: str = 'instance',
 ) -> Path | None:
     """Render one (dataset × algorithm × label-regime) grid and return the path."""
     variants = _ordered(fsub['variant'].unique(), _VARIANT_ORDER)
@@ -333,7 +347,7 @@ def plot_algorithm_figure(
             ax_top = fig.add_subplot(inner[0, 0])
             ax = fig.add_subplot(inner[1, 0], sharex=ax_top)
             cell = fsub[(fsub['variant'] == var) & (fsub['backbone'] == bb)]
-            counts = plot_cell(ax, ax_top, cell, edges)
+            counts = plot_cell(ax, ax_top, cell, edges, impact_agg=impact_agg)
             cell_folds = (
                 sorted(int(f) for f in cell['fold'].dropna().unique())
                 if 'fold' in cell.columns else [])
@@ -366,13 +380,15 @@ def plot_algorithm_figure(
     _reg = {'real': 'real labels', 'gt': 'relabelled / GT'}.get(synthetic, synthetic)
     _kind = {'own': "explainer's own LOO",
              'agnostic': 'uniform-weight (original)'}.get(impact_kind, impact_kind)
+    _aggn = {'instance': 'per-(motif,graph) instance',
+             'global': 'per-motif mean (global)'}.get(impact_agg, impact_agg)
     fig.suptitle(
-        f'{ds} — {_family_title(family)}  ({_reg}) — impact: {_kind}\n'
+        f'{ds} — {_family_title(family)}  ({_reg}) — impact: {_kind} — {_aggn}\n'
         f'motif impact by equal-width score bins [{lo:.3g}, {hi:.3g}]',
         fontsize=11, y=1.01,
     )
     out = (save_dir /
-           f'score_vs_impact_{ds}_{_safe_slug(family)}_{synthetic}_{agg}_{impact_kind}.png')
+           f'score_vs_impact_{ds}_{_safe_slug(family)}_{synthetic}_{agg}_{impact_kind}_{impact_agg}.png')
     fig.savefig(out, dpi=140, bbox_inches='tight')
     plt.close(fig)
     return out
@@ -400,13 +416,23 @@ def main():
                          "leave-one-out) or 'agnostic' (original uniform-weight "
                          'impact, shared across explainers). Motif-aware models '
                          'are unaffected.')
+    ap.add_argument('--impact_agg', default='instance',
+                    choices=['instance', 'global'],
+                    help="What each boxed point is: 'instance' (default) boxes "
+                         "every (motif, graph) impact; 'global' collapses each "
+                         "motif to its mean impact across graphs (the original "
+                         "MOSE-GNN per-motif boxplot). Default --save_dir becomes "
+                         "<out_root>/plots_instance or plots_global accordingly.")
     ap.add_argument('--dataset', nargs='*', default=None,
                     help='Only plot these dataset(s), e.g. --dataset mutag BBBP')
     args = ap.parse_args()
 
     out_root = Path(args.out_root)
 
-    save_dir = Path(args.save_dir) if args.save_dir else Path(args.out_root) / 'plots'
+    # Default output dir encodes the aggregation so instance/global never overwrite
+    # each other: <out_root>/plots_instance vs <out_root>/plots_global.
+    save_dir = (Path(args.save_dir) if args.save_dir
+                else Path(args.out_root) / f'plots_{args.impact_agg}')
     save_dir.mkdir(parents=True, exist_ok=True)
 
     datasets = set(args.dataset) if args.dataset else None
@@ -445,6 +471,7 @@ def main():
             agg=args.agg,
             count_rows=count_rows,
             impact_kind=args.impact_kind,
+            impact_agg=args.impact_agg,
         )
         if out is not None:
             written.append(out)
