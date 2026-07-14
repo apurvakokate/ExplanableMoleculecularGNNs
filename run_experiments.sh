@@ -515,7 +515,7 @@ run_vanilla() {
     local expl_flags=""
     local n_skip=0 n_run=0
     [ "$skip_explainers" = "1" ] && \
-        expl_flags="--no_gnnexplainer --no_pgexplainer --no_mage"
+        expl_flags="--no_gnnexplainer --no_pgexplainer --no_motif_occlusion"
     for backbone in $BACKBONES; do
         echo "  [Vanilla] backbone=$backbone encoder=$NODE_ENCODER vocab=$variant"
         for ds in $DATASETS; do
@@ -594,7 +594,7 @@ run_vanilla_gt() {
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    --no_gnnexplainer --no_pgexplainer --no_mage \
+                    --no_gnnexplainer --no_pgexplainer --no_motif_occlusion \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -1404,7 +1404,7 @@ phase5_gsat() {
 
 # =============================================================================
 # PHASE 5d — Post-hoc baselines
-#   GNNExplainer, PGExplainer, MAGE on each trained vanilla checkpoint,
+#   GNNExplainer, PGExplainer, Motif-Occlusion on each trained vanilla checkpoint,
 #   evaluated under unfiltered base vocabs AND filtered vocabs (item 10).
 #   Filtered eval reuses base-variant checkpoints via _baseline_weight_variant.
 # =============================================================================

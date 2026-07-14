@@ -300,7 +300,7 @@ def compute_motif_impact(
       * ante-hoc (MOSE / MotifSAT / GSAT): the model's own learned node
         attention (resolved via ``model_node_att_fn`` when ``base_att_fn`` is
         None);
-      * post-hoc (Vanilla + GNNExplainer / PGExplainer / MAGE): pass
+      * post-hoc (Vanilla + GNNExplainer / PGExplainer / Motif-Occlusion / MAGE): pass
         ``base_att_fn`` = the explainer's per-motif scores broadcast to nodes
         (``_motif_score_node_att_fn(scores)``), one call per explainer.
     Requires the model's ``forward`` to accept ``node_weights``; skipped
@@ -348,7 +348,7 @@ def compute_motif_impact(
         # nodes in THIS graph. Same W that loo_impact zeroes below, so score and
         # impact are aligned by construction and share the model's own weighting
         # (node attention for MOSE/MotifSAT/GSAT; the explainer's broadcast
-        # per-node scores for GNNExplainer/PGExplainer/MAGE via base_att_fn).
+        # per-node scores for GNNExplainer/PGExplainer/Motif-Occlusion/MAGE via base_att_fn).
         # For a global-score method (MOSE) W is constant within a motif, so its
         # per-instance score degenerates to the global score — the fair baseline.
         nw_scores = []
@@ -556,7 +556,7 @@ def per_instance_correlation_from_caches(
     """Per-instance correlation from two ``{motif_id: {graph_idx: value}}`` maps.
 
     Used when a method's per-instance SCORE is native per-(motif, graph) rather
-    than a per-node weight — e.g. MAGE's per-graph embedding cosine distance.
+    than a per-node weight — e.g. Motif-Occlusion's per-graph embedding cosine distance.
     Pairs are formed over the common (motif, graph) keys, so alignment is by the
     shared graph index. Returns ``pearson_instance`` / ``spearman_instance`` /
     ``n_instances``.

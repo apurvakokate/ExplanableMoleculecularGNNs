@@ -13,7 +13,7 @@ Real-label and relabelled/GT runs are kept in SEPARATE figures (``_real`` /
 ``_gt`` in the filename) — never pooled into one box.
 
 MOSE / MotifSAT write ``score_vs_impact.csv`` directly (GSAT / Vanilla only if
-the run emits it). Baseline explainers (GNNExplainer, PGExplainer, MAGE) join
+the run emits it). Baseline explainers (GNNExplainer, PGExplainer, Motif-Occlusion) join
 ``{explainer}_motif_scores_{agg}.csv`` with ``motif_impact.csv``; each
 explainer is its own algorithm figure.
 
@@ -63,7 +63,7 @@ _FAMILY_TITLES = {
     'vanilla': 'Vanilla GNN',
     'gnnexplainer': 'GNNExplainer',
     'pgexplainer': 'PGExplainer',
-    'mage': 'MAGE',
+    'motif_occlusion': 'Motif Occlusion',
 }
 
 
@@ -141,8 +141,18 @@ def collect(out_root: Path | list[Path], agg: str = 'mean',
         # agg). Read the file matching the requested agg so the plotted impact
         # is the explainer's own LOO impact — NOT the vanilla model's shared,
         # explainer-agnostic motif_impact.csv (graph-removal) it used to reuse.
-        for expl in ('gnnexplainer', 'pgexplainer', 'mage'):
-            for svi in root.rglob(f'{expl}_{agg}_score_vs_impact.csv'):
+        for expl in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
+            _canon = f'{expl}_{agg}_score_vs_impact.csv'
+            _svis = list(root.rglob(_canon))
+            # Backward-compat: legacy runs wrote Motif-Occlusion's CSV under the
+            # old 'mage_*' stem. Add those, but only for run dirs that DON'T have
+            # the canonical file — so post-rename dirs (where 'mage_*' is real
+            # MAGE) are never mislabelled as Motif-Occlusion.
+            if expl == 'motif_occlusion':
+                _have = {s.parent for s in _svis}
+                _svis += [s for s in root.rglob(f'mage_{agg}_score_vs_impact.csv')
+                          if s.parent not in _have]
+            for svi in _svis:
                 run_dir = svi.parent
                 rel = svi.relative_to(root)
                 if _path_excluded(rel.parts):

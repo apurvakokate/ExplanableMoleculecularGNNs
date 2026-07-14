@@ -13,7 +13,7 @@ recorded). Every model family (vanilla, baselines, mose, motifsat, gsat) is
 placed in the same experiment so the table is directly comparable.
 
 Because the vanilla GNN and its post-hoc baselines (GNNExplainer / PGExplainer
-/ MAGE) do not depend on the injection axis, their rows are *broadcast* into
+/ Motif-Occlusion) do not depend on the injection axis, their rows are *broadcast* into
 every injection variant that shares the remaining axes, so each per-experiment
 table/plot is complete.
 
@@ -60,8 +60,23 @@ assert _spec.loader is not None
 _spec.loader.exec_module(_schema)
 TASK_TYPE = _schema.TASK_TYPE
 
-POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'mage')
+POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'motif_occlusion')
 EXPLAINER_AGGS = ('mean', 'max')
+
+
+def _alias_legacy_motif_occlusion_keys(d: dict) -> dict:
+    """Backward-compat: pre-rename runs saved the Motif-Occlusion baseline (then
+    mislabelled "MAGE") under ``mage_*`` summary keys. Copy them onto the new
+    ``motif_occlusion_*`` keys — but ONLY when the summary has no
+    ``motif_occlusion_*`` keys of its own, so post-rename summaries (which carry
+    both a real ``mage_*`` MAGE block and a ``motif_occlusion_*`` block) are left
+    untouched. Mutates and returns ``d``."""
+    if any(str(k).startswith('motif_occlusion_') for k in d):
+        return d
+    legacy = [k for k in d if str(k).startswith('mage_')]
+    for k in legacy:
+        d.setdefault('motif_occlusion_' + str(k)[len('mage_'):], d[k])
+    return d
 
 # Prediction AUC is identical on vanilla vs its baselines row (epochs=0 reload).
 PREDICTION_FAMILIES = ('vanilla', 'mose', 'motifsat', 'gsat', 'base_gsat')
@@ -296,7 +311,7 @@ def filter_prediction_rows(df: pd.DataFrame) -> pd.DataFrame:
 def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Expand baselines summary columns into explainer-family rows (E5).
 
-    Post-hoc GNNExplainer/PGExplainer/MAGE metrics live as ``{expl}_{agg}_*``
+    Post-hoc GNNExplainer/PGExplainer/Motif-Occlusion metrics live as ``{expl}_{agg}_*``
     columns on baselines runs, not as separate run dirs.
     """
     fam = df.get('family', pd.Series([''] * len(df))).astype(str)
@@ -401,8 +416,8 @@ DEFAULT_REPORT_METRICS = [PERF, 'train_auc', 'val_auc',
                           'gnnexplainer_max_gt_roc_node_auc_mean',
                           'pgexplainer_mean_gt_roc_node_auc_mean',
                           'pgexplainer_max_gt_roc_node_auc_mean',
-                          'mage_mean_gt_roc_node_auc_mean',
-                          'mage_max_gt_roc_node_auc_mean',
+                          'motif_occlusion_mean_gt_roc_node_auc_mean',
+                          'motif_occlusion_max_gt_roc_node_auc_mean',
                           'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman']
 
 METRIC_LABELS = {
@@ -429,8 +444,8 @@ METRIC_LABELS = {
     'gnnexplainer_max_gt_roc_node_auc_mean':  'GNNExplainer GT-ROC AUC (node, max)',
     'pgexplainer_mean_gt_roc_node_auc_mean':  'PGExplainer GT-ROC AUC (node, mean)',
     'pgexplainer_max_gt_roc_node_auc_mean':   'PGExplainer GT-ROC AUC (node, max)',
-    'mage_mean_gt_roc_node_auc_mean':         'MAGE GT-ROC AUC (node, mean)',
-    'mage_max_gt_roc_node_auc_mean':          'MAGE GT-ROC AUC (node, max)',
+    'motif_occlusion_mean_gt_roc_node_auc_mean': 'Motif-Occlusion GT-ROC AUC (node, mean)',
+    'motif_occlusion_max_gt_roc_node_auc_mean':  'Motif-Occlusion GT-ROC AUC (node, max)',
     'top_k_abs_disc':      'top-k motif |discriminativeness|',
     'mean_abs_disc':       'mean motif |discriminativeness|',
     'score_disc_spearman': 'score-vs-discriminativeness (spearman)',
@@ -608,6 +623,7 @@ def main():
             try:
                 with open(p, encoding='utf-8') as f:
                     d = json.load(f)
+                _alias_legacy_motif_occlusion_keys(d)
             except Exception as e:
                 print(f'  [warn] skip corrupt summary {p}: {e}')
                 continue

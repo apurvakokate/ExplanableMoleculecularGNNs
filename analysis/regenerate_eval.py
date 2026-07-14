@@ -11,7 +11,7 @@ It reconstructs each run's CLI flags from its summary.json (dataset, fold,
 backbone, vocab_variant, motif_method, w_feat/w_message/w_readout, node_encoder).
 Vanilla/baseline dirs (when included via ``--families vanilla baselines``) reload
 the GNN checkpoint with ``--epochs 0`` but still **re-fit post-hoc explainers**
-(PGExplainer/GNNExplainer/MAGE). They do NOT create missing ``baselines/`` runs —
+(PGExplainer/GNNExplainer/Motif-Occlusion). They do NOT create missing ``baselines/`` runs —
 use ``bash run_experiments.sh phase5_baselines`` for that.
 
 Default ``--families``: ante-hoc only (mose, motifsat, gsat) with true ``--eval_only``.
@@ -230,7 +230,7 @@ def main():
     ap.add_argument('--families', nargs='*',
                     default=['mose', 'motifsat', 'gsat'],
                     help='Run dirs to re-evaluate (default: ante-hoc only). '
-                         'Add vanilla baselines to re-fit GNNExplainer/PGExplainer/MAGE '
+                         'Add vanilla baselines to re-fit GNNExplainer/PGExplainer/Motif-Occlusion '
                          'on existing vanilla/baselines checkpoints — does NOT create '
                          'missing baselines/ runs (use phase5_baselines for that).')
     ap.add_argument('--dataset', nargs='*', default=None,

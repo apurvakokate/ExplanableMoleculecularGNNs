@@ -2,8 +2,8 @@
 """run_vanilla.py — Train VanillaGNN and run post-hoc explainers.
 
 Trains a vanilla GNN (no motif parameters) then runs GNNExplainer,
-PGExplainer, and MAGE to compute motif-level explanations comparable
-to MOSE-GNN and MotifSAT.
+PGExplainer, and Motif-Occlusion to compute motif-level explanations
+comparable to MOSE-GNN and MotifSAT.
 
 Usage
 -----
@@ -42,7 +42,7 @@ from SharedModules.utils import set_seed, get_device
 from SharedModules.baselines.vanilla_gnn import VanillaGNN, train_vanilla_gnn
 from SharedModules.baselines.gnn_explainer import run_gnnexplainer
 from SharedModules.baselines.pg_explainer import run_pgexplainer
-from SharedModules.baselines.mage import run_mage
+from SharedModules.baselines.motif_occlusion import run_motif_occlusion
 
 
 @dataclass
@@ -71,7 +71,7 @@ class VanillaConfig:
     verbose: bool         = True
     run_gnnexplainer: bool = True
     run_pgexplainer: bool  = True
-    run_mage: bool         = True
+    run_motif_occlusion: bool = True
     run_motif_impact: bool = True
     gnnex_max_graphs: Optional[int] = None
     gnnex_epochs: int = 200
@@ -348,8 +348,13 @@ def run(cfg: VanillaConfig) -> dict:
                     _prior_summary = json.load(_f)
             except Exception:
                 _prior_summary = {}
-        for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
             _loaded = _load_saved_explainer_scores(out_dir / f'{_ex}_motif_scores')
+            # Backward-compat: legacy runs saved Motif-Occlusion under the old
+            # 'mage_motif_scores_*.csv' stem (before the rename). Fall back to it
+            # only when the new file is absent, so it never shadows real-MAGE CSVs.
+            if _ex == 'motif_occlusion' and not (_loaded.get('mean') or _loaded.get('max')):
+                _loaded = _load_saved_explainer_scores(out_dir / 'mage_motif_scores')
             if _loaded.get('mean') or _loaded.get('max'):
                 results[f'{_ex}_mean'] = _loaded.get('mean', {})
                 results[f'{_ex}_max']  = _loaded.get('max', {})
@@ -396,20 +401,20 @@ def run(cfg: VanillaConfig) -> dict:
         except Exception as e:
             print(f'  [warn] PGExplainer failed: {e}')
 
-    # MAGE
-    if cfg.run_mage and not cfg.reuse_explainer_scores:
+    # Motif-Occlusion (formerly mislabelled "MAGE")
+    if cfg.run_motif_occlusion and not cfg.reuse_explainer_scores:
         try:
-            print('\n  Running MAGE ...')
-            mage_scores, _mage_pi = run_mage(
+            print('\n  Running Motif-Occlusion ...')
+            mo_scores, _mo_pi = run_motif_occlusion(
                 _clean_model(), test_list, vocab, device, task_type,
                 return_per_instance=True)
-            explainer_node_atts['mage_per_instance'] = _mage_pi  # {mid:{gi:dist}}
-            _warn_if_collapsed('MAGE', mage_scores)
-            _save_explainer_scores(mage_scores, out_dir / 'mage_motif_scores', vocab)
-            results['mage_mean'] = mage_scores.get('mean', {})
-            results['mage_max']  = mage_scores.get('max', {})
+            explainer_node_atts['motif_occlusion_per_instance'] = _mo_pi  # {mid:{gi:dist}}
+            _warn_if_collapsed('Motif-Occlusion', mo_scores)
+            _save_explainer_scores(mo_scores, out_dir / 'motif_occlusion_motif_scores', vocab)
+            results['motif_occlusion_mean'] = mo_scores.get('mean', {})
+            results['motif_occlusion_max']  = mo_scores.get('max', {})
         except Exception as e:
-            print(f'  [warn] MAGE failed: {e}')
+            print(f'  [warn] Motif-Occlusion failed: {e}')
 
     # Per-explainer score-vs-impact correlation, top-motif discriminativeness,
     # and score distribution. The post-hoc explainer's attribution IS its motif
@@ -433,7 +438,7 @@ def run(cfg: VanillaConfig) -> dict:
         # the (unsaved) per-graph node attributions — chiefly *_pearson_instance*.
         # Everything the loop below recomputes from the loaded scores overlays.
         for _k, _v in _prior_summary.items():
-            if _k.startswith(('gnnexplainer_', 'pgexplainer_', 'mage_')):
+            if _k.startswith(('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_')):
                 explainer_metrics[_k] = _v
     # Each post-hoc explainer produces NODE-level attributions; we aggregate
     # them to motif level by both mean and max over the motif's atoms. Report
@@ -471,7 +476,7 @@ def run(cfg: VanillaConfig) -> dict:
         except Exception as _e:
             print(f'  [warn] agnostic (uniform-weight) impact failed ({_e}).')
 
-    for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+    for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
         for _agg in ('mean', 'max'):
             _sc = results.get(f'{_ex}_{_agg}', {})
             if not _sc:
@@ -583,7 +588,7 @@ def run(cfg: VanillaConfig) -> dict:
     # separately for every explainer:
     #   OWN      ({ex}_pearson_instance)          — LOO weighted by the explainer's
     #            own attribution (per-node mask for GNN/PG; the motif-level score
-    #            broadcast to the motif's nodes for MAGE — masking is motif-level,
+    #            broadcast to the motif's nodes for Motif-Occlusion — masking is motif-level,
     #            so a motif-level weight is sufficient).
     #   AGNOSTIC ({ex}_pearson_instance_agnostic) — LOO with uniform weights; the
     #            model-only, common y-axis across all methods.
@@ -655,10 +660,10 @@ def run(cfg: VanillaConfig) -> dict:
                     setattr(test_list[_gi], '_pi_att', _a)
             _record(_ex, _score_cache, _own_impact_from_attr())
 
-        # MAGE — native per-(motif, graph) cosine distance as the score; OWN impact
-        # broadcasts that motif-level score to the motif's nodes as W.
-        _mage_pi = explainer_node_atts.get('mage_per_instance')
-        if _mage_pi:
+        # Motif-Occlusion — native per-(motif, graph) cosine distance as the score;
+        # OWN impact broadcasts that motif-level score to the motif's nodes as W.
+        _mo_pi = explainer_node_atts.get('motif_occlusion_per_instance')
+        if _mo_pi:
             for _gi in range(len(test_list)):
                 _d = test_list[_gi]
                 _n2m = getattr(_d, 'nodes_to_motifs', None)
@@ -668,12 +673,12 @@ def run(cfg: VanillaConfig) -> dict:
                 # vector on CPU so the boolean mask and _w share a device.
                 _n2m = _n2m.view(-1).cpu()
                 _w = torch.zeros(_n2m.numel())
-                for _mid, _gmap in _mage_pi.items():
+                for _mid, _gmap in _mo_pi.items():
                     _val = _gmap.get(_gi)
                     if _val is not None:
                         _w[_n2m == _mid] = float(_val)
                 setattr(_d, '_pi_att', _w)
-            _record('mage', _mage_pi, _own_impact_from_attr())
+            _record('motif_occlusion', _mo_pi, _own_impact_from_attr())
 
     # ── Per-explainer GT-ROC (node & edge) ─────────────────────────────────────
     # The vanilla model has no intrinsic node attention, so its GT-ROC comes from
@@ -692,7 +697,7 @@ def run(cfg: VanillaConfig) -> dict:
         _gt_roc_list = _gt_eval if _gt_eval is not None else test_list
         _gt_roc_list_all = (_gt_eval_all if _gt_eval_all is not None
                             else all_list)
-        for _ex in ('gnnexplainer', 'pgexplainer', 'mage'):
+        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
             for _agg in ('mean', 'max'):
                 _sc = results.get(f'{_ex}_{_agg}', {})
                 if not _sc:
@@ -901,7 +906,9 @@ def main():
     parser.add_argument('--explainer_max_graphs', type=int, default=None,
                         help='Set both GNNExplainer and PGExplainer graph caps '
                              '(overrides --gnnex_max_graphs / --pgex_max_graphs).')
-    parser.add_argument('--no_mage',         action='store_true')
+    parser.add_argument('--no_motif_occlusion', action='store_true',
+                        help='Skip the Motif-Occlusion baseline (formerly '
+                             'mislabelled "MAGE"; renamed --no_mage).')
     parser.add_argument('--use_wandb',       action='store_true',
                         help='Initialise a W&B run and log the final summary.')
     parser.add_argument('--wandb_project',   default='ChemIntuit')
@@ -957,7 +964,7 @@ def main():
         gnnex_max_graphs=gnnex_max,
         gnnex_epochs=gnnex_epochs,
         pgex_max_graphs=pgex_max,
-        run_mage=not args.no_mage,
+        run_motif_occlusion=not args.no_motif_occlusion,
         reuse_explainer_scores=args.reuse_explainer_scores,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,

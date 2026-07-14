@@ -2,7 +2,7 @@
 
 The vanilla model is a plain BaseGNN with no attention or motif parameters.
 It is used as the input to post-hoc explainers (GNNExplainer, PGExplainer,
-MAGE) and as a comparison baseline.
+Motif-Occlusion, MAGE) and as a comparison baseline.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class VanillaGNN(nn.Module):
         batch: Optional[torch.Tensor] = None,
         edge_attr: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Return node-level embeddings (needed by MAGE)."""
+        """Return node-level embeddings (needed by Motif-Occlusion / MAGE)."""
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
         _, node_emb = self.backbone_net.get_embedding(

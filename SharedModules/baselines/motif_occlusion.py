@@ -1,7 +1,10 @@
-"""mage.py — MAGE motif-level importance scores.
+"""motif_occlusion.py — Motif-Occlusion motif-level importance scores.
 
-MAGE measures how much removing a motif type shifts the model's graph-level
-representation, using cosine distance in embedding space.
+NOTE: This is NOT the MAGE method (arXiv 2405.12519). It was previously
+mislabelled "MAGE"; it is a homegrown cosine-embedding *occlusion* baseline.
+The real MAGE Stage-2 attention scorer lives in ``mage.py``. This method
+measures how much removing (zeroing) a motif type shifts the model's
+graph-level representation, using cosine distance in embedding space.
 
 Algorithm (per motif m, per graph g containing m):
   1. Forward pass on g → node embeddings h[N, D]
@@ -32,12 +35,12 @@ from torch_geometric.data import Data
 from torch_geometric.nn import global_mean_pool, global_add_pool
 
 # Return type shared with node-score baselines.
-# For MAGE, 'mean' and 'max' are identical (score is already per-motif).
+# For Motif-Occlusion, 'mean' and 'max' are identical (score is already per-motif).
 NodeScoreResult = Dict[str, Dict[int, float]]
 
 
 @torch.no_grad()
-def run_mage(
+def run_motif_occlusion(
     model: torch.nn.Module,
     test_list: List[Data],
     vocab,
@@ -54,19 +57,19 @@ def run_mage(
         Mean cosine distance when masking each motif type, in [0, 1].
         Not normalised — higher = more important to the model's representation.
     When ``return_per_instance`` is set, also returns a second dict
-    ``{motif_id: {graph_idx: cosine_distance}}`` — MAGE's native per-(motif,
+    ``{motif_id: {graph_idx: cosine_distance}}`` — the native per-(motif,
     graph) score, for the per-instance correlation. graph_idx indexes
     ``test_list``.
     """
     if not hasattr(model, 'get_emb'):
-        print('  [warn] MAGE requires model.get_emb(x, edge_index, batch) -> node_emb')
+        print('  [warn] Motif_Occlusion requires model.get_emb(x, edge_index, batch) -> node_emb')
         return ({}, {}) if return_per_instance else {}
 
     model.eval()
     model.to(device)
 
     # Determine pooling function from model if exposed, else default to mean.
-    # NOTE: add vs mean is a NO-OP for MAGE's cosine-distance score (scale-invariant,
+    # NOTE: add vs mean is a NO-OP for the cosine-distance score (scale-invariant,
     # constant node count under feature-zeroing masks) — verified bit-identical.
     pool_type = getattr(model, 'pool_type', 'mean')
     pool_fn   = global_add_pool if pool_type == 'add' else global_mean_pool
@@ -133,7 +136,7 @@ def run_mage(
         if dists:
             motif_scores[mid] = float(sum(dists) / len(dists))
 
-    # MAGE operates at motif level (cosine distance per motif, not per node),
+    # Motif-Occlusion operates at motif level (cosine distance per motif, not per node),
     # so mean and max are identical — both expose the same score.
     scores = {
         'mean': motif_scores,

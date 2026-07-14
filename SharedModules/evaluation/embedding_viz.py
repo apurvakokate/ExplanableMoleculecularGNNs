@@ -565,7 +565,7 @@ def build_impact_cache_from_eval(
     Structure: ``{motif_id: {graph_idx: impact_value}}`` for embedding viz and
     the per-instance correlation. ``base_att_fn`` selects the weight vector W
     (defaults to the model's own node attention; pass e.g. an all-ones fn for a
-    method-agnostic impact when the method has no per-node weights, like MAGE).
+    method-agnostic impact when the method has no per-node weights, like Motif-Occlusion).
     """
     from .motif_eval import (
         build_graph_mask_cache,
