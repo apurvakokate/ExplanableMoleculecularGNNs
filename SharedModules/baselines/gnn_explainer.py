@@ -80,8 +80,8 @@ def run_gnnexplainer(
             model=wrapped,
             algorithm=_GNNEx(epochs=epochs),
             explanation_type='model',
-            node_mask_type='attributes',
-            edge_mask_type='object',
+            node_mask_type='object',
+            edge_mask_type=None,
             model_config=dict(
                 mode='binary_classification' if task_type == 'BinaryClass' else 'regression',
                 task_level='graph',

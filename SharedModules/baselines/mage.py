@@ -65,7 +65,9 @@ def run_mage(
     model.eval()
     model.to(device)
 
-    # Determine pooling function from model if exposed, else default to mean
+    # Determine pooling function from model if exposed, else default to mean.
+    # NOTE: add vs mean is a NO-OP for MAGE's cosine-distance score (scale-invariant,
+    # constant node count under feature-zeroing masks) — verified bit-identical.
     pool_type = getattr(model, 'pool_type', 'mean')
     pool_fn   = global_add_pool if pool_type == 'add' else global_mean_pool
 
