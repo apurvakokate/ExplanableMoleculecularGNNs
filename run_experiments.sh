@@ -368,10 +368,16 @@ _vanilla_run_dir() {
     echo "$OUT_ROOT/vanilla/${ds}/fold${fold}/${variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
 }
 
+# BASELINE_OUT_ROOT (default $OUT_ROOT) redirects ONLY the baselines output tree;
+# vanilla checkpoints are still loaded from $OUT_ROOT. Use it to write a partial
+# baselines run (e.g. MAGE_ONLY=1) into a separate tree instead of overwriting an
+# existing baselines summary.json — run_vanilla.py rewrites summary.json wholesale,
+# so a MAGE-only re-run into a completed dir would drop the GNNExplainer/
+# PGExplainer/Motif-Occlusion metrics already there.
 _baseline_run_dir() {
     local ds=$1 fold=$2 eval_variant=$3 bb=$4 syn=${5:-real}
     local enc="$(_dataset_node_encoder "$ds")"
-    echo "$OUT_ROOT/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
+    echo "${BASELINE_OUT_ROOT:-$OUT_ROOT}/baselines/${ds}/fold${fold}/${eval_variant}/$(_vanilla_cfg_slug "$syn" "$bb" "$enc")"
 }
 
 # Phase 5 resume: skip runs whose out_dir already has training artifacts.
@@ -498,6 +504,14 @@ _baseline_explainer_flags() {
     local ds="${1:-}"
     local flags=""
     flags="$flags $(_mage_score_flags "$ds")"
+    # MAGE_ONLY=1 → run ONLY the official MAGE scorer, skipping the expensive
+    # GNNExplainer/PGExplainer mask optimization and the Motif-Occlusion baseline.
+    [ "${MAGE_ONLY:-0}" = "1" ] && \
+        flags="$flags --no_gnnexplainer --no_pgexplainer --no_motif_occlusion"
+    # MAGE_PREDICTED_CLASS=1 → collapse S_cm with each graph's own predicted class
+    # instead of the fixed positive-class column.
+    [ "${MAGE_PREDICTED_CLASS:-0}" = "1" ] && \
+        flags="$flags --mage_official_predicted_class"
     [ -n "${GNNEX_MAX_GRAPHS:-}" ] && flags="$flags --gnnex_max_graphs $GNNEX_MAX_GRAPHS"
     [ -n "${GNNEX_EPOCHS:-}" ] && flags="$flags --gnnex_epochs $GNNEX_EPOCHS"
     [ -n "${PGEX_MAX_GRAPHS:-}" ] && flags="$flags --pgex_max_graphs $PGEX_MAX_GRAPHS"
