@@ -342,6 +342,17 @@ _mutag_train_flags() {
          "--mutag_seed 42"
 }
 
+# MAGE score-column flags. Property-positive polarity differs by dataset:
+#   * mutag (TUDataset, per-node GT): class 0 = property-positive ("mutagens").
+#   * Mutagenicity (CSV) and every other CSV dataset: class 1 = property-positive.
+# So only the mutag TUDataset overrides the default positive class (1).
+_mage_score_flags() {
+    local ds=$1
+    case "$ds" in
+        mutag) echo "--mage_official_positive_class 0" ;;
+    esac
+}
+
 # Config slug matching run_experiments.py _cfg_slug (vanilla/baselines omit inj/ep).
 _vanilla_cfg_slug() {
     local syn="${1:-real}" bb="${2:?backbone required}" enc="${3:-$NODE_ENCODER}"
@@ -484,7 +495,9 @@ run_frag_thresh() {
 
 # Post-hoc explainer caps (phase5_baselines). GNNExplainer optimizes per graph.
 _baseline_explainer_flags() {
+    local ds="${1:-}"
     local flags=""
+    flags="$flags $(_mage_score_flags "$ds")"
     [ -n "${GNNEX_MAX_GRAPHS:-}" ] && flags="$flags --gnnex_max_graphs $GNNEX_MAX_GRAPHS"
     [ -n "${GNNEX_EPOCHS:-}" ] && flags="$flags --gnnex_epochs $GNNEX_EPOCHS"
     [ -n "${PGEX_MAX_GRAPHS:-}" ] && flags="$flags --pgex_max_graphs $PGEX_MAX_GRAPHS"
@@ -515,7 +528,7 @@ run_vanilla() {
     local expl_flags=""
     local n_skip=0 n_run=0
     [ "$skip_explainers" = "1" ] && \
-        expl_flags="--no_gnnexplainer --no_pgexplainer --no_motif_occlusion"
+        expl_flags="--no_gnnexplainer --no_pgexplainer --no_motif_occlusion --no_mage_official"
     for backbone in $BACKBONES; do
         echo "  [Vanilla] backbone=$backbone encoder=$NODE_ENCODER vocab=$variant"
         for ds in $DATASETS; do
@@ -594,7 +607,7 @@ run_vanilla_gt() {
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    --no_gnnexplainer --no_pgexplainer --no_motif_occlusion \
+                    --no_gnnexplainer --no_pgexplainer --no_motif_occlusion --no_mage_official \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -828,7 +841,7 @@ run_baselines() {
                     --weight_vocab_variant "$weight_variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    $(_baseline_explainer_flags) \
+                    $(_baseline_explainer_flags "$ds") \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -886,7 +899,7 @@ run_baselines_gt() {
                     --weight_vocab_variant "$variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    $(_baseline_explainer_flags) \
+                    $(_baseline_explainer_flags "$ds") \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS

@@ -60,20 +60,18 @@ assert _spec.loader is not None
 _spec.loader.exec_module(_schema)
 TASK_TYPE = _schema.TASK_TYPE
 
-POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'motif_occlusion')
+POSTHOC_EXPLAINERS = ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official')
 EXPLAINER_AGGS = ('mean', 'max')
 
 
 def _alias_legacy_motif_occlusion_keys(d: dict) -> dict:
     """Backward-compat: pre-rename runs saved the Motif-Occlusion baseline (then
-    mislabelled "MAGE") under ``mage_*`` summary keys. Copy them onto the new
-    ``motif_occlusion_*`` keys — but ONLY when the summary has no
-    ``motif_occlusion_*`` keys of its own, so post-rename summaries (which carry
-    both a real ``mage_*`` MAGE block and a ``motif_occlusion_*`` block) are left
-    untouched. Mutates and returns ``d``."""
-    if any(str(k).startswith('motif_occlusion_') for k in d):
-        return d
-    legacy = [k for k in d if str(k).startswith('mage_')]
+    mislabelled "MAGE") under bare ``mage_*`` summary keys. Official MAGE now uses
+    the distinct ``mage_official_*`` namespace, so any bare ``mage_*`` key (never
+    ``mage_official_*``) is unambiguously the legacy Motif-Occlusion — copy it onto
+    the ``motif_occlusion_*`` key. Mutates and returns ``d``."""
+    legacy = [k for k in d if str(k).startswith('mage_')
+              and not str(k).startswith('mage_official_')]
     for k in legacy:
         d.setdefault('motif_occlusion_' + str(k)[len('mage_'):], d[k])
     return d
@@ -418,6 +416,8 @@ DEFAULT_REPORT_METRICS = [PERF, 'train_auc', 'val_auc',
                           'pgexplainer_max_gt_roc_node_auc_mean',
                           'motif_occlusion_mean_gt_roc_node_auc_mean',
                           'motif_occlusion_max_gt_roc_node_auc_mean',
+                          'mage_official_mean_gt_roc_node_auc_mean',
+                          'mage_official_max_gt_roc_node_auc_mean',
                           'top_k_abs_disc', 'mean_abs_disc', 'score_disc_spearman']
 
 METRIC_LABELS = {
@@ -446,6 +446,8 @@ METRIC_LABELS = {
     'pgexplainer_max_gt_roc_node_auc_mean':   'PGExplainer GT-ROC AUC (node, max)',
     'motif_occlusion_mean_gt_roc_node_auc_mean': 'Motif-Occlusion GT-ROC AUC (node, mean)',
     'motif_occlusion_max_gt_roc_node_auc_mean':  'Motif-Occlusion GT-ROC AUC (node, max)',
+    'mage_official_mean_gt_roc_node_auc_mean': 'MAGE (official) GT-ROC AUC (node, mean)',
+    'mage_official_max_gt_roc_node_auc_mean':  'MAGE (official) GT-ROC AUC (node, max)',
     'top_k_abs_disc':      'top-k motif |discriminativeness|',
     'mean_abs_disc':       'mean motif |discriminativeness|',
     'score_disc_spearman': 'score-vs-discriminativeness (spearman)',

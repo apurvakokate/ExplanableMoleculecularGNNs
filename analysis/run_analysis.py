@@ -65,7 +65,7 @@ _NON_METRIC_COLS = frozenset({
 })
 
 
-_EXPLAINER_PREFIXES = ('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_')
+_EXPLAINER_PREFIXES = ('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_', 'mage_official_')
 
 
 def discover_table_metrics(df) -> list[str]:
@@ -293,7 +293,7 @@ def _fill_diagnostic_sidecars(d: dict, run_dir) -> None:
             'impact_ratio':       (tmi / bmi) if bmi > 1e-9 else float('nan'),
         }
 
-    for ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
+    for ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official'):
         for agg in ('mean', 'max'):
             if f'{ex}_{agg}_topbot_impact_ratio' in d:
                 continue  # already promoted into summary.json (real / reuse run)
@@ -448,12 +448,16 @@ def step_collect(args) -> int:
                         'pgexplainer_max_gt_roc_node_auc_mean',
                         'motif_occlusion_mean_gt_roc_node_auc_mean',
                         'motif_occlusion_max_gt_roc_node_auc_mean',
+                        'mage_official_mean_gt_roc_node_auc_mean',
+                        'mage_official_max_gt_roc_node_auc_mean',
                         'gnnexplainer_pearson_instance', 'gnnexplainer_spearman_instance',
                         'pgexplainer_pearson_instance', 'pgexplainer_spearman_instance',
                         'motif_occlusion_pearson_instance', 'motif_occlusion_spearman_instance',
+                        'mage_official_pearson_instance', 'mage_official_spearman_instance',
                         'gnnexplainer_pearson_instance_agnostic', 'gnnexplainer_spearman_instance_agnostic',
                         'pgexplainer_pearson_instance_agnostic', 'pgexplainer_spearman_instance_agnostic',
                         'motif_occlusion_pearson_instance_agnostic', 'motif_occlusion_spearman_instance_agnostic',
+                        'mage_official_pearson_instance_agnostic', 'mage_official_spearman_instance_agnostic',
                         'pearson', 'spearman',
                         'pearson_motif', 'spearman_motif',
                         'pearson_instance', 'spearman_instance',
@@ -477,7 +481,7 @@ def step_collect(args) -> int:
     # de-dup while preserving order
     seen = set(); core = [c for c in core if not (c in seen or seen.add(c))]
     extra = sorted(c for c in df.columns if c not in core and any(
-        c.startswith(p) for p in ('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_')))
+        c.startswith(p) for p in ('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_', 'mage_official_')))
     seen = set(core) | set(extra)
     rest = [c for c in df.columns if c not in seen]
     want = core + extra + rest

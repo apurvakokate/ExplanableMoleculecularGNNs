@@ -2,8 +2,9 @@
 """run_vanilla.py — Train VanillaGNN and run post-hoc explainers.
 
 Trains a vanilla GNN (no motif parameters) then runs GNNExplainer,
-PGExplainer, and Motif-Occlusion to compute motif-level explanations
-comparable to MOSE-GNN and MotifSAT.
+PGExplainer, Motif-Occlusion, and MAGE (official, arXiv 2405.12519 Stage 2;
+identifier ``mage_official``) to compute motif-level explanations comparable
+to MOSE-GNN and MotifSAT.
 
 Usage
 -----
@@ -43,6 +44,7 @@ from SharedModules.baselines.vanilla_gnn import VanillaGNN, train_vanilla_gnn
 from SharedModules.baselines.gnn_explainer import run_gnnexplainer
 from SharedModules.baselines.pg_explainer import run_pgexplainer
 from SharedModules.baselines.motif_occlusion import run_motif_occlusion
+from SharedModules.baselines.mage import run_mage
 
 
 @dataclass
@@ -72,6 +74,12 @@ class VanillaConfig:
     run_gnnexplainer: bool = True
     run_pgexplainer: bool  = True
     run_motif_occlusion: bool = True
+    run_mage_official: bool = True
+    # MAGE (official, arXiv 2405.12519 Stage 2) scoring options. The identifier is
+    # 'mage_official' (not 'mage') so its outputs never collide with legacy
+    # 'mage_*' result dirs that actually hold the renamed Motif-Occlusion.
+    mage_official_positive_class: int = 1     # S_cm column exposed (mutag uses 0)
+    mage_official_predicted_class: bool = False  # collapse with graph's predicted class
     run_motif_impact: bool = True
     gnnex_max_graphs: Optional[int] = None
     gnnex_epochs: int = 200
@@ -348,11 +356,21 @@ def run(cfg: VanillaConfig) -> dict:
                     _prior_summary = json.load(_f)
             except Exception:
                 _prior_summary = {}
-        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
+        # Backward-compat: a legacy (pre-rename) summary holds the old
+        # Motif-Occlusion metrics under bare 'mage_*' keys. Real MAGE now uses the
+        # distinct 'mage_official_*' namespace, so ANY bare 'mage_*' key (never
+        # 'mage_official_*') is unambiguously legacy Motif-Occlusion — MOVE it so
+        # the "preserve prior metrics" block below keeps it as motif_occlusion.
+        for _k in [k for k in list(_prior_summary)
+                   if str(k).startswith('mage_') and not str(k).startswith('mage_official_')]:
+            _prior_summary.setdefault(
+                'motif_occlusion_' + str(_k)[len('mage_'):], _prior_summary[_k])
+            del _prior_summary[_k]
+        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official'):
             _loaded = _load_saved_explainer_scores(out_dir / f'{_ex}_motif_scores')
-            # Backward-compat: legacy runs saved Motif-Occlusion under the old
-            # 'mage_motif_scores_*.csv' stem (before the rename). Fall back to it
-            # only when the new file is absent, so it never shadows real-MAGE CSVs.
+            # Legacy dirs saved Motif-Occlusion under the old 'mage_motif_scores_*.csv'
+            # stem. Real MAGE is 'mage_official_motif_scores_*.csv', so that legacy
+            # stem is unambiguously Motif-Occlusion — adopt it when the new file is absent.
             if _ex == 'motif_occlusion' and not (_loaded.get('mean') or _loaded.get('max')):
                 _loaded = _load_saved_explainer_scores(out_dir / 'mage_motif_scores')
             if _loaded.get('mean') or _loaded.get('max'):
@@ -416,6 +434,25 @@ def run(cfg: VanillaConfig) -> dict:
         except Exception as e:
             print(f'  [warn] Motif-Occlusion failed: {e}')
 
+    # MAGE (official — arXiv 2405.12519 Stage 2 class-wise motif scores)
+    if cfg.run_mage_official and not cfg.reuse_explainer_scores:
+        try:
+            _mode = ('predicted-class' if cfg.mage_official_predicted_class
+                     else f'positive-class={cfg.mage_official_positive_class}')
+            print(f'\n  Running MAGE (official) (score mode: {_mode}) ...')
+            mage_scores, _mage_pi = run_mage(
+                _clean_model(), test_list, vocab, device, task_type,
+                positive_class=cfg.mage_official_positive_class,
+                use_predicted_class=cfg.mage_official_predicted_class,
+                verbose=cfg.verbose, return_per_instance=True)
+            explainer_node_atts['mage_official_per_instance'] = _mage_pi  # {mid:{gi:alpha*P}}
+            _warn_if_collapsed('MAGE (official)', mage_scores)
+            _save_explainer_scores(mage_scores, out_dir / 'mage_official_motif_scores', vocab)
+            results['mage_official_mean'] = mage_scores.get('mean', {})
+            results['mage_official_max']  = mage_scores.get('max', {})
+        except Exception as e:
+            print(f'  [warn] MAGE (official) failed: {e}')
+
     # Per-explainer score-vs-impact correlation, top-motif discriminativeness,
     # and score distribution. The post-hoc explainer's attribution IS its motif
     # score, so we correlate each against the same mask-based impact / the
@@ -438,7 +475,7 @@ def run(cfg: VanillaConfig) -> dict:
         # the (unsaved) per-graph node attributions — chiefly *_pearson_instance*.
         # Everything the loop below recomputes from the loaded scores overlays.
         for _k, _v in _prior_summary.items():
-            if _k.startswith(('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_')):
+            if _k.startswith(('gnnexplainer_', 'pgexplainer_', 'motif_occlusion_', 'mage_official_')):
                 explainer_metrics[_k] = _v
     # Each post-hoc explainer produces NODE-level attributions; we aggregate
     # them to motif level by both mean and max over the motif's atoms. Report
@@ -476,7 +513,7 @@ def run(cfg: VanillaConfig) -> dict:
         except Exception as _e:
             print(f'  [warn] agnostic (uniform-weight) impact failed ({_e}).')
 
-    for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
+    for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official'):
         for _agg in ('mean', 'max'):
             _sc = results.get(f'{_ex}_{_agg}', {})
             if not _sc:
@@ -680,6 +717,24 @@ def run(cfg: VanillaConfig) -> dict:
                 setattr(_d, '_pi_att', _w)
             _record('motif_occlusion', _mo_pi, _own_impact_from_attr())
 
+        # MAGE (official) — native per-(motif, graph) attention·prob as the score;
+        # OWN impact broadcasts that motif-level per-graph score to the nodes as W.
+        _mage_pi = explainer_node_atts.get('mage_official_per_instance')
+        if _mage_pi:
+            for _gi in range(len(test_list)):
+                _d = test_list[_gi]
+                _n2m = getattr(_d, 'nodes_to_motifs', None)
+                if _n2m is None:
+                    continue
+                _n2m = _n2m.view(-1).cpu()
+                _w = torch.zeros(_n2m.numel())
+                for _mid, _gmap in _mage_pi.items():
+                    _val = _gmap.get(_gi)
+                    if _val is not None:
+                        _w[_n2m == _mid] = float(_val)
+                setattr(_d, '_pi_att', _w)
+            _record('mage_official', _mage_pi, _own_impact_from_attr())
+
     # ── Per-explainer GT-ROC (node & edge) ─────────────────────────────────────
     # The vanilla model has no intrinsic node attention, so its GT-ROC comes from
     # each post-hoc explainer: broadcast the explainer's per-motif score onto its
@@ -697,7 +752,7 @@ def run(cfg: VanillaConfig) -> dict:
         _gt_roc_list = _gt_eval if _gt_eval is not None else test_list
         _gt_roc_list_all = (_gt_eval_all if _gt_eval_all is not None
                             else all_list)
-        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion'):
+        for _ex in ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official'):
             for _agg in ('mean', 'max'):
                 _sc = results.get(f'{_ex}_{_agg}', {})
                 if not _sc:
@@ -909,6 +964,16 @@ def main():
     parser.add_argument('--no_motif_occlusion', action='store_true',
                         help='Skip the Motif-Occlusion baseline (formerly '
                              'mislabelled "MAGE"; renamed --no_mage).')
+    parser.add_argument('--no_mage_official',  action='store_true',
+                        help='Skip the official MAGE Stage-2 attention scorer '
+                             '(arXiv 2405.12519). Identifier "mage_official" so '
+                             'its outputs never collide with legacy mage_* dirs.')
+    parser.add_argument('--mage_official_positive_class', type=int, default=1,
+                        help='MAGE (official): S_cm class column exposed as the '
+                             'per-motif score (default 1; mutag TUDataset uses 0).')
+    parser.add_argument('--mage_official_predicted_class', action='store_true',
+                        help="MAGE (official): collapse S_cm with each graph's own "
+                             'predicted class instead of the fixed positive-class column.')
     parser.add_argument('--use_wandb',       action='store_true',
                         help='Initialise a W&B run and log the final summary.')
     parser.add_argument('--wandb_project',   default='ChemIntuit')
@@ -965,6 +1030,9 @@ def main():
         gnnex_epochs=gnnex_epochs,
         pgex_max_graphs=pgex_max,
         run_motif_occlusion=not args.no_motif_occlusion,
+        run_mage_official=not args.no_mage_official,
+        mage_official_positive_class=args.mage_official_positive_class,
+        mage_official_predicted_class=args.mage_official_predicted_class,
         reuse_explainer_scores=args.reuse_explainer_scores,
         load_weights_from=args.load_weights_from,
         weight_vocab_variant=args.weight_vocab_variant,
