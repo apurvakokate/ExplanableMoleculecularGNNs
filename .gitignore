@@ -51,3 +51,5 @@ analysis/build_vocab_report.py
 analysis/vocab_report.html
 
 sweep/
+# Agent instruction file — local only, not part of the repository
+CLAUDE.md

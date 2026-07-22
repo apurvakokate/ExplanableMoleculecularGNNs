@@ -128,6 +128,7 @@ def train_gsat(
     verbose: bool = True,
     viz_logger: Optional['EmbeddingVizLogger'] = None,
     wandb_logger: Optional['WandbLogger'] = None,
+    epoch_hook: Optional['Callable[[object, int], None]'] = None,
 ) -> Tuple[object, Dict]:
     """Full MotifSAT training loop.
 
@@ -171,6 +172,10 @@ def train_gsat(
         val_m = evaluate_predictions(model, loaders['valid'], device, task_type)
         val_score = _val_score(val_m, task_type)
         history.setdefault('val_metric', []).append(val_score)
+
+        # Per-epoch explainability telemetry (auxiliary; never raises).
+        if epoch_hook is not None:
+            epoch_hook(model, epoch)
 
         # Smoothed validation task loss (early-stop / scheduler signal).
         vloss = _val_task_loss(model, criterion, loaders['valid'], device,

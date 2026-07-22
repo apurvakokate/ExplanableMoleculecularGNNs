@@ -326,7 +326,14 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
                                 if k in MOSEConfig.__dataclass_fields__
                                 and v is not None})
             test_list, task_type, dmeta, vocab = _load_test_list(cfg, vocab_root)
-            model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta)
+            # Mirror MOSE run.py:134-137 — the model's motif_params is sized by the
+            # FOLD's kept_motif_ids (filtered vocab), not the total motif count. Without
+            # this a *_filter checkpoint (kept<<total) fails to load with a size mismatch.
+            _fold_kept = getattr(dmeta, 'kept_motif_ids', None)
+            _kept_ids = (_fold_kept if _fold_kept is not None
+                         else getattr(vocab, 'kept_motif_ids', None))
+            model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta,
+                                         kept_motif_ids=_kept_ids)
         else:
             _purge_trainer_modules()
             _prepend_trainer_path(_REPO / 'MotifSAT')

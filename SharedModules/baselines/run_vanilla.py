@@ -106,6 +106,7 @@ class VanillaConfig:
     # explainers can be scored with GT-ROC.
     use_gt: bool = False
     gt_cache: Optional[str] = None
+    gt_tier: Optional[str] = None  # difficulty tier → load relabel_<tier>/ (easy/medium/hard)
 
     # mutag motif-annotation artifacts (optional overrides; default to the
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).
@@ -188,10 +189,12 @@ def run(cfg: VanillaConfig) -> dict:
     # on/eval against the same rule target as MOSE-GNN / MotifSAT, and the test
     # graphs carry node_label/edge_label for post-hoc explainer GT-ROC.
     if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
+        _gt_tier = getattr(cfg, 'gt_tier', None)
         loaders, test_ds = apply_gt_loaders(
             loaders, test_ds,
             gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
             vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
+            gt_relabel_dir=(f'relabel_{_gt_tier}' if _gt_tier else None),
         )
 
     from SharedModules.data.loader import NUM_CLASSES, resolve_node_encoder
@@ -295,7 +298,8 @@ def run(cfg: VanillaConfig) -> dict:
                 if cfg.dataset == 'mutag' else None)
     _gt_eval_all = (mutag_gt_eval_graphs(all_list)
                     if cfg.dataset == 'mutag' else None)
-    from SharedModules.evaluation.pipeline import EvalPipeline, explainability_summary_fields
+    from SharedModules.evaluation.pipeline import (
+        EvalPipeline, explainability_summary_fields, _has_node_attr)
     pipeline = EvalPipeline(
         model, vocab, loaders['test'], test_list, device, task_type,
         max_motifs_eval=cfg.max_motifs_eval,
@@ -770,6 +774,19 @@ def run(cfg: VanillaConfig) -> dict:
                                          node_att_fn=_fn, level='edge')
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_node_auc_mean_all'] = _gn_all['auc_mean']
                 explainer_metrics[f'{_ex}_{_agg}_gt_roc_edge_auc_mean_all'] = _ge_all['auc_mean']
+                # Mode-2 (fired-clause) GT-ROC + spurious-shortcut ROC for the post-hoc
+                # explainer, guarded on the attr's presence (else compute_gt_roc falls
+                # back to the rule-derived edge mask and mislabels the metric).
+                for _attr, _mkey in (('node_label_fired', 'gt_roc_node_fired'),
+                                     ('node_label_spurious', 'spurious_roc_node')):
+                    if _has_node_attr(_gt_roc_list, _attr):
+                        _r = compute_gt_roc(model, _gt_roc_list, device,
+                                            node_att_fn=_fn, level='node', gt_attr=_attr)
+                        explainer_metrics[f'{_ex}_{_agg}_{_mkey}_auc_mean'] = _r['auc_mean']
+                    if _has_node_attr(_gt_roc_list_all, _attr):
+                        _ra = compute_gt_roc(model, _gt_roc_list_all, device,
+                                             node_att_fn=_fn, level='node', gt_attr=_attr)
+                        explainer_metrics[f'{_ex}_{_agg}_{_mkey}_auc_mean_all'] = _ra['auc_mean']
 
     summary = {
         'dataset':          cfg.dataset,
@@ -984,6 +1001,10 @@ def main():
     parser.add_argument('--gt_cache',        default=None,
                         help='Path to gt_cache directory written by phase4 '
                              '(SharedModules/data/apply_gt.py).')
+    parser.add_argument('--gt_tier',         default=None,
+                        choices=['easy', 'medium', 'hard'],
+                        help='Load a difficulty tier (relabel_<tier>/) instead of '
+                             'the single-rule relabel1/ cache.')
     parser.add_argument('--mutag_index_maps_path', default=None,
                         help='mutag only: override path to '
                              'mutag_<fold>_index_maps.pkl (default: convention '
@@ -1042,6 +1063,7 @@ def main():
         wandb_entity=args.wandb_entity,
         use_gt=args.use_gt,
         gt_cache=args.gt_cache,
+        gt_tier=args.gt_tier,
         mutag_index_maps_path=args.mutag_index_maps_path,
         mutag_smiles_csv_path=args.mutag_smiles_csv_path,
         mutag_splits_path=args.mutag_splits_path,

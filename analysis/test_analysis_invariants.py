@@ -125,10 +125,38 @@ class TestAnalysisInvariants(unittest.TestCase):
         self.assertEqual(out.iloc[0]['synthetic'], 'gt')
 
     def test_parse_vocab_variant_splits_filter_and_relabel(self):
-        """E10: bundled vocab_variant splits into base + flags."""
+        """E10: bundled vocab_variant splits into base + flags + difficulty tier."""
         self.assertEqual(parse_vocab_variant('rbrics_old_filter_relabelled'),
-                         ('rbrics_old', True, True))
-        self.assertEqual(parse_vocab_variant('all_fallback_bpe'), ('all_fallback_bpe', False, False))
+                         ('rbrics_old', True, True, 'none'))
+        self.assertEqual(parse_vocab_variant('all_fallback_bpe'),
+                         ('all_fallback_bpe', False, False, 'none'))
+        # difficulty tiers (RULE_TIERS=1): tier stripped, still relabelled
+        self.assertEqual(parse_vocab_variant('fg_first_relabelled_easy'),
+                         ('fg_first', False, True, 'easy'))
+        self.assertEqual(parse_vocab_variant('rbrics_filter_relabelled_hard'),
+                         ('rbrics', True, True, 'hard'))
+        # a bare '_easy' NOT preceded by _relabelled must NOT be treated as a tier
+        self.assertEqual(parse_vocab_variant('some_easy'),
+                         ('some_easy', False, False, 'none'))
+
+    def test_normalize_tier_from_gt_tier_field(self):
+        """GT-tier runs keep vocab_variant=<base> (for loading); the tier axis comes
+        from the authoritative gt_tier summary field, NOT the variant name."""
+        import pandas as pd
+        base = dict(dataset='BBBP', backbone='GIN', fold=0, vocab_variant='fg_first',
+                    node_encoder='onehot', conv_normalize='none', epochs=2,
+                    w_feat=1, w_message=0, w_readout=1)
+        df = normalize(pd.DataFrame([
+            dict(family='mose', use_gt=True,  gt_tier='easy',
+                 exp_dir='mose/fg_first_relabelled_easy/BBBP/fold0/x', **base),
+            dict(family='mose', use_gt=True,  gt_tier='hard',
+                 exp_dir='mose/fg_first_relabelled_hard/BBBP/fold0/x', **base),
+            dict(family='mose', use_gt=False, gt_tier=None,
+                 exp_dir='mose/fg_first/BBBP/fold0/x', **base),
+        ]))
+        self.assertEqual(list(df['tier']), ['easy', 'hard', 'none'])
+        self.assertEqual(list(df['is_relabelled']), [True, True, False])
+        self.assertEqual(list(df['synthetic']), ['gt', 'gt', 'real'])
 
     def test_filter_prediction_drops_baselines(self):
         """E8: baselines duplicate vanilla predictive metrics."""

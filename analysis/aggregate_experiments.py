@@ -153,18 +153,32 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
-def parse_vocab_variant(vv: str) -> tuple[str, bool, bool]:
-    """Split bundled vocab_variant into base name, filter flag, relabel flag (E10)."""
+_RULE_TIERS = ('easy', 'medium', 'hard')
+
+
+def parse_vocab_variant(vv: str) -> tuple[str, bool, bool, str]:
+    """Split bundled vocab_variant into (base, is_filter, is_relabelled, tier).
+
+    Suffix order (outermost last): ``{base}[_filter]_relabelled[_<tier>]``. The
+    difficulty tier (easy/medium/hard, from RULE_TIERS=1) is only valid directly
+    after ``_relabelled``; it is stripped first, then ``_relabelled``, then
+    ``_filter``. ``tier`` is ``'none'`` for a non-tiered (single-best-rule) run."""
     v = (vv or '').strip()
     is_relabelled = False
     is_filter = False
+    tier = 'none'
+    for _t in _RULE_TIERS:
+        if v.endswith(f'_relabelled_{_t}'):
+            tier = _t
+            v = v[:-len(f'_{_t}')]          # drop the tier, leaving …_relabelled
+            break
     if v.endswith('_relabelled'):
         is_relabelled = True
         v = v[:-len('_relabelled')]
     if v.endswith('_filter'):
         is_filter = True
         v = v[:-len('_filter')]
-    return v, is_filter, is_relabelled
+    return v, is_filter, is_relabelled, tier
 
 
 def _config_sig(exp_dir: str) -> str:
@@ -266,6 +280,18 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df['vocab_base'] = parsed.map(lambda t: t[0])
     df['is_filter'] = parsed.map(lambda t: t[1])
     df['is_relabelled'] = parsed.map(lambda t: t[2])
+    # Difficulty tier: prefer the authoritative `gt_tier` summary field (the tier is
+    # NOT in vocab_variant — that stays the base vocab for loading). Fall back to any
+    # `_relabelled_<tier>` suffix parsed from the variant name (legacy path-encoded).
+    _parsed_tier = parsed.map(lambda t: t[3])        # easy/medium/hard or 'none'
+    if 'gt_tier' in df.columns:
+        _field_tier = df['gt_tier'].astype(str).str.strip().str.lower()
+        _field_tier = _field_tier.where(_field_tier.isin(_RULE_TIERS), other='none')
+        df['tier'] = _field_tier.where(_field_tier != 'none', _parsed_tier)
+    else:
+        df['tier'] = _parsed_tier
+    # A GT-tier run is relabelled even though its vocab_variant is the base name.
+    df['is_relabelled'] = df['is_relabelled'] | (df['tier'] != 'none')
     df['threshold'] = df['is_filter'].map(lambda x: 'on' if x else 'off')
     df['fragmentation'] = df['vocab_base']
 

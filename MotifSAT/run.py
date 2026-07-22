@@ -275,10 +275,12 @@ def run(cfg: MotifSATConfig) -> dict:
     # model trains on/eval against the rule label. pos_weights are recomputed
     # below from the GT training distribution.
     if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
+        _gt_tier = getattr(cfg, 'gt_tier', None)
         loaders, test_ds = apply_gt_loaders(
             loaders, test_ds,
             gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
             vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
+            gt_relabel_dir=(f'relabel_{_gt_tier}' if _gt_tier else None),
         )
 
     # Model
@@ -383,6 +385,9 @@ def run(cfg: MotifSATConfig) -> dict:
         model = model.to(device)
         history = {}
     else:
+        from SharedModules.evaluation.training_tracker import build_from_loaders as _build_expl_tracker
+        _expl_tracker, _expl_logger = _build_expl_tracker(
+            loaders, vocab, device, str(out_dir), task_type, split='valid')
         model, history = train_gsat(
             model, loaders, task_type, device,
             epochs=cfg.epochs,
@@ -398,7 +403,10 @@ def run(cfg: MotifSATConfig) -> dict:
             verbose=cfg.verbose,
             viz_logger=viz_logger,
             wandb_logger=wandb_logger,
+            epoch_hook=_expl_tracker,
         )
+        if _expl_logger is not None:
+            _expl_logger.close()
 
     # Evaluate all splits. For regression, also report MAE/RMSE in the original
     # target units (denormalised via the train z-score std).
@@ -693,6 +701,10 @@ def main():
                              "model trains on the rule-derived synthetic label")
     parser.add_argument("--gt_cache",        default=None,
                         help="Path to gt_cache directory written by phase4")
+    parser.add_argument("--gt_tier",         default=None,
+                        choices=['easy', 'medium', 'hard'],
+                        help="Load a difficulty tier (relabel_<tier>/) instead of "
+                             "the single-rule relabel1/ cache.")
     parser.add_argument("--mutag_index_maps_path", default=None,
                         help="mutag only: override path to "
                              "mutag_<fold>_index_maps.pkl (default: convention "
@@ -772,6 +784,7 @@ def main():
             wandb_entity=args.wandb_entity,
             use_gt=args.use_gt,
             gt_cache=args.gt_cache,
+            gt_tier=args.gt_tier,
             mutag_index_maps_path=args.mutag_index_maps_path,
             mutag_smiles_csv_path=args.mutag_smiles_csv_path,
             mutag_splits_path=args.mutag_splits_path,

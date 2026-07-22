@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Set
 
+import logging
 import pandas as pd
 import torch
 
@@ -34,6 +35,14 @@ from .motif_eval import (
     top_motifs_discriminative_check,
     _impact_values,
 )
+
+
+def _has_node_attr(graphs, attr: str) -> bool:
+    """True iff at least one graph carries a non-None ``attr`` (e.g.
+    node_label_fired / node_label_spurious). Used to gate the Mode-2 and spurious
+    ROC so compute_gt_roc is never given a missing attr — which would silently
+    fall back to the edge_label-derived (rule) mask and mislabel the metric."""
+    return any(getattr(g, attr, None) is not None for g in graphs)
 
 
 def explainability_summary_fields(
@@ -95,15 +104,26 @@ def explainability_summary_fields(
     gt_edge = results.get(f'gt_roc_edge_{tag}' if tag else 'gt_roc_edge', {})
     gt_nm   = results.get(f'gt_roc_node_mean_{tag}' if tag else 'gt_roc_node_mean', {})
     gt_nx   = results.get(f'gt_roc_node_max_{tag}' if tag else 'gt_roc_node_max', {})
+    gt_fired = results.get(f'gt_roc_node_fired_{tag}' if tag else 'gt_roc_node_fired', {})
+    spur    = results.get(f'spurious_roc_node_{tag}' if tag else 'spurious_roc_node', {})
 
     fields = _corr_block()
     fields.update({
         f'gt_roc_auc_mean{suffix}':            gt.get('auc_mean', nan),
         f'gt_roc_n_graphs{suffix}':            gt.get('n_graphs', 0),
+        # Mode 1 (whole-rule) node GT-ROC
         f'gt_roc_node_auc_mean{suffix}':       gt_node.get('auc_mean', nan),
         f'gt_roc_node_mean_auc_mean{suffix}':  gt_nm.get('auc_mean', nan),
         f'gt_roc_node_max_auc_mean{suffix}':   gt_nx.get('auc_mean', nan),
         f'gt_roc_edge_auc_mean{suffix}':       gt_edge.get('auc_mean', nan),
+        # Mode 2 (fired-clause / OR-aware) node GT-ROC
+        f'gt_roc_node_fired_auc_mean{suffix}': gt_fired.get('auc_mean', nan),
+        f'gt_roc_node_fired_n_graphs{suffix}': gt_fired.get('n_graphs', 0),
+        # Spurious-shortcut ROC — explanation vs strongest non-GT motif (high = fooled)
+        f'spurious_roc_node_auc_mean{suffix}': spur.get('auc_mean', nan),
+        f'spurious_roc_node_n_graphs{suffix}': spur.get('n_graphs', 0),
+        f'within_motif_var{suffix}':  results.get(f'within_motif_var_{tag}' if tag else 'within_motif_var', nan),
+        f'between_motif_var{suffix}': results.get(f'between_motif_var_{tag}' if tag else 'between_motif_var', nan),
     })
     return fields
 
@@ -256,6 +276,32 @@ class EvalPipeline:
                     node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
                     level='node',
                 )
+            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious-shortcut ROC. Both are
+            # guarded on the attr actually being present — otherwise compute_gt_roc would
+            # silently fall back to the edge_label-derived (rule) mask and mislabel them.
+            if _has_node_attr(gt_graphs, 'node_label_fired'):
+                block['gt_roc_node_fired'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_fired')
+            if _has_node_attr(gt_graphs, 'node_label_spurious'):
+                block['spurious_roc_node'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_spurious')
+
+        # Motif-attention coherence (within/between-motif variance) — a property of the model's
+        # attention, independent of GT. within ≈ 0 for MotifSAT (motif-coherent by construction),
+        # > 0 for GSAT (per-node). Logged for every family so the MotifSAT-vs-GSAT table is automatic.
+        try:
+            from .motif_coherence import motif_attention_coherence
+            _catt = self.node_att_fn or model_node_att_fn(self.model, self.device)
+            _coh = motif_attention_coherence(self.model, data_list, self.device, _catt)
+            block['within_motif_var'] = _coh['within_motif_var']
+            block['between_motif_var'] = _coh['between_motif_var']
+        except Exception as _e:
+            logging.getLogger(__name__).warning("motif_attention_coherence failed: %s", _e)
+            raise
 
         if run_motif_impact and motif_scores is not None:
             impacts = compute_motif_impact(
@@ -345,9 +391,30 @@ class EvalPipeline:
                     node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
                     level='node',
                 )
+            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious-shortcut ROC, guarded on
+            # the attr being present (else compute_gt_roc falls back to the rule mask).
+            if _has_node_attr(_gt, 'node_label_fired'):
+                results['gt_roc_node_fired'] = compute_gt_roc(
+                    self.model, _gt, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_fired')
+            if _has_node_attr(_gt, 'node_label_spurious'):
+                results['spurious_roc_node'] = compute_gt_roc(
+                    self.model, _gt, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_spurious')
 
-
-
+        # Motif-attention coherence (within/between-motif variance) — model attention structure,
+        # independent of GT. within ≈ 0 for MotifSAT (motif-coherent), > 0 for GSAT (per-node).
+        try:
+            from .motif_coherence import motif_attention_coherence
+            _catt = self.node_att_fn or model_node_att_fn(self.model, self.device)
+            _coh = motif_attention_coherence(self.model, self.test_list, self.device, _catt)
+            results['within_motif_var'] = _coh['within_motif_var']
+            results['between_motif_var'] = _coh['between_motif_var']
+        except Exception as _e:
+            logging.getLogger(__name__).warning("motif_attention_coherence failed: %s", _e)
+            raise
 
         # 3. Motif removal impact
         if run_motif_impact:

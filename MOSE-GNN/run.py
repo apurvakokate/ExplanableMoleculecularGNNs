@@ -120,11 +120,13 @@ def run(cfg: MOSEConfig) -> dict:
     # below from the GT training distribution.
     if getattr(cfg, 'use_gt', False) and getattr(cfg, 'gt_cache', None):
         _gt_vocab = getattr(cfg, 'gt_vocab_variant', None) or cfg.vocab_variant
+        _gt_tier = getattr(cfg, 'gt_tier', None)
         loaders, test_ds = apply_gt_loaders(
             loaders, test_ds,
             gt_cache=cfg.gt_cache, dataset=cfg.dataset, fold=cfg.fold,
             vocab_variant=cfg.vocab_variant, batch_size=cfg.batch_size,
             gt_vocab_variant=_gt_vocab,
+            gt_relabel_dir=(f'relabel_{_gt_tier}' if _gt_tier else None),
             refresh_vocab=vocab if _gt_vocab != cfg.vocab_variant else None,
             fold_motif_lookup=getattr(meta, 'motif_lookup', None),
             apply_threshold=getattr(meta, 'threshold_pct', None) is not None,
@@ -234,6 +236,9 @@ def run(cfg: MOSEConfig) -> dict:
         model = model.to(device)
         history = {}
     else:
+        from SharedModules.evaluation.training_tracker import build_from_loaders as _build_expl_tracker
+        _expl_tracker, _expl_logger = _build_expl_tracker(
+            loaders, vocab, device, str(out_dir), task_type, split='valid')
         model, history = train_mose_gnn(
             model, loaders, task_type, device,
             epochs=cfg.epochs, lr=cfg.lr,
@@ -250,7 +255,10 @@ def run(cfg: MOSEConfig) -> dict:
             verbose=cfg.verbose,
             viz_logger=viz_logger,
             wandb_logger=wandb_logger,
+            epoch_hook=_expl_tracker,
         )
+        if _expl_logger is not None:
+            _expl_logger.close()
 
     # Evaluate all splits (train / valid / test). For regression, also report
     # MAE/RMSE in the original target units (denormalised via the train z-score
@@ -444,6 +452,10 @@ def main():
                         help='Load ground-truth relabelled graphs from gt_cache')
     parser.add_argument('--gt_cache',    default=None,
                         help='Path to gt_cache directory written by phase4')
+    parser.add_argument('--gt_tier',     default=None,
+                        choices=['easy', 'medium', 'hard'],
+                        help='Load a difficulty tier (relabel_<tier>/) instead of '
+                             'the single-rule relabel1/ cache.')
     parser.add_argument('--gt_vocab_variant', default=None,
                         help='Base vocab variant for gt_cache lookup when '
                              'training on a *_filter vocab.')
@@ -531,6 +543,7 @@ def main():
             wandb_entity=args.wandb_entity,
             use_gt=args.use_gt, gt_cache=args.gt_cache,
             gt_vocab_variant=args.gt_vocab_variant,
+            gt_tier=args.gt_tier,
             mutag_index_maps_path=args.mutag_index_maps_path,
             mutag_smiles_csv_path=args.mutag_smiles_csv_path,
             mutag_splits_path=args.mutag_splits_path,

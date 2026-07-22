@@ -988,6 +988,7 @@ def apply_gt_loaders(
     relabel: bool = True,
     verbose: bool = True,
     gt_vocab_variant: Optional[str] = None,
+    gt_relabel_dir: Optional[str] = None,
     refresh_vocab: Optional[VocabData] = None,
     refresh_index_maps: Optional[Dict] = None,
     fold_motif_lookup: Optional[Dict] = None,
@@ -1032,9 +1033,13 @@ def apply_gt_loaders(
     -------
     (loaders, test_ds) with GT-backed entries substituted.
     """
+    # gt_relabel_dir overrides the relabel subtree — used for difficulty tiers
+    # (relabel_easy/relabel_medium/relabel_hard from apply_gt.py --tier). When
+    # None, fall back to the single-rule relabel1/relabel0 subtree.
+    _relabel_seg = gt_relabel_dir or ('relabel1' if relabel else 'relabel0')
     gt_base = (Path(gt_cache) / dataset / f'fold{fold}'
                / (gt_vocab_variant or vocab_variant)
-               / ('relabel1' if relabel else 'relabel0'))
+               / _relabel_seg)
     gt_loaded: Dict[str, list] = {}
     gt_missing: List[str] = []
     _lookup_split = {'train': 'training', 'valid': 'valid', 'test': 'test'}

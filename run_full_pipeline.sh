@@ -41,8 +41,11 @@ SUBMIT=0
 # Record whether the user explicitly set VOCAB_FOCUS *before* we apply a default,
 # so we can auto-add protected vocabs for mutag only when they didn't override it.
 _VOCAB_FOCUS_USER_SET="${VOCAB_FOCUS+set}"
-export VOCAB_FOCUS="${VOCAB_FOCUS:-rbrics,all_fallback_bpe}"
+export VOCAB_FOCUS="${VOCAB_FOCUS:-rbrics,fg_first}"
 export RULE_INDEX="${RULE_INDEX:-0}"
+# Difficulty tiers are the REQUIRED recipe (single best rule deprecated): phase1
+# emits rule_tiers.json, phase4 relabels easy/medium/hard, phase5 trains all three.
+export RULE_TIERS="${RULE_TIERS:-1}"
 export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 
 # ── SLURM (for "submit" only) ───────────────────────────────────────────────
@@ -75,7 +78,7 @@ done
 # nitro/aniline toxicophore experiment). Other datasets stay standard-only, and an
 # explicit user-set VOCAB_FOCUS is always respected.
 if [ "$DATASET" = "mutag" ] && [ -z "$_VOCAB_FOCUS_USER_SET" ]; then
-    export VOCAB_FOCUS="rbrics,all_fallback_bpe,rbrics_protected,all_fallback_bpe_protected"
+    export VOCAB_FOCUS="rbrics,fg_first,rbrics_protected"
     echo "# mutag: VOCAB_FOCUS auto-set to standard + protected → $VOCAB_FOCUS"
 fi
 
@@ -181,12 +184,18 @@ PHASES+=(
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase5_vanilla_gt phase5_baselines_gt )
 fi
+# Post-hoc analyses on the phase-5 checkpoints (no retraining). Default ON; set RUN_POSTHOC=0 to skip.
+#   multi_explanation  — H0/H1/H2 co-occurrence ratios on MOSE/MotifSAT/GSAT
+#   probe_masked_nodes — masked-node feature probe (gated vs raw)
+if [ "${RUN_POSTHOC:-1}" = "1" ]; then
+    PHASES+=( multi_explanation probe_masked_nodes )
+fi
 
 run_pipeline() {
   echo "############################################################"
   echo "# FULL PIPELINE — dataset=$DATASET   mode=$MODE   fresh=$FRESH"
   echo "#   VOCAB_FOCUS=$VOCAB_FOCUS  FOLDS='$FOLDS'  BACKBONES='$BACKBONES'"
-  echo "#   EPOCHS=$EPOCHS  MOSE_BASE=$MOSE_BASE  RULE_INDEX=$RULE_INDEX"
+  echo "#   EPOCHS=$EPOCHS  MOSE_BASE=$MOSE_BASE  RULE_INDEX=$RULE_INDEX  RULE_TIERS=$RULE_TIERS"
   echo "#   MOSE_CONV_NORMALIZE=$MOSE_CONV_NORMALIZE"
   echo "#   SKIP_PHASE0=$SKIP_PHASE0  FAIL_FAST=$FAIL_FAST  DATASETS_CSV='${DATASETS_CSV:-}'"
   echo "#   SKIP_EXISTING=${SKIP_EXISTING:-?}  WANDB_MODE=$WANDB_MODE"

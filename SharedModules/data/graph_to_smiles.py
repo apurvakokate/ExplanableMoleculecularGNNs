@@ -614,12 +614,17 @@ def apply_motif_lookup_with_index_map(
         if entry is not None:
             ntm[graph_idx] = entry[1]   # motif_id
 
-    # Propagate motifs onto the unmapped (hydrogen) nodes from their bonded heavy
-    # atom. Iterate to fixpoint so H reachable only through an H-chain still
-    # inherit a heavy atom's motif; H in a component with no heavy atom (rare,
-    # anomalous) stay -1.
+    # Propagate motifs onto the unmapped HYDROGEN nodes from their bonded heavy atom.
+    # Only nodes ABSENT from the index_map (g2s) are propagated: every heavy atom is in
+    # g2s, so a heavy atom whose motif is UNK (motif_id -1, e.g. below the frequency
+    # threshold or missing from the vocab) is AUTHORITATIVE and must stay -1 — it must
+    # NOT steal an adjacent kept motif (that would corrupt the node->motif partition and
+    # every occlusion / GT mask built from it). H nodes (never in g2s) inherit their
+    # bonded heavy atom's motif. Iterate to fixpoint so H reachable only through an
+    # H-chain still inherit; an H whose only heavy neighbour is itself UNK stays -1.
     if edge_index is not None and bool((ntm < 0).any()):
         from collections import defaultdict
+        mapped_nodes = set(g2s.keys())          # heavy atoms — never re-propagate these
         adj = defaultdict(list)
         src = edge_index[0].tolist()
         dst = edge_index[1].tolist()
@@ -629,7 +634,7 @@ def apply_motif_lookup_with_index_map(
         while changed:
             changed = False
             for h in range(n_nodes):
-                if int(ntm[h]) >= 0:
+                if int(ntm[h]) >= 0 or h in mapped_nodes:
                     continue
                 for nb in adj[h]:
                     if int(ntm[nb]) >= 0:

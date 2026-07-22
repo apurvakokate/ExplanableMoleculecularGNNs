@@ -426,7 +426,7 @@ def step_collect(args) -> int:
 
     core = [c for c in ['results_root', 'exp_dir', 'config_sig',
                         'family', 'dataset', 'backbone', 'vocab_variant',
-                        'vocab_base', 'is_filter', 'is_relabelled', 'use_gt',
+                        'vocab_base', 'is_filter', 'is_relabelled', 'tier', 'use_gt',
                         'node_encoder',
                         *ALL_AXES, 'fold',
                         'motif_method', 'noise', 'info_loss_coef',

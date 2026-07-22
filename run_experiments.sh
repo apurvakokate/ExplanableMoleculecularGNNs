@@ -60,6 +60,19 @@ CONV_NORMALIZE="${CONV_NORMALIZE:-none}"
 MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
+# Difficulty tiers. RULE_TIERS=1 makes phase1 emit rule_tiers.json (--rule_tiers),
+# phase4 relabel easy/medium/hard into relabel_<tier>/, and phase5 GT trainers train
+# all three tiers (out dirs suffixed _<tier>). RULE_TIERS=0 (default) is the legacy
+# single-best-rule path (relabel1/, no suffix) — the helpers below are byte-identical
+# to the old behaviour when GT_TIER is empty, so this change is inert unless opted in.
+RULE_TIERS="${RULE_TIERS:-1}"               # difficulty tiers are the REQUIRED recipe (single rule deprecated)
+GT_TIER="${GT_TIER:-}"                       # set per-iteration by the phase4/5 drivers
+# tier list for driver loops; "-" is the single-rule sentinel (→ empty GT_TIER).
+_gt_tier_list()   { if [ "$RULE_TIERS" = "1" ]; then echo "easy medium hard"; else echo "-"; fi; }
+_gt_relabel_dir() { [ -n "$GT_TIER" ] && echo "relabel_${GT_TIER}" || echo "relabel1"; }
+_gt_tier_flag()   { [ -n "$GT_TIER" ] && echo "--gt_tier ${GT_TIER}"; }
+_gt_tier_suffix() { [ -n "$GT_TIER" ] && echo "_${GT_TIER}"; }
+_gt_syn_tag()     { [ -n "$GT_TIER" ] && echo "gt_${GT_TIER}" || echo "gt"; }
 # Optional phase4/5 subset: comma-separated short names, e.g. rbrics,all_fallback_bpe
 # Aliases: old→rbrics_old  struct|struct_fallback→rbrics_with_struct_fallback  all|v4→all_fallback_bpe
 # Unset = all four base fragmentation variants.
@@ -132,6 +145,8 @@ V_OLD="rbrics_old"               # method=rbrics_old, CreateMotifVocab plot path
 V_RBRICS="rbrics"                # method=rbrics, no structural fallback, no BPE
 V_RBRICS_SF="rbrics_with_struct_fallback"  # method=rbrics + structural fallback
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
+V_FG_FIRST="fg_first"            # method=fg_first_mdl (final design: canonical rings + frag_key
+                                 # + whole_ring_systems + MDL freeze=rings + whole-molecule fold)
 V_RBRICS_PROT="rbrics_protected"          # method=rbrics + FG protection (nitro+aniline)
 V_ALL_PROT="all_fallback_bpe_protected"   # method=all,fallback,BPE + FG protection
 # V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
@@ -145,7 +160,7 @@ V_RBRICS_PROT_TH="rbrics_protected_filter"          # FG-protected + threshold
 V_ALL_PROT_TH="all_fallback_bpe_protected_filter"   # FG-protected + threshold
 
 # GT-relabelled out_dir suffix (from phase4): {base_variant}_relabelled
-_gt_variant_name() { echo "${1}_relabelled"; }
+_gt_variant_name() { echo "${1}_relabelled$(_gt_tier_suffix)"; }
 
 # ── VOCAB_FOCUS — subset phase4/5 to selected fragmentation algorithms ────────
 _vocab_focus_resolve_one() {
@@ -156,6 +171,7 @@ _vocab_focus_resolve_one() {
         rbrics_with_struct_fallback|struct_fallback|struct)
                                      echo "$V_RBRICS_SF" ;;
         all_fallback_bpe|all|v4)   echo "$V_ALL" ;;
+        fg_first|fg_first_mdl|fgfirst|fg)   echo "$V_FG_FIRST" ;;
         rbrics_protected|rbrics_prot)         echo "$V_RBRICS_PROT" ;;
         all_fallback_bpe_protected|all_protected|v4_protected|protected)
                                      echo "$V_ALL_PROT" ;;
@@ -168,7 +184,7 @@ _vocab_focus_resolve_one() {
 
 _vocab_focus_base_variants() {
     if [ -z "$VOCAB_FOCUS" ]; then
-        echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL"
+        echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL $V_FG_FIRST"
         return
     fi
     local resolved="" token v
@@ -223,7 +239,7 @@ _baseline_weight_variant() {
 
 _gt_split_cached() {
     local variant=$1 ds=$2 fold=$3 split=${4:-train}
-    [ -f "$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/relabel1/${split}_with_gt.pt" ]
+    [ -f "$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/$(_gt_relabel_dir)/${split}_with_gt.pt" ]
 }
 
 # ── Dataset routing (Mutagenicity CSV ≠ mutag TUDataset; OGB uses fold 0) ─────
@@ -317,7 +333,7 @@ _phase2_variant_done() {
 
 _phase4_done() {
     local variant=$1 ds=$2 fold=$3
-    local base="$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/relabel1"
+    local base="$OUT_ROOT/gt_cache/$ds/fold${fold}/$variant/$(_gt_relabel_dir)"
     [ -f "$base/train_with_gt.pt" ] && \
     [ -f "$base/valid_with_gt.pt" ] && \
     [ -f "$base/test_with_gt.pt" ] && \
@@ -467,6 +483,7 @@ run_frag() {
             $( [ "$use_bpe"      = "1" ] && echo "--bpe" ) \
             $( [ "$use_shatter"  = "1" ] && echo "--shatter" ) \
             $( [ "$use_protect"  = "1" ] && echo "--protect" ) \
+            $( [ "$RULE_TIERS"   = "1" ] && echo "--rule_tiers" ) \
             --rule_rank "$RULE_RANK" \
             --fold 0
     done
@@ -602,9 +619,9 @@ run_vanilla_gt() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
-                local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" gt)"
+                local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
                 if _should_skip_existing && _run_dir_complete "$out_dir"; then
-                    echo "  [skip existing] Vanilla+GT $ds fold$eff_fold $backbone → $out_dir"
+                    echo "  [skip existing] Vanilla+GT $ds fold$eff_fold $backbone ${GT_TIER:+tier=$GT_TIER} → $out_dir"
                     n_skip=$((n_skip + 1))
                     continue
                 fi
@@ -618,7 +635,7 @@ run_vanilla_gt() {
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
-                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
                     --no_gnnexplainer --no_pgexplainer --no_motif_occlusion --no_mage_official \
@@ -754,7 +771,7 @@ run_gsat_gt() {
                     --noise           none \
                     --info_loss_level node \
                     --info_loss_coef  1.0 \
-                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --epochs          "$EPOCHS" \
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
@@ -887,8 +904,8 @@ run_baselines_gt() {
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
                 case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
-                local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" gt)"
-                local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$variant" "$backbone" gt)"
+                local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
+                local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
                 if [ ! -f "$wdir/best_model.pt" ]; then
                     echo "  [skip] $ds fold$eff_fold — no GT vanilla checkpoint: $wdir/best_model.pt"
                     continue
@@ -908,7 +925,7 @@ run_baselines_gt() {
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
                     --processed_root "$PROCESSED_ROOT" \
-                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --load_weights_from "$wdir" \
                     --weight_vocab_variant "$variant" \
                     --out_dir      "$out_dir" \
@@ -927,29 +944,35 @@ apply_gt() {
     # Write relabelled graph objects to gt_cache for CSV datasets × folds.
     # Honour DATASETS (single-dataset pipeline), not the full DATASETS_CSV list.
     local variant=$1 rule_idx=$2
-    local gt_ds
+    local gt_ds GT_TIER _t _rule_arg
     gt_ds=$(_phase5_gt_datasets)
     if [ -z "$gt_ds" ]; then
         echo "  [skip] no GT-supported dataset in DATASETS=$DATASETS"
         return 0
     fi
-    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx datasets:$gt_ds"
+    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx tiers=$(_gt_tier_list) datasets:$gt_ds"
     for ds in $gt_ds; do
         for fold in $FOLDS; do
-            if _should_skip_existing && _phase4_done "$variant" "$ds" "$fold"; then
-                echo "  [skip] $ds fold$fold / $variant — gt_cache exists"
-                continue
-            fi
-            python3 "$PROJECT/SharedModules/data/apply_gt.py" \
-                --dataset    "$ds" \
-                --fold       "$fold" \
-                --vocab_root "$VOCAB_ROOT" \
-                --variant    "$variant" \
-                --out_dir    "$OUT_ROOT/gt_cache" \
-                --rule_index "$rule_idx" \
-                --data_root  "$DATA_ROOT" \
-                --processed_root "$PROCESSED_ROOT" \
-             || { echo "  [error] apply_gt.py failed for $ds fold $fold — see output above"; exit 1; }
+            # One iteration per tier (RULE_TIERS=1) or one single-rule pass ("-").
+            for _t in $(_gt_tier_list); do
+                GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+                if _should_skip_existing && _phase4_done "$variant" "$ds" "$fold"; then
+                    echo "  [skip] $ds fold$fold / $variant / $(_gt_relabel_dir) — gt_cache exists"
+                    continue
+                fi
+                # tier → --tier <tier>; single-rule → --rule_index <n>
+                if [ -n "$GT_TIER" ]; then _rule_arg="--tier $GT_TIER"; else _rule_arg="--rule_index $rule_idx"; fi
+                python3 "$PROJECT/SharedModules/data/apply_gt.py" \
+                    --dataset    "$ds" \
+                    --fold       "$fold" \
+                    --vocab_root "$VOCAB_ROOT" \
+                    --variant    "$variant" \
+                    --out_dir    "$OUT_ROOT/gt_cache" \
+                    $_rule_arg \
+                    --data_root  "$DATA_ROOT" \
+                    --processed_root "$PROCESSED_ROOT" \
+                 || { echo "  [error] apply_gt.py failed for $ds fold $fold tier=${GT_TIER:-<single>} — see output above"; exit 1; }
+            done
         done
     done
 }
@@ -988,7 +1011,7 @@ run_mose_gt() {
                     --dataset      "$ds" --fold "$fold" \
                     --backbone     "$backbone" --node_encoder "$enc" \
                     --w_feat --w_readout \
-                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --gt_vocab_variant "$base_variant" \
                     --epochs       "$EPOCHS" \
                     --data_root    "$DATA_ROOT" \
@@ -1039,7 +1062,7 @@ run_motifsat_gt() {
                     --noise           motif \
                     --info_loss_level motif \
                     ${MOTIFSAT_INJ} \
-                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" \
+                    --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --epochs          "$EPOCHS" \
                     --data_root       "$ds_root" \
                     --vocab_root      "$VOCAB_ROOT" \
@@ -1151,6 +1174,10 @@ phase1() {
     _in_focus "$V_ALL" && {
         echo "1c. all_fallback_bpe  (full cascade, fallback, BPE)"
         run_frag all 1 1 "$V_ALL"; }
+
+    _in_focus "$V_FG_FIRST" && {
+        echo "1g. fg_first  (FG-first + MDL merge: canonical rings, frag_key, whole rings, freeze=rings)"
+        run_frag fg_first_mdl 0 0 "$V_FG_FIRST"; }
 
     # functional-group-protected variants (nitro + aniline carved as explicit motifs).
     # OPT-IN + focus-scoped: built only when VOCAB_FOCUS names the protected variant
@@ -1270,8 +1297,12 @@ phase4() {
         echo "  [skip] phase4 — no GT-supported dataset in DATASETS=$DATASETS"
         return 0
     fi
-    [ -z "$RULE_INDEX" ] && \
-        echo "ERROR: set RULE_INDEX first.  export RULE_INDEX=0" && exit 1
+    # Difficulty tiers are the required recipe; single best rule is deprecated.
+    if [ "$RULE_TIERS" != "1" ]; then
+        echo "ERROR: RULE_TIERS=1 is required — the single-best-rule recipe is deprecated." >&2
+        echo "       Unset RULE_TIERS (default 1) or export RULE_TIERS=1." >&2
+        exit 1
+    fi
 
     echo ""
     echo "══════════════════════════════════════════════════════════"
@@ -1305,10 +1336,10 @@ phase4() {
 # =============================================================================
 phase0_4() {
     _check_paths
-    if _phase5_has_gt_training && [ -z "$RULE_INDEX" ]; then
+    if _phase5_has_gt_training && [ "$RULE_TIERS" != "1" ] && [ -z "$RULE_INDEX" ]; then
         echo "ERROR: phase0_4 includes phase4 (synthetic GT) for:" \
              "$(_phase5_gt_datasets | tr '\n' ' ')"
-        echo "       Set RULE_INDEX first, e.g.  export RULE_INDEX=0"
+        echo "       Set RULE_INDEX first, e.g.  export RULE_INDEX=0  (or RULE_TIERS=1)"
         exit 1
     fi
     echo ""
@@ -1384,7 +1415,10 @@ phase5_mose() {
             echo "  [skip] MOSE+GT — synthetic GT MOSE uses filtered vocabs (MOSE_BASE=0)"
         else
             for variant in $(_vocab_focus_filtered_variants); do
-                run_mose_gt "$variant"
+                for _t in $(_gt_tier_list); do
+                    GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+                    run_mose_gt "$variant"
+                done; GT_TIER=""
             done
         fi
     elif ! _phase5_has_gt_training; then
@@ -1418,7 +1452,10 @@ phase5_gsat() {
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            run_gsat_gt "$variant"
+            for _t in $(_gt_tier_list); do
+                GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+                run_gsat_gt "$variant"
+            done; GT_TIER=""
         done
     elif ! _phase5_has_gt_training; then
         echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"
@@ -1476,9 +1513,12 @@ phase5_vanilla_gt() {
     echo " PHASE 5d-GT — Vanilla on synthetic GT (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    local variant
+    local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        run_vanilla_gt "$variant"
+        for _t in $(_gt_tier_list); do
+            GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+            run_vanilla_gt "$variant"
+        done; GT_TIER=""
     done
 
     echo "Vanilla+GT training complete."
@@ -1500,9 +1540,12 @@ phase5_baselines_gt() {
     echo " PHASE 5d-GT — Post-hoc baselines on GT vanilla (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
-    local variant
+    local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        run_baselines_gt "$variant"
+        for _t in $(_gt_tier_list); do
+            GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+            run_baselines_gt "$variant"
+        done; GT_TIER=""
     done
 
     echo "Baselines+GT evaluation complete."
@@ -1528,7 +1571,10 @@ phase5_motifsat() {
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            run_motifsat_gt "$variant"
+            for _t in $(_gt_tier_list); do
+                GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
+                run_motifsat_gt "$variant"
+            done; GT_TIER=""
         done
     elif ! _phase5_has_gt_training; then
         echo "  [skip] *_relabelled — $DATASETS has no phase-4 synthetic GT (mutag/OGB/regression use source labels)"

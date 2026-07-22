@@ -200,6 +200,7 @@ def train_mose_gnn(
     verbose: bool = True,
     viz_logger: Optional['EmbeddingVizLogger'] = None,
     wandb_logger: Optional['WandbLogger'] = None,
+    epoch_hook: Optional['Callable[[object, int], None]'] = None,
 ) -> Tuple[object, Dict]:
     """Full training loop with early stopping.
 
@@ -275,6 +276,11 @@ def train_mose_gnn(
         val_m = evaluate_predictions(model, loaders['valid'], device, task_type)
         val_score = _val_score(val_m, task_type)
         history['val_metric'].append(val_score)
+
+        # Per-epoch explainability telemetry (auxiliary; never raises — see
+        # TrainingExplTracker). Evaluated on the current (in-progress) model.
+        if epoch_hook is not None:
+            epoch_hook(model, epoch)
 
         # Smoothed validation task loss (paper early-stop / scheduler signal).
         vloss = _val_task_loss(model, criterion, loaders['valid'], device,

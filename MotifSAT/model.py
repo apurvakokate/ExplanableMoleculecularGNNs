@@ -230,6 +230,19 @@ class GSAT(nn.Module):
                 "w_message=False the edge extractor would train but never affect "
                 "the prediction (silent no-op)."
             )
+        # The whole motif-consistency term is scaled by motif_loss_coef:
+        #   total += motif_loss_coef * (within_node_coef*within_var - between_motif_coef*between_var)
+        # so between_motif_coef / within_node_coef have ZERO effect while motif_loss_coef == 0.
+        # Guard the silent no-op (a coef that is set but never acts).
+        if (between_motif_coef > 0 or within_node_coef > 0) and motif_loss_coef == 0:
+            raise ValueError(
+                f"between_motif_coef={between_motif_coef} / within_node_coef={within_node_coef} have "
+                f"NO effect while motif_loss_coef=0 — the consistency loss is scaled by motif_loss_coef "
+                f"(total += motif_loss_coef * (within_node_coef*within_var - between_motif_coef*"
+                f"between_var)). Set motif_loss_coef > 0 to activate them (the effective weights are "
+                f"motif_loss_coef*within_node_coef and motif_loss_coef*between_motif_coef), or leave "
+                f"both sub-coefs at 0."
+            )
 
         self.motif_method = motif_method
         self.noise = noise

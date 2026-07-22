@@ -73,16 +73,38 @@ CATALOG_NAMES = ['BRENK', 'CHEMBL_Dundee', 'CHEMBL_LINT']
 # UTILITIES
 # ─────────────────────────────────────────────────────────────────────────────
 
+# DEAD post-port (2026-07-21): only the old fg_first `fg:<name>` atom_count branch used this, and the
+# final fg_first now keys via frag_key (no fg: ids). Kept commented as a record; delete if unneeded.
+# _FG_FIRST_ATOMS = {'carbonyl': 2, 'nitro': 3, 'nitro_ion': 3, 'nitrile': 2,
+#                    'sulfonyl': 3, 'sulfoxide': 2, 'hydroxyl': 1, 'ether_O': 1,
+#                    'thioether_S': 1, 'prim_amine': 1, 'amine_N': 1, 'halogen': 1,
+#                    'phosphate_P': 1}
+
+
 def atom_count(smarts: str) -> int:
-    """Count heavy (non-wildcard) atoms only.
-    [*]O[*] → 1,  [*]c1ccccc1 → 6,  [*][N+](=O)[O-] → 3.
-    Matches molfragbpe5.atom_count — wildcards are NOT counted.
+    """Count heavy (non-wildcard, non-H) atoms.
+    [*]O[*] → 1,  [*]c1ccccc1 → 6,  [*][N+](=O)[O-] → 3.  Matches molfragbpe5.atom_count.
+
+    The final fg_first design keys motifs as frag_key ([*] dummies, e.g. ``*C(=O)OC`` — parsed as
+    SMARTS, dummies excluded) and canonical rings ``ring:c1ccccc1`` (strip the ``ring:`` prefix and
+    parse the SMILES → 6). The old ``fg:/chain:/frag:`` composition branches were DROPPED as dead: no
+    method emits those keys any more (rbrics/all use SMARTS; fg_first now uses frag_key). A digit-sum
+    fallback for the LEGACY composition form ``ring:aromatic:C6`` is retained as cheap insurance.
     """
+    import re as _re
+    if smarts.startswith('ring:'):
+        body = smarts.split(':', 1)[1]
+        m = Chem.MolFromSmarts(body) or Chem.MolFromSmiles(body)
+        if m is not None:
+            return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() not in (0, 1))
+        return sum(int(x) for x in _re.findall(r'\d+', body)) or 1   # legacy ring:aromatic:C6
     try:
         m = Chem.MolFromSmarts(smarts)
         if m is None:
+            m = Chem.MolFromSmiles(smarts)          # bare whole-molecule keys (S=C=S) / unmatched fold
+        if m is None:
             return 0
-        return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() != 0)
+        return sum(1 for a in m.GetAtoms() if a.GetAtomicNum() not in (0, 1))
     except Exception:
         return 0
 

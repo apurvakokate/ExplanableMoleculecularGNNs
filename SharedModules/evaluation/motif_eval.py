@@ -1179,8 +1179,14 @@ def compute_gt_roc(
     device: torch.device,
     node_att_fn=None,
     level: str = 'node',
+    gt_attr: str = 'node_label',
 ) -> Dict[str, float]:
     """Compute mean explainer ROC-AUC vs ground truth across all test graphs.
+
+    ``gt_attr`` selects which node-GT to grade against (node level only):
+      'node_label'        Mode 1 — whole-rule / instance-agnostic (all clauses' motif atoms).
+      'node_label_fired'  Mode 2 — per-instance / OR-aware (only the clause(s) that fired here).
+    Both are attached by apply_gt.py.
 
     Each graph that has ``data.edge_label`` set (by ``apply_gt.py``)
     and at least one positive and one negative edge contributes one AUC value.
@@ -1213,7 +1219,7 @@ def compute_gt_roc(
 
     for data in data_list:
         edge_label = getattr(data, 'edge_label', None)
-        node_label = getattr(data, 'node_label', None)
+        node_label = getattr(data, gt_attr, None)   # gt_attr: node_label (Mode 1) | node_label_fired (Mode 2)
 
         # GT vector for THIS level (used for the degeneracy/skip check).
         # node level prefers the authoritative node_label, falling back to the

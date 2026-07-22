@@ -81,6 +81,7 @@ class MOSEConfig:
     use_gt: bool = False        # load GT relabelled graphs from gt_cache
     gt_cache: Optional[str] = None  # path to gt_cache directory
     gt_vocab_variant: Optional[str] = None  # base variant for gt_cache lookup when training on *_filter
+    gt_tier: Optional[str] = None  # difficulty tier → load relabel_<tier>/ (easy/medium/hard)
 
     # mutag motif-annotation artifacts (optional overrides; default to the
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).

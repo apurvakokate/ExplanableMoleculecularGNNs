@@ -220,6 +220,11 @@ def training_summary_extras(cfg) -> Dict:
         'w_readout': getattr(cfg, 'w_readout', None),
         'use_gt': bool(getattr(cfg, 'use_gt', False)),
         'gt_cache': getattr(cfg, 'gt_cache', None),
+        # difficulty tier (easy/medium/hard) when training on a relabel_<tier> cache;
+        # None for real-label or single-rule runs. The tier is NOT in vocab_variant
+        # (that stays the base vocab for loading), so this field is the authoritative
+        # tier axis for analysis/aggregation.
+        'gt_tier': getattr(cfg, 'gt_tier', None),
         'run_multi_explanation': bool(getattr(cfg, 'run_multi_explanation', False)),
         'pool_mode': getattr(cfg, 'pool_mode', None),
         'deterministic_att': bool(getattr(cfg, 'deterministic_att', False)),

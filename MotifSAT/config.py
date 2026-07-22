@@ -97,6 +97,7 @@ class MotifSATConfig:
     # rule-derived synthetic label (data.y), not the original activity label.
     use_gt: bool = False
     gt_cache: Optional[str] = None
+    gt_tier: Optional[str] = None  # difficulty tier → load relabel_<tier>/ (easy/medium/hard)
 
     # mutag motif-annotation artifacts (optional overrides; default to the
     # conventional {data_root}/mutag_{fold}.csv + _index_maps.pkl paths).

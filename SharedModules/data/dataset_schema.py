@@ -39,6 +39,12 @@ DATASET_COLUMN: Dict[str, Optional[str]] = {
     'Benzene':           'label',
     'Alkane_Carbonyl':   'label',
     'Fluoride_Carbonyl': 'label',   # <- unified (was 'Fluoride_Carbonyl' in loader.py)
+    # Planted-GT re-exports (MotifBreakdown/export_planted_gt.py). Labels come from
+    # the source's y_true + real atom-level attributions. Distinct names because the
+    # legacy three above are wrong-labelled AND swapped-named; see that script's header.
+    'Benzene_Verified_GT':           'label',
+    'Fluoride_Carbonyl_Verified_GT': 'label',
+    'Alkane_Carbonyl_Verified_GT':   'label',
     # OGB: label provided directly by the OGB dataset object for TRAINING, but
     # for VOCAB GENERATION they are first exported to a CSV via
     # MotifBreakdown/export_ogb_to_csv.py, which writes a generic 'label' column.
@@ -67,6 +73,9 @@ TASK_TYPE: Dict[str, str] = {
     'Benzene':           'BinaryClass',
     'Alkane_Carbonyl':   'BinaryClass',
     'Fluoride_Carbonyl': 'BinaryClass',
+    'Benzene_Verified_GT':           'BinaryClass',
+    'Fluoride_Carbonyl_Verified_GT': 'BinaryClass',
+    'Alkane_Carbonyl_Verified_GT':   'BinaryClass',
     'Lipophilicity':     'Regression',
     'esol':              'Regression',
     'freesolv':          'Regression',

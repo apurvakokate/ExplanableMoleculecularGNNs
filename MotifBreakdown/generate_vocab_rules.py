@@ -798,7 +798,8 @@ def build_vocab(mol_frags_tracked: List[List[Tuple[str, Set[int]]]],
     motif_stats = {s: {
         **raw[s],
         'n_atoms':        raw[s].get('n_atoms_owned', frag.atom_count(s)),
-        'ring':           frag.has_ring(s),
+        # 'ring:' keys are rings by construction; frag.has_ring can't parse the prefix.
+        'ring':           s.startswith('ring:') or frag.has_ring(s),
         'above_min_sup':  raw[s]['count'] / n >= min_sup_for_rules,
         'n_occurrences':  raw[s]['n_occurrences'],
         'weighted_count': raw[s]['weighted_count'],
@@ -892,9 +893,13 @@ def extract_rules(motif_list: List[str],
     fi = {s: i for i, s in enumerate(motif_list)}
 
     def _candidates(min_atoms: int) -> List[str]:
+        # Use motif_stats['n_atoms'] (== len(atom_set), correct for EVERY key incl.
+        # 'ring:<smiles>') — NOT frag.atom_count(s), which returns 0 for 'ring:' keys
+        # and silently drops ALL ring motifs from rule mining (benzene rules never
+        # planted on ring-heavy datasets).
         return [s for s in motif_list
                 if motif_stats[s]['above_min_sup']
-                and frag.atom_count(s) >= min_atoms
+                and motif_stats[s]['n_atoms'] >= min_atoms
                 and s not in frag.TRIVIAL
                 and (threshold_motifs is None or s in threshold_motifs)]
 
@@ -1227,9 +1232,11 @@ def compute_stats(dataset: str, variant: str, fold: int,
         n_frags = len(mol_frags)
         node_map = lookup_all.get(smi, {})
 
-        # Unfragmented = whole molecule is a single fragment (no cut fired)
+        # Unfragmented = whole molecule is a single fragment (no cut fired).
+        # Use the fragment's atom_set size (correct for 'ring:' keys too), not
+        # frag.atom_count(smarts) which returns 0 for ring: keys.
         unfragmented = (n_frags == 1 and n_atoms > 0 and
-                        frag.atom_count(mol_frags[0][0]) == n_atoms)
+                        len(mol_frags[0][1]) == n_atoms)
 
         # Unknown nodes = nodes mapped to motif_id = -1
         n_unknown = sum(1 for _, mid in node_map.values() if mid == -1)
@@ -1263,7 +1270,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 shatter: bool = True,
                 rule_rank: str = 'balanced',
                 preserve_typed_dummies: bool = False,
-                protect: bool = False):
+                protect: bool = False,
+                rule_tiers: bool = False):
     """Run the full pipeline for one dataset with given settings.
 
     Args:
@@ -1380,8 +1388,11 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         for orig_smi in smiles_all:
             mol = Chem.MolFromSmiles(orig_smi)
             if mol is None:
-                raise ValueError(
-                    f"Invalid SMILES during vocab build: {orig_smi!r}")
+                # RDKit-unparseable SMILES (unusual valences/charges) — no engine can
+                # fragment these; emit an empty fragment list so the molecule set stays
+                # aligned (same tolerance as the fg_first path) rather than aborting.
+                mol_frags_tracked.append([])
+                continue
             mol_frags_tracked.append(
                 fragment_molecule_tracked(mol, orig_smi, use_fallback, _legacy_method))
             # mol_frags_plain.append(
@@ -1412,6 +1423,89 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         #         mol_frags_tracked = [
         #             [(_resolve(smi), atoms) for smi, atoms in mf]
         #             for mf in mol_frags_tracked]
+    elif method == 'fg_first' or method == 'fg_first_mdl':
+        # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
+        # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
+        # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
+        # a fragment, never ring:). EVERYTHING else is chemfrag.frag_key with [*] attachment dummies
+        # (rekey_structural): *F != *Cl, hydroxyl *O != ether *O*, aldehyde *C=O != ketone *C(*)=O.
+        # The MDL merge freezes rings (freeze='rings'); whole-molecule motifs fold onto a matching
+        # attachment-bearing fragment (fold_whole_molecule_keys). Emits the same [(key, atom_set)]
+        # tracked format, so all downstream artifacts/metrics work unchanged.
+        # variant knobs: ...nosubcut (whole alkyl linkers) · ...mdl (DATA-driven linker cuts:
+        # all-bonds finest + MDL-BPE re-merge) · b<N> (rBRICS-prior bits) · cap<N> (max merged atoms).
+        import fg_first_frag as _fgf
+        _fgf.set_ring_identity('canonical')
+        _subcut = 'nosubcut' not in variant
+        _mdl = (method == 'fg_first_mdl') or ('mdl' in variant)
+        import re as _re
+        _pm = _re.search(r'pool(\d+)', variant)
+        _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
+        _n_bad = 0
+        if _mdl:
+            # learn data-driven linker cuts once on the corpus, then replay per molecule
+            import cascade_bpe_linker as _cb
+            _bm = _re.search(r'b(\d+)', variant); _cm = _re.search(r'cap(\d+)', variant)
+            _beta = float(_bm.group(1)) if _bm else 4.0
+            _cap  = int(_cm.group(1)) if _cm else 8
+            _valid = [s for s in smiles_all if Chem.MolFromSmiles(s) is not None]
+            print(f"    [fg_first_mdl] learning linker cuts on {len(_valid)} mols "
+                  f"(finest=all_bonds beta={_beta} cap={_cap} freeze=rings) ...")
+            _rules, _, _info = _cb.learn(_valid, finest='all_bonds', beta=_beta,
+                                         max_atoms=_cap, freeze='rings')
+            print(f"    [fg_first_mdl] {_info['n_merges']} merge rules; "
+                  f"L {_info['L_traj'][0]:.0f} -> {_info['L_traj'][-1]:.0f}")
+            mol_frags_tracked = []
+            for orig_smi in smiles_all:
+                mol = Chem.MolFromSmiles(orig_smi)
+                if mol is None:
+                    mol_frags_tracked.append([]); _n_bad += 1; continue
+                _tr = _cb.apply_rules(mol, _rules, finest='all_bonds', freeze='rings')
+                mol_frags_tracked.append([(k, set(at))
+                                          for k, at in _fgf.rekey_structural(mol, _tr)])
+        else:
+            mol_frags_tracked = []
+            for orig_smi in smiles_all:
+                mol = Chem.MolFromSmiles(orig_smi)
+                if mol is None:
+                    # Unparseable SMILES (unusual valences/charges) — no engine can
+                    # fragment these. Emit an empty fragment list (all-UNK row) so the
+                    # molecule set stays aligned, matching how unfragmentable molecules
+                    # are handled elsewhere, instead of aborting the whole vocab build.
+                    mol_frags_tracked.append([])
+                    _n_bad += 1
+                    continue
+                owner, ident = _fgf.partition(mol, subcut_chains=_subcut,
+                                              whole_ring_systems=True)
+                groups: Dict[int, Set[int]] = {}
+                for a, fid in enumerate(owner):
+                    groups.setdefault(fid, set()).add(a)
+                _tr = [(ident[fid], atoms) for fid, atoms in groups.items()]
+                mol_frags_tracked.append([(k, set(at))
+                                          for k, at in _fgf.rekey_structural(mol, _tr)])
+        # whole-molecule motifs (bare frag_key, no [*]) -> highest-support matching fragment
+        mol_frags_tracked = _fgf.fold_whole_molecule_keys(mol_frags_tracked)
+        # NOTE: the legacy chain:/frag: linker-pooling below is SUPERSEDED by frag_key keying
+        # (post-rekey there are no chain:/frag: ids) and by "vocabulary = all motifs" — it stays
+        # inactive under the final design (opt-in only via a pool<K> variant token, discouraged).
+        if _pool_pct > 0:
+            from collections import Counter as _C
+            _freq = _C()
+            for mf in mol_frags_tracked:
+                for idt, _ in mf:
+                    if idt.startswith('chain:') or idt.startswith('frag:'):
+                        _freq[idt] += 1
+            _thr = _pool_pct / 100.0 * len(smiles_all)
+            def _poolid(idt):
+                if (idt.startswith('chain:') or idt.startswith('frag:')) and _freq[idt] < _thr:
+                    return 'chain:pooled' if idt.startswith('chain:') else 'frag:pooled'
+                return idt
+            mol_frags_tracked = [[(_poolid(i), a) for i, a in mf] for mf in mol_frags_tracked]
+        n_valid  = sum(1 for s in smiles_all if Chem.MolFromSmiles(s))
+        n_single = sum(1 for f in mol_frags_tracked if len(f) == 1)
+        print(f"    [fg_first sub={_subcut} pool={_pool_pct}% mdl={_mdl}] Fragmented: "
+              f"{n_valid-n_single}/{n_valid} ({100*(n_valid-n_single)/max(n_valid,1):.1f}%)  "
+              f"single-frag: {n_single}")
     else:
         # ---- v4 cascade + MDL merge (method == 'all') -----------------------
         import chemfrag_v4_adapter as _v4
@@ -1450,15 +1544,17 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             m = Chem.MolFromSmiles(orig_smi)
             if m is None:
                 _carved.append(_frags); continue
-            new = _fgp.carve_protected(m, _frags, _keyer)
+            new = _fgp.carve_protected(m, _frags, _keyer, dataset)
             # Protection must preserve the exact atom partition (fail fast).
             validate_partition([atoms for _, atoms in new],
                                m.GetNumAtoms(), f"{orig_smi} [protected]")
-            if len(_fgp.protected_atomsets(m)):
+            if len(_fgp.protected_atomsets(m, dataset)):
                 _n_prot += 1
             _carved.append(new)
         mol_frags_tracked = _carved
-        print(f"    [protect] nitro+aniline carved into explicit motifs "
+        _what = (', '.join(t for t, _ in _fgp.PROTECT_SMARTS[dataset])
+                 if dataset in _fgp.PROTECT_SMARTS else 'nitro+aniline')
+        print(f"    [protect] {_what} carved into explicit motifs "
               f"in {_n_prot}/{len(smiles_all)} molecules")
 
     # ---- BEGIN LEGACY FRAGMENTATION + BPE (DISABLED) -----------------------
@@ -1671,6 +1767,44 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         threshold_pct=resolved_pct if apply_threshold else None,
                         mining_fold=fold)
 
+    # Difficulty-tiered rules (easy/medium/hard) — opt-in via --rule_tiers.
+    # Selects one rule per band by TRAINED P2 (occluder GT-ROC), a small GIN screen
+    # over a coverage-banded pool of singles/conjunctions/DNFs. Foolability (data-side
+    # LR shortcut AUC) is reported per clause. Writes rule_tiers.json alongside
+    # rules.json; apply_gt.py --tier reads it to relabel_{easy,medium,hard}. Skipped
+    # for regression datasets (no rule GT) and when the filtered vocab is being built
+    # (tiers are mined once on the unfiltered base vocab, like the single best rule).
+    if rule_tiers and not is_regression and not apply_threshold:
+        vdir = out_dir / dataset / variant
+        try:
+            import os as _os
+            import rule_tiers as _rt
+            # DEFAULT grader = 'lr': fast LogisticRegression proxy (foolability =
+            # shortcut availability), NO GNN and NO cyclic dependency. Set
+            # RULE_TIERS_GRADER=gnn for the trained-P2 prior (slow; the GNN budget
+            # env vars below apply only then).
+            _grader = _os.environ.get('RULE_TIERS_GRADER', 'lr')
+            _tk = dict(grader=_grader)
+            if _grader == 'gnn':
+                _tk.update(
+                    backbones=_os.environ.get('RULE_TIERS_SCREEN_BB', 'GIN').split(','),
+                    folds=int(_os.environ.get('RULE_TIERS_SCREEN_FOLDS', '1')),
+                    confirm_backbones=_os.environ.get('RULE_TIERS_CONFIRM_BB', 'GIN,GCN,SAGE').split(','),
+                    confirm_folds=int(_os.environ.get('RULE_TIERS_CONFIRM_FOLDS', '2')),
+                    screen_epochs=int(_os.environ.get('RULE_TIERS_SCREEN_EPOCHS', str(_rt.SCREEN_EPOCHS))),
+                    confirm_epochs=int(_os.environ.get('RULE_TIERS_CONFIRM_EPOCHS', str(_rt.CONFIRM_EPOCHS))),
+                )
+            print(f"    [tiers] grading easy/medium/hard (grader={_grader}, "
+                  f"{len(smiles_all)} mols)…")
+            tiers = _rt.select_tiers(smiles_all, mol_frags_tracked, **_tk)
+            with open(vdir / 'rule_tiers.json', 'w') as _f:
+                json.dump(tiers, _f, indent=2)
+            _band = ', '.join(f"{k}:P2={v.get('P2')}" for k, v in tiers.items())
+            print(f"    [tiers] wrote rule_tiers.json → {_band or '(no bands populated)'}")
+        except Exception as _te:
+            print(f"    [tiers][error] tier selection failed: {_te}")
+            raise
+
     # Statistics CSV
     motif_df, graph_df = compute_stats(
         dataset, variant, fold,
@@ -1802,8 +1936,9 @@ Examples:
     p.add_argument('--out_dir',   default='./motifsat_output',
                    help='Output root directory')
     p.add_argument('--method',    default='all',
-                   choices=['rbrics', 'brics', 'all', 'rbrics_old'],
-                   help='Fragmentation algorithm(s) to use (default: all)')
+                   choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl'],
+                   help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
+                        'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--fallback',  action='store_true',
                    help='Apply structural fallbacks to unfragmented molecules')
     p.add_argument('--bpe',       action='store_true',
@@ -1855,7 +1990,26 @@ Examples:
                         "subsuming motifs. 'pct1': legacy positive-coverage sort. "
                         "All score components are written to rules_summary.csv "
                         "either way so you can inspect and override RULE_INDEX.")
+    p.add_argument('--rule_tiers', action='store_true',
+                   help="Also emit rule_tiers.json: easy/medium/hard planted rules "
+                        "selected by TRAINED P2 (occluder GT-ROC via a small GIN screen "
+                        "over a coverage-banded pool), with per-clause foolability. "
+                        "apply_gt.py --tier {easy,medium,hard} relabels each into "
+                        "relabel_<tier>/. Independent of --rule_rank (which still picks "
+                        "the single best rule for relabel1/). Skipped on regression "
+                        "datasets and filtered (--apply_threshold) vocabs.")
+    p.add_argument('--ring_identity', default='composition',
+                   choices=['composition', 'canonical'],
+                   help="fg_first ring keying. 'composition' (default): ring:aromatic:C6 — "
+                        "conflates isomers (pyrimidine==pyrazine). 'canonical': neutralised "
+                        "tautomer-canonical ring SMILES (ring:c1cncnc1) — separates isomers, "
+                        "benzene stays one token, partition (hence ceiling) unchanged. Canonical "
+                        "vocabs get a '_ringcanon' variant suffix so they never overwrite composition ones.")
     args = p.parse_args()
+
+    # Ring keying is a module-global on fg_first_frag; set once, used by every fg_first fragment call.
+    import fg_first_frag as _fgf
+    _fgf.set_ring_identity(args.ring_identity)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1866,6 +2020,7 @@ Examples:
     # shatter vocabs never overwrite standard-v4 vocabs.
     _shatter_suffix = '_shatter' if args.shatter else ''
     _dummy_suffix = '_typed_dummies' if args.preserve_typed_dummies else ''
+    _ringcanon_suffix = '_ringcanon' if args.ring_identity == 'canonical' else ''
 
     all_metas = []
     for ds in args.datasets:
@@ -1882,11 +2037,12 @@ Examples:
                            apply_threshold=args.apply_threshold,
                            threshold_pct=args.threshold_pct,
                            variant_override=args.variant,
-                           variant_suffix=_shatter_suffix + _dummy_suffix,
+                           variant_suffix=_shatter_suffix + _dummy_suffix + _ringcanon_suffix,
                            shatter=bool(args.shatter),
                            rule_rank=args.rule_rank,
                            preserve_typed_dummies=args.preserve_typed_dummies,
-                           protect=bool(args.protect))
+                           protect=bool(args.protect),
+                           rule_tiers=bool(args.rule_tiers))
         meta['dataset'] = ds
         all_metas.append(meta)
 

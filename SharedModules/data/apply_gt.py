@@ -38,8 +38,9 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
 import torch
 
 # Make the project importable from any working directory
@@ -56,6 +57,33 @@ from SharedModules.utils import set_seed
 # ─────────────────────────────────────────────────────────────────────────────
 # Rule loading
 # ─────────────────────────────────────────────────────────────────────────────
+
+def load_tier_rule(vocab_root: str, dataset: str, variant: str,
+                   tier: str) -> dict:
+    """Load one difficulty tier's rule from rule_tiers.json (written by
+    generate_vocab_rules.py --rule_tiers). Returns an apply_gt-normalised rule
+    dict with '_clauses' = list of motif-key sets. Raises if the file or tier
+    is missing."""
+    tiers_path = Path(vocab_root) / dataset / variant / 'rule_tiers.json'
+    if not tiers_path.exists():
+        raise FileNotFoundError(
+            f"rule_tiers.json not found: {tiers_path}\n"
+            f"Regenerate the vocab with --rule_tiers: "
+            f"bash run_experiments.sh phase1  (RULE_TIERS=1)"
+        )
+    with open(tiers_path) as f:
+        tiers = json.load(f)
+    if tier not in tiers:
+        raise KeyError(
+            f"tier {tier!r} not in {tiers_path} — available: {sorted(tiers)}"
+        )
+    rule = dict(tiers[tier])
+    clauses = rule.get('clauses')
+    if not clauses:
+        raise ValueError(f"tier {tier!r} rule has no 'clauses': {list(rule.keys())}")
+    rule['_clauses'] = [set(cl.get('motifs', [])) for cl in clauses]
+    return rule
+
 
 def load_best_rule(vocab_root: str, dataset: str, variant: str,
                    rule_index: int) -> dict:
@@ -223,10 +251,62 @@ def validate_rule_fires_on_trainable_motifs(
         )
 
 
+def choose_spurious_motif(data_lists: List[List],
+                          rule_clauses: List[Set[str]],
+                          graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
+                          min_support: int = 10) -> Tuple[Optional[str], float]:
+    """Pick the strongest SPURIOUS (non-GT) motif: the motif — not part of any
+    rule clause — whose per-molecule presence most POSITIVELY correlates with the
+    synthetic label (the rule firing). This is the shortcut that competes with the
+    true cause; a fooled explainer attributes to it. Returns (smarts, corr) or
+    (None, nan) if no eligible motif clears ``min_support``.
+
+    Computed corpus-wide (all splits) for a stable choice, then the same motif is
+    annotated across every split so spurious_roc is comparable across folds/splits.
+    """
+    rule_motifs = {m for cl in rule_clauses for m in cl}
+    ys: List[float] = []
+    present: Dict[str, List[int]] = {}
+    row = 0
+    for dl in data_lists:
+        for data in dl:
+            smi = getattr(data, 'smiles', None)
+            node_map = graph_lookup.get(smi, {}) if smi else {}
+            frag_set = {smarts for smarts, _mid in node_map.values()}
+            fires = any(cl.issubset(frag_set) for cl in rule_clauses if cl)
+            ys.append(1.0 if fires else 0.0)
+            for smarts in frag_set:
+                if smarts in rule_motifs:
+                    continue
+                present.setdefault(smarts, []).append(row)
+            row += 1
+    if not ys:
+        return None, float('nan')
+    y = np.asarray(ys, dtype=float)
+    n = len(y)
+    if y.std() == 0:
+        return None, float('nan')
+    best_m, best_corr = None, -2.0
+    for smarts, rows in present.items():
+        if len(rows) < min_support or n - len(rows) < min_support:
+            continue
+        p = np.zeros(n, dtype=float)
+        p[rows] = 1.0
+        if p.std() == 0:
+            continue
+        corr = float(np.corrcoef(p, y)[0, 1])
+        if corr > best_corr:
+            best_corr, best_m = corr, smarts
+    if best_m is None:
+        return None, float('nan')
+    return best_m, round(best_corr, 4)
+
+
 def annotate_split(data_list: List,
                    rule_clauses: List[Set[str]],
                    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
-                   relabel: bool = True) -> Tuple[List, Dict]:
+                   relabel: bool = True,
+                   spurious_motif: Optional[str] = None) -> Tuple[List, Dict]:
     """Annotate Data objects with GT labels and edge labels.
 
     rule_clauses: list of sets — DNF rule fires when ANY clause fires.
@@ -244,6 +324,8 @@ def annotate_split(data_list: List,
     n_total_edges = 0
     n_pos_nodes = 0
     n_total_nodes = 0
+    n_pos_spurious_nodes = 0
+    n_graphs_with_spurious = 0
 
     out = []
     for data in data_list:
@@ -277,14 +359,36 @@ def annotate_split(data_list: List,
         n_edges = data.edge_index.size(1)
         n_total_nodes += n_nodes
         n_total_edges += n_edges
-        node_label = torch.zeros(n_nodes, dtype=torch.float32)
+        node_label = torch.zeros(n_nodes, dtype=torch.float32)         # Mode 1: whole-rule
+        node_label_fired = torch.zeros(n_nodes, dtype=torch.float32)   # Mode 2: fired-clause only
+        node_label_spurious = torch.zeros(n_nodes, dtype=torch.float32)  # strongest non-GT shortcut
         edge_label = torch.zeros(n_edges, dtype=torch.float32)
 
+        # Spurious GT: atoms of the chosen shortcut motif, marked on the SAME positive
+        # graphs as node_label so spurious_roc and gt_roc share a graph population. A
+        # fooled explainer ranks these atoms high → high spurious_roc.
+        if spurious_motif is not None and rule_fires and node_map:
+            spur_nodes = [idx for idx, (smarts, _mid) in node_map.items()
+                          if smarts == spurious_motif]
+            if spur_nodes:
+                spur_nodes = _validate_rule_nodes(spur_nodes, n_nodes, smi or '?')
+                node_label_spurious[torch.tensor(spur_nodes, dtype=torch.long)] = 1.0
+                n_pos_spurious_nodes += len(spur_nodes)
+                n_graphs_with_spurious += 1
+
         if rule_fires and node_map:
-            # Nodes whose fragment belongs to any motif in any rule clause
+            # TWO GT views (both attached; the evaluator picks one via compute_gt_roc(gt_attr=...)):
+            #  Mode 1 — whole-rule / instance-agnostic: atoms of ANY motif in ANY clause.
             all_rule_motifs = {m for cl in rule_clauses for m in cl}
+            #  Mode 2 — per-instance / OR-aware: atoms of motifs in the clause(s) that ACTUALLY FIRED
+            #  here (a clause fires when ALL its motifs are present). A DNF needs only one fired
+            #  clause, not all — so this excludes present-but-not-fired clauses' motifs.
+            fired_motifs = {m for cl in rule_clauses
+                            if cl and cl.issubset(frag_set) for m in cl}
             rule_nodes = [idx for idx, (smarts, _mid) in node_map.items()
                           if smarts in all_rule_motifs]
+            fired_nodes = [idx for idx, (smarts, _mid) in node_map.items()
+                           if smarts in fired_motifs]
             if rule_nodes:
                 rule_nodes = _validate_rule_nodes(rule_nodes, n_nodes, smi or '?')
                 active = torch.zeros(n_nodes, dtype=torch.bool)
@@ -296,8 +400,13 @@ def annotate_split(data_list: List,
                     pos = active[src] & active[dst]   # AND of both endpoints
                     edge_label[pos] = 1.0
                     n_pos_edges += int(pos.sum().item())
+            if fired_nodes:
+                fired_nodes = _validate_rule_nodes(fired_nodes, n_nodes, smi or '?')
+                node_label_fired[torch.tensor(fired_nodes, dtype=torch.long)] = 1.0
 
-        data.node_label = node_label
+        data.node_label = node_label               # Mode 1 (whole-rule) — the default GT
+        data.node_label_fired = node_label_fired   # Mode 2 (per-instance fired-clause / OR-aware)
+        data.node_label_spurious = node_label_spurious  # strongest non-GT shortcut motif
         data.edge_label = edge_label
         out.append(data)
 
@@ -313,6 +422,8 @@ def annotate_split(data_list: List,
         'n_total_edges':  n_total_edges,
         'edge_pos_frac':  (n_pos_edges / n_total_edges
                            if n_total_edges > 0 else 0.0),
+        'n_pos_spurious_nodes':    n_pos_spurious_nodes,
+        'n_graphs_with_spurious':  n_graphs_with_spurious,
     }
     return out, stats
 
@@ -345,6 +456,11 @@ Examples
                         help='Vocab variant, e.g. all_fallback_bpe')
     parser.add_argument('--rule_index',  type=int, default=0,
                         help='Index into rules.json (0 = best rule)')
+    parser.add_argument('--tier',        default=None,
+                        choices=['easy', 'medium', 'hard'],
+                        help='Relabel using a difficulty tier from rule_tiers.json '
+                             'instead of rules.json[--rule_index]. Output goes to '
+                             'relabel_<tier>/ (not relabel1/).')
     parser.add_argument('--data_root',   required=True)
     parser.add_argument('--out_dir',     required=True,
                         help='Root of gt_cache output directory')
@@ -359,6 +475,16 @@ Examples
 
     set_seed(args.seed)
     relabel = not args.no_relabel
+
+    # Difficulty tiers are the CURRENT recipe. The single-best-rule path (rules.json
+    # + --rule_index, → relabel1/) is deprecated: it plants ONE rule with no graded
+    # difficulty and predates the tier design. Fail fast so no run silently uses it.
+    if not args.tier:
+        raise ValueError(
+            "Single-best-rule relabelling (--rule_index / relabel1/) is DEPRECATED — "
+            "difficulty tiers are required. Pass --tier {easy,medium,hard} (needs "
+            "rule_tiers.json from `generate_vocab_rules.py --rule_tiers`; the pipeline "
+            "builds it when RULE_TIERS=1).")
 
     # Guard: synthetic relabelling only makes sense for the classification
     # datasets that have a motif-rule GT pipeline. Regression sets (esol,
@@ -377,13 +503,19 @@ Examples
     print(f'  Phase 4 — GT annotation')
     print(f'  dataset    = {args.dataset}')
     print(f'  variant    = {args.variant}')
-    print(f'  rule_index = {args.rule_index}')
+    if args.tier:
+        print(f'  tier       = {args.tier}  (from rule_tiers.json)')
+    else:
+        print(f'  rule_index = {args.rule_index}')
     print(f'  out_dir    = {args.out_dir}')
     print(f'{"="*60}')
 
-    # ── Load rule from rules.json ─────────────────────────────────────────────
-    rule = load_best_rule(args.vocab_root, args.dataset, args.variant,
-                          args.rule_index)
+    # ── Load rule: difficulty tier (rule_tiers.json) or best rule (rules.json) ──
+    if args.tier:
+        rule = load_tier_rule(args.vocab_root, args.dataset, args.variant, args.tier)
+    else:
+        rule = load_best_rule(args.vocab_root, args.dataset, args.variant,
+                              args.rule_index)
     rule_clauses: List[Set[str]] = rule.get('_clauses', [])
     all_motifs = {m for cl in rule_clauses for m in cl}
 
@@ -454,16 +586,30 @@ Examples
             fold=args.fold, split=split_name,
         )
 
+    # relabel_<tier>/ for a difficulty tier; relabel1//relabel0/ for a rules.json rule.
+    if args.tier:
+        _relabel_dir = f'relabel_{args.tier}' if relabel else f'relabel0_{args.tier}'
+    else:
+        _relabel_dir = 'relabel1' if relabel else 'relabel0'
     out_base = (Path(args.out_dir) / args.dataset
                 / f'fold{args.fold}' / args.variant
-                / ('relabel1' if relabel else 'relabel0'))
+                / _relabel_dir)
     out_base.mkdir(parents=True, exist_ok=True)
 
+    # Choose the strongest spurious (non-GT) shortcut motif ONCE over all splits so
+    # node_label_spurious (→ eval spurious_roc) marks the same motif everywhere.
+    _all_split_lists = [[ds[i] for i in range(len(ds))]
+                        for _sn, ds, _lk in split_configs]
+    spurious_motif, spurious_corr = choose_spurious_motif(
+        _all_split_lists, rule_clauses, lookup)
+    print(f'\n  Spurious shortcut motif: {spurious_motif!r} '
+          f'(corr with label = {spurious_corr})')
+
     all_stats = {}
-    for split_name, ds, lookup in split_configs:
-        data_list = [ds[i] for i in range(len(ds))]
+    for (split_name, ds, lookup), data_list in zip(split_configs, _all_split_lists):
         annotated, stats = annotate_split(data_list, rule_clauses, lookup,
-                                          relabel=relabel)
+                                          relabel=relabel,
+                                          spurious_motif=spurious_motif)
         pt_path = out_base / f'{split_name}_with_gt.pt'
         torch.save(annotated, pt_path)
 
@@ -480,13 +626,26 @@ Examples
     rule_out = {
         'dataset':     args.dataset,
         'variant':     args.variant,
-        'rule_index':  args.rule_index,
+        'tier':        args.tier,                      # None for a rules.json rule
+        'rule_index':  None if args.tier else args.rule_index,
         'motifs':      sorted(all_motifs),
         'clauses':     [sorted(cl) for cl in rule_clauses],
         'score':       rule.get('score'),
         'pct_match':   rule.get('pct_match'),
         'balance':     rule.get('balance'),
         'separation':  rule.get('separation'),
+        # tier-only difficulty metadata (present when --tier):
+        'tier_grader':    rule.get('grader'),           # 'lr' (default) or 'gnn'
+        'tier_band':      rule.get('tier_band'),
+        'foolability_auc': rule.get('foolability_auc'), # LR grader: shortcut availability
+        'learnable_auc':  rule.get('learnable_auc'),    # LR grader: composition learnability
+        'P2':          rule.get('P2'),                  # GNN grader only
+        'P4':          rule.get('P4'),                  # GNN grader only
+        'cov':         rule.get('cov'),
+        'foolability': rule.get('foolability'),
+        # spurious shortcut motif whose atoms → node_label_spurious → eval spurious_roc
+        'spurious_motif':      spurious_motif,
+        'spurious_motif_corr': spurious_corr,
     }
     rule_path = out_base / 'selected_rule.json'
     with open(rule_path, 'w') as f:
