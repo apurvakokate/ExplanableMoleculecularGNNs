@@ -24,6 +24,7 @@ is one motif key, a clause an AND of keys, a rule a DNF (OR of clauses).
 from __future__ import annotations
 
 import itertools
+import os
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -31,6 +32,13 @@ import numpy as np
 # ── difficulty / validity constants (mirror gates_p2.py) ─────────────────────────
 COV_LO, COV_HI = 0.15, 0.50          # non-degenerate label balance
 TAU_P4 = 0.75                        # learnable (GNN grader only)
+# Prefer chemically-rich rules (rings / ≥2-atom FGs) over bare single atoms. When on,
+# the pool also builds structural DNFs (OR of low-coverage rings/FGs up to the balance
+# band) and the per-tier representative is chosen by structural richness first, with
+# learnability as a gate/tiebreak — so a benzene ring beats a lone chlorine. Set
+# RULE_TIERS_STRUCTURAL=0 to fall back to the old bare-atom-friendly selection.
+PREFER_STRUCTURAL = os.environ.get('RULE_TIERS_STRUCTURAL', '1') == '1'
+MIN_STRUCT_ATOMS = 2                 # a "structural" motif is a ring or has ≥ this many atoms
 BANDS = [('easy', 0.85, 1.01), ('medium', 0.70, 0.85), ('hard', -0.01, 0.70)]  # GNN-P2 bands
 MIN_SUP = 0.01                       # motif must appear in >=1% of molecules to be a literal
 LIT_COV_LO, LIT_COV_HI = 0.03, 0.60  # a literal's own coverage band (pool candidates)
@@ -396,6 +404,21 @@ def select_tiers(smiles: List[str],
     bal = lambda p: COV_LO <= p.mean() <= COV_HI
     jc = lambda a, b: (a & b).sum() / max((a | b).sum(), 1)
 
+    # ── richness: per-motif atom count from the tracked fragmentation ────────────
+    motif_natoms: Dict[str, int] = {}
+    for mf in mol_frags:
+        for k, ats in mf:
+            motif_natoms.setdefault(k, len(ats))
+
+    def _structural(k: str) -> bool:      # a ring or a real ≥2-atom fragment (not a bare atom)
+        return k.startswith('ring:') or motif_natoms.get(k, 1) >= MIN_STRUCT_ATOMS
+
+    def rule_atoms(cls) -> int:           # total atoms the rule references (richness proxy)
+        return sum(motif_natoms.get(m, 1) for cl in cls for m in cl)
+
+    def rule_structural(cls) -> bool:     # every motif in every clause is structural
+        return all(_structural(m) for cl in cls for m in cl)
+
     # ── pool: balanced singles + genuine conjunctions + a few disjoint DNFs ──────
     singles = [(k,) for k in cand if bal(pres[k])]
     singles.sort(key=lambda c: abs(cov[c[0]] / n - 0.3))
@@ -435,10 +458,48 @@ def select_tiers(smiles: List[str],
         if len(dnfs) >= POOL_D:
             break
 
+    # ── structural pool: rich rules from rings / ≥2-atom FGs ─────────────────────
+    # Bare single atoms (*Cl, *O) have high coverage so they dominate the singles/conj
+    # pool, but they're chemically trivial. Here we add (a) any single structural motif
+    # already in the balance band (e.g. a common ring), and (b) DNFs that OR several
+    # lower-coverage rings/FGs up to the band — so genuinely rich rules exist at every
+    # foolability level, not just bare atoms.
+    struct_dnfs = []
+    if PREFER_STRUCTURAL:
+        struct_singles = sorted([k for k in cand if _structural(k)], key=lambda k: -cov[k])
+        seen_struct = set()
+        # (a) single structural motif already balanced (benzene ring, etc.)
+        for k in struct_singles:
+            if bal(pres[k]):
+                struct_dnfs.append([[k]]); seen_struct.add(k)
+        # (b) greedy disjoint-ish DNFs of the remaining (sub-floor) structural motifs
+        remaining = [k for k in struct_singles if k not in seen_struct
+                     and pres[k].mean() < COV_LO]
+        used = set()
+        for seed in remaining:
+            if seed in used:
+                continue
+            clause, fires = [[seed]], pres[seed].copy(); used_local = {seed}
+            for k in remaining:
+                if k in used_local or fires.mean() >= COV_HI:
+                    continue
+                if jc(pres[k], fires) <= 0.3:                 # keep clauses distinct
+                    nf = fires | pres[k]
+                    if nf.mean() <= COV_HI:
+                        clause.append([k]); fires = nf; used_local.add(k)
+                if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
+                    break
+            if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
+                struct_dnfs.append([list(c) for c in clause]); used |= used_local
+            if len(struct_dnfs) >= POOL_D + 4:
+                break
+
     pool = ([('single', [list(c)]) for c in singles]
             + [('conj', [list(c)]) for c in conjs]
-            + [('dnf', d) for d in dnfs])
-    log(f"    [tiers] pool: {len(singles)} singles + {len(conjs)} conj + {len(dnfs)} dnf")
+            + [('dnf', d) for d in dnfs]
+            + [('struct', d) for d in struct_dnfs])
+    log(f"    [tiers] pool: {len(singles)} singles + {len(conjs)} conj + "
+        f"{len(dnfs)} dnf + {len(struct_dnfs)} struct")
 
     def rule_str(cls):
         return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)
@@ -482,8 +543,15 @@ def select_tiers(smiles: List[str],
             if not inband:
                 log(f"    [tiers-lr] {lvl:6}: (no rule in this tercile)")
                 continue
-            # representative: most solidly learnable, mid-coverage
-            rep = max(inband, key=lambda g: (g['learnable_auc'], -abs(g['cov'] - 0.3)))
+            # representative: prefer a chemically RICH rule (all-structural, then more
+            # atoms), using learnability + mid-coverage only as tiebreaks. Falls back to
+            # the old learnability-first pick when PREFER_STRUCTURAL is off.
+            if PREFER_STRUCTURAL:
+                rep = max(inband, key=lambda g: (
+                    rule_structural(g['cls']), rule_atoms(g['cls']),
+                    g['learnable_auc'], -abs(g['cov'] - 0.3)))
+            else:
+                rep = max(inband, key=lambda g: (g['learnable_auc'], -abs(g['cov'] - 0.3)))
             out[lvl] = dict(
                 clauses=[{'motifs': list(cl)} for cl in rep['cls']],
                 rule_str=rule_str(rep['cls']), form=rep['form'],
