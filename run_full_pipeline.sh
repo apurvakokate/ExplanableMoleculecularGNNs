@@ -46,6 +46,8 @@ export RULE_INDEX="${RULE_INDEX:-0}"
 # Difficulty tiers are the REQUIRED recipe (single best rule deprecated): phase1
 # emits rule_tiers.json, phase4 relabels easy/medium/hard, phase5 trains all three.
 export RULE_TIERS="${RULE_TIERS:-1}"
+# GT_ONLY=1: skip real-label training (synthetic-GT results only; ~half the phase5 work).
+export GT_ONLY="${GT_ONLY:-0}"
 export MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
 
 # ── SLURM (for "submit" only) ───────────────────────────────────────────────
@@ -178,6 +180,11 @@ PHASES+=( phase1 phase2 phase3 )
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase4 )
 fi
+# All phase-5 families are listed unconditionally. GT_ONLY is handled INSIDE the
+# phase functions (phase5_vanilla / phase5_baselines / phase5_mose / _gsat / _motifsat),
+# where it skips real-label training ONLY when the dataset actually has synthetic GT
+# (`_phase5_has_gt_training`). This makes GT_ONLY safe for source-GT datasets (mutag,
+# *_Verified_GT), where the real run IS the experiment and must not be skipped.
 PHASES+=(
   phase5_vanilla phase5_mose phase5_gsat phase5_motifsat phase5_baselines
 )

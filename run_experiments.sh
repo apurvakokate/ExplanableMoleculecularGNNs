@@ -66,6 +66,11 @@ RULE_INDEX="${RULE_INDEX:-}"
 # single-best-rule path (relabel1/, no suffix) — the helpers below are byte-identical
 # to the old behaviour when GT_TIER is empty, so this change is inert unless opted in.
 RULE_TIERS="${RULE_TIERS:-1}"               # difficulty tiers are the REQUIRED recipe (single rule deprecated)
+# GT_ONLY=1: train ONLY on synthetic GT (skip the real-label models). The synthetic-GT
+# metrics never depend on the real-label runs (GT trainers train from scratch; baselines_gt
+# loads the GT vanilla), so this is a safe ~halving of phase5. Real-label runs produce the
+# separate 'faithfulness on real activity' numbers — keep GT_ONLY=0 if you report those.
+GT_ONLY="${GT_ONLY:-0}"
 GT_TIER="${GT_TIER:-}"                       # set per-iteration by the phase4/5 drivers
 # tier list for driver loops; "-" is the single-rule sentinel (→ empty GT_TIER).
 _gt_tier_list()   { if [ "$RULE_TIERS" = "1" ]; then echo "easy medium hard"; else echo "-"; fi; }
@@ -1376,6 +1381,14 @@ phase5_vanilla() {
     echo " PHASE 5a — Vanilla GNN (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
 
+    # GT_ONLY skips real-label vanilla, but ONLY for synthetic-GT datasets. Source-GT
+    # datasets (mutag, *_Verified_GT) have no synthetic GT — their real run IS the
+    # experiment, so keep it.
+    if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
+        echo "  [skip] real-label Vanilla — GT_ONLY=1 (synthetic GT only)"
+        return 0
+    fi
+
     local variant
     for variant in $(_vocab_focus_base_variants); do
         run_vanilla "$variant" 1
@@ -1399,15 +1412,19 @@ phase5_mose() {
     echo "══════════════════════════════════════════════════════════"
 
     local variant
-    for variant in $(_vocab_focus_filtered_variants); do
-        run_mose "$variant" "$MOSE_INJ"
-    done
-    if [ "${MOSE_BASE:-0}" = "1" ]; then
-        for variant in $(_vocab_focus_base_variants); do
+    if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
+        echo "  [skip] real-label MOSE — GT_ONLY=1 (synthetic GT only)"
+    else
+        for variant in $(_vocab_focus_filtered_variants); do
             run_mose "$variant" "$MOSE_INJ"
         done
-    else
-        echo "  [skip] unfiltered MOSE — MOSE_BASE=0 (filtered variants only)"
+        if [ "${MOSE_BASE:-0}" = "1" ]; then
+            for variant in $(_vocab_focus_base_variants); do
+                run_mose "$variant" "$MOSE_INJ"
+            done
+        else
+            echo "  [skip] unfiltered MOSE — MOSE_BASE=0 (filtered variants only)"
+        fi
     fi
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
@@ -1446,9 +1463,13 @@ phase5_gsat() {
     echo "══════════════════════════════════════════════════════════"
 
     local variant
-    for variant in $(_vocab_focus_base_variants); do
-        run_gsat "$variant"
-    done
+    if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
+        echo "  [skip] real-label GSAT — GT_ONLY=1 (synthetic GT only)"
+    else
+        for variant in $(_vocab_focus_base_variants); do
+            run_gsat "$variant"
+        done
+    fi
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
@@ -1479,6 +1500,13 @@ phase5_baselines() {
     echo "══════════════════════════════════════════════════════════"
     echo " PHASE 5d — Post-hoc baselines (VOCAB_FOCUS=${VOCAB_FOCUS:-all four})"
     echo "══════════════════════════════════════════════════════════"
+
+    # GT_ONLY skips real-label baselines, but ONLY for synthetic-GT datasets (source-GT
+    # datasets keep them — the real run is the experiment).
+    if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
+        echo "  [skip] real-label baselines — GT_ONLY=1 (synthetic GT only)"
+        return 0
+    fi
 
     # Explainers operate on the (vocab-independent) vanilla model, evaluated
     # against BOTH the full/base vocab AND the filtered vocab (item 10). The
@@ -1565,9 +1593,13 @@ phase5_motifsat() {
     echo "══════════════════════════════════════════════════════════"
 
     local variant
-    for variant in $(_vocab_focus_base_variants); do
-        run_motifsat "$variant" "$MOTIFSAT_INJ"
-    done
+    if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
+        echo "  [skip] real-label MotifSAT — GT_ONLY=1 (synthetic GT only)"
+    else
+        for variant in $(_vocab_focus_base_variants); do
+            run_motifsat "$variant" "$MOTIFSAT_INJ"
+        done
+    fi
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
