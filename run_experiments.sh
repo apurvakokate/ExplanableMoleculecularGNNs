@@ -73,7 +73,44 @@ RULE_TIERS="${RULE_TIERS:-1}"               # difficulty tiers are the REQUIRED 
 GT_ONLY="${GT_ONLY:-0}"
 GT_TIER="${GT_TIER:-}"                       # set per-iteration by the phase4/5 drivers
 # tier list for driver loops; "-" is the single-rule sentinel (→ empty GT_TIER).
-_gt_tier_list()   { if [ "$RULE_TIERS" = "1" ]; then echo "easy medium hard"; else echo "-"; fi; }
+_gt_tier_list()   {
+    # Args (optional): $1=variant  $2=dataset. When a variant is given, read THAT
+    # variant's rule_tiers.json specifically, so a multi-variant run (e.g.
+    # VOCAB_FOCUS=rbrics,fg_first) enumerates each variant's OWN DNF keys instead
+    # of whichever file the glob hit first (fragmentations differ -> different
+    # motifs -> different rules). Falls back to the first-match glob when the scoped
+    # file is absent (threshold-filtered variants keep their rules under the base
+    # variant dir) or no variant was passed.
+    local _v="${1:-}" _ds="${2:-}"
+    [ -z "$_ds" ] && _ds="${DATASETS%% *}"
+    if [ "${RULE_ENGINE:-tiers}" = "dnf" ]; then
+        # DNF engine emits dnf_k{k}_r{i} (N rules per arity); some cells may be empty.
+        # Reading the ACTUAL keys excludes empty cells automatically.
+        local _f _cand
+        local _py="import json,sys; print(' '.join(json.load(open(sys.argv[1])).keys()))"
+        # 1) scoped read — the exact variant's rule file
+        if [ -n "$_v" ]; then
+            _f="$VOCAB_ROOT/$_ds/$_v/rule_tiers.json"
+            [ -f "$_f" ] && python3 -c "$_py" "$_f" 2>/dev/null && return
+        fi
+        # 2) first-match glob — scoped file absent, or no variant given
+        for _cand in $DATASETS; do
+            for _f in "$VOCAB_ROOT/$_cand"/*/rule_tiers.json; do
+                [ -f "$_f" ] || continue
+                python3 -c "$_py" "$_f" 2>/dev/null && return
+            done
+        done
+        # 3) fallback grid (phase1 not run yet): MATCH the real key scheme exactly —
+        #    dnf_k{k}_r{i} for k in [MIN_K..MAX_K], i in [1..N]. No bare dnf_k{k} and
+        #    no k=1 (min_k=2 is never emitted), so it can't KeyError phase4 at N=1.
+        local _n="${RULE_DNF_N:-5}" _k="${RULE_DNF_MAXK:-3}" _mink="${RULE_DNF_MINK:-2}" _out="" _i _j
+        case "$_n" in ''|*[!0-9]*) _n=5 ;; esac      # 'all'/typo -> a sane grid
+        [ "$_n" -lt 1 ] && _n=1
+        for _i in $(seq 1 "$_n"); do for _j in $(seq "$_mink" "$_k"); do _out="$_out dnf_k${_j}_r${_i}"; done; done
+        echo $_out
+    elif [ "$RULE_TIERS" = "1" ]; then echo "easy medium hard"
+    else echo "-"; fi
+}
 _gt_relabel_dir() { [ -n "$GT_TIER" ] && echo "relabel_${GT_TIER}" || echo "relabel1"; }
 _gt_tier_flag()   { [ -n "$GT_TIER" ] && echo "--gt_tier ${GT_TIER}"; }
 _gt_tier_suffix() { [ -n "$GT_TIER" ] && echo "_${GT_TIER}"; }
@@ -152,6 +189,12 @@ V_RBRICS_SF="rbrics_with_struct_fallback"  # method=rbrics + structural fallback
 V_ALL="all_fallback_bpe"         # method=all, fallback, BPE
 V_FG_FIRST="fg_first"            # method=fg_first_mdl (final design: canonical rings + frag_key
                                  # + whole_ring_systems + MDL freeze=rings + whole-molecule fold)
+V_ERTL_FIRST="ertl_first"        # method=ertl_first_mdl (same pipeline as fg_first, but Ertl's
+                                 # library-free FG detection replaces the curated SMARTS dictionary).
+                                 # OPT-IN: runs only when VOCAB_FOCUS names it (fragmentation ablation).
+V_RDKIT_FG="rdkit_fg_first"      # method=rdkit_fg_first_mdl (same pipeline, FGs from RDKit's
+                                 # published FunctionalGroups.txt — the "defensible curated" set).
+                                 # OPT-IN: fragmentation ablation, runs only when VOCAB_FOCUS names it.
 V_RBRICS_PROT="rbrics_protected"          # method=rbrics + FG protection (nitro+aniline)
 V_ALL_PROT="all_fallback_bpe_protected"   # method=all,fallback,BPE + FG protection
 # V_ALL_SHATTER="all_fallback_bpe_shatter"  # ablation; phase1d disabled (no phase5)
@@ -177,6 +220,11 @@ _vocab_focus_resolve_one() {
                                      echo "$V_RBRICS_SF" ;;
         all_fallback_bpe|all|v4)   echo "$V_ALL" ;;
         fg_first|fg_first_mdl|fgfirst|fg)   echo "$V_FG_FIRST" ;;
+        ertl_first|ertl_first_mdl|ertl)     echo "$V_ERTL_FIRST" ;;
+        rdkit_fg_first|rdkit_fg_first_mdl|rdkit_fg|rdkitfg)   echo "$V_RDKIT_FG" ;;
+        # merge-ON/OFF ablation arm: same detector + same finest cut, MDL_MAX_MERGES=0.
+        # Vocab is built out-of-band; this only lets phase4/5 target it by name.
+        rdkit_nomerge|nomerge)       echo "rdkit_nomerge" ;;
         rbrics_protected|rbrics_prot)         echo "$V_RBRICS_PROT" ;;
         all_fallback_bpe_protected|all_protected|v4_protected|protected)
                                      echo "$V_ALL_PROT" ;;
@@ -955,11 +1003,11 @@ apply_gt() {
         echo "  [skip] no GT-supported dataset in DATASETS=$DATASETS"
         return 0
     fi
-    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx tiers=$(_gt_tier_list) datasets:$gt_ds"
+    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx tiers=$(_gt_tier_list "$variant") datasets:$gt_ds"
     for ds in $gt_ds; do
         for fold in $FOLDS; do
             # One iteration per tier (RULE_TIERS=1) or one single-rule pass ("-").
-            for _t in $(_gt_tier_list); do
+            for _t in $(_gt_tier_list "$variant" "$ds"); do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 if _should_skip_existing && _phase4_done "$variant" "$ds" "$fold"; then
                     echo "  [skip] $ds fold$fold / $variant / $(_gt_relabel_dir) — gt_cache exists"
@@ -1183,6 +1231,14 @@ phase1() {
     _in_focus "$V_FG_FIRST" && {
         echo "1g. fg_first  (FG-first + MDL merge: canonical rings, frag_key, whole rings, freeze=rings)"
         run_frag fg_first_mdl 0 0 "$V_FG_FIRST"; }
+
+    _in_focus "$V_ERTL_FIRST" && {
+        echo "1h. ertl_first  (Ertl library-free FG detection + MDL merge; fragmentation ablation vs fg_first)"
+        run_frag ertl_first_mdl 0 0 "$V_ERTL_FIRST"; }
+
+    _in_focus "$V_RDKIT_FG" && {
+        echo "1i. rdkit_fg_first  (RDKit FunctionalGroups.txt curated FGs + MDL merge; fragmentation ablation)"
+        run_frag rdkit_fg_first_mdl 0 0 "$V_RDKIT_FG"; }
 
     # functional-group-protected variants (nitro + aniline carved as explicit motifs).
     # OPT-IN + focus-scoped: built only when VOCAB_FOCUS names the protected variant
@@ -1432,7 +1488,7 @@ phase5_mose() {
             echo "  [skip] MOSE+GT — synthetic GT MOSE uses filtered vocabs (MOSE_BASE=0)"
         else
             for variant in $(_vocab_focus_filtered_variants); do
-                for _t in $(_gt_tier_list); do
+                for _t in $(_gt_tier_list "$variant"); do
                     GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                     run_mose_gt "$variant"
                 done; GT_TIER=""
@@ -1473,7 +1529,7 @@ phase5_gsat() {
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            for _t in $(_gt_tier_list); do
+            for _t in $(_gt_tier_list "$variant"); do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 run_gsat_gt "$variant"
             done; GT_TIER=""
@@ -1543,7 +1599,7 @@ phase5_vanilla_gt() {
 
     local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        for _t in $(_gt_tier_list); do
+        for _t in $(_gt_tier_list "$variant"); do
             GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
             run_vanilla_gt "$variant"
         done; GT_TIER=""
@@ -1570,7 +1626,7 @@ phase5_baselines_gt() {
 
     local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        for _t in $(_gt_tier_list); do
+        for _t in $(_gt_tier_list "$variant"); do
             GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
             run_baselines_gt "$variant"
         done; GT_TIER=""
@@ -1603,7 +1659,7 @@ phase5_motifsat() {
 
     if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            for _t in $(_gt_tier_list); do
+            for _t in $(_gt_tier_list "$variant"); do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 run_motifsat_gt "$variant"
             done; GT_TIER=""

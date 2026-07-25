@@ -1423,7 +1423,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         #         mol_frags_tracked = [
         #             [(_resolve(smi), atoms) for smi, atoms in mf]
         #             for mf in mol_frags_tracked]
-    elif method == 'fg_first' or method == 'fg_first_mdl':
+    elif method in ('fg_first', 'fg_first_mdl', 'ertl_first', 'ertl_first_mdl',
+                    'rdkit_fg_first', 'rdkit_fg_first_mdl'):
         # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
         # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
         # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
@@ -1436,8 +1437,20 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         # all-bonds finest + MDL-BPE re-merge) · b<N> (rBRICS-prior bits) · cap<N> (max merged atoms).
         import fg_first_frag as _fgf
         _fgf.set_ring_identity('canonical')
+        # FG-detector variants are drop-ins for the curated 13-SMARTS dictionary: they swap
+        # ONLY the FG-partition function; rings, MDL merge and keying stay identical.
+        #   fg_first       -> curated dictionary          (fg_first_frag.partition)
+        #   ertl_first     -> Ertl/EFGs library-free      (ertl_frag.partition)
+        #   rdkit_fg_first -> RDKit's FunctionalGroups.txt (rdkit_fg_frag.partition)
+        _part, _tag = None, 'fg_first'
+        if method.startswith('ertl_first'):
+            import ertl_frag as _ef
+            _part, _tag = _ef.partition, 'ertl_first'
+        elif method.startswith('rdkit_fg_first'):
+            import rdkit_fg_frag as _rf
+            _part, _tag = _rf.partition, 'rdkit_fg_first'
         _subcut = 'nosubcut' not in variant
-        _mdl = (method == 'fg_first_mdl') or ('mdl' in variant)
+        _mdl = method.endswith('_mdl') or ('mdl' in variant)
         import re as _re
         _pm = _re.search(r'pool(\d+)', variant)
         _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
@@ -1449,18 +1462,25 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             _beta = float(_bm.group(1)) if _bm else 4.0
             _cap  = int(_cm.group(1)) if _cm else 8
             _valid = [s for s in smiles_all if Chem.MolFromSmiles(s) is not None]
-            print(f"    [fg_first_mdl] learning linker cuts on {len(_valid)} mols "
-                  f"(finest=all_bonds beta={_beta} cap={_cap} freeze=rings) ...")
+            # MDL_MAX_MERGES caps the greedy merge budget. 0 => finest all-bonds cut with
+            # ZERO merges, i.e. the merge-OFF arm of the ablation holding the segmentation,
+            # keying and partition fixed (the non-MDL path is NOT this — it uses the
+            # heuristic subcut_chains segmentation, so it is not a controlled merge ablation).
+            _maxm = int(os.environ.get('MDL_MAX_MERGES', '4000'))
+            print(f"    [{_tag}_mdl] learning linker cuts on {len(_valid)} mols "
+                  f"(finest=all_bonds beta={_beta} cap={_cap} freeze=rings max_merges={_maxm}) ...")
             _rules, _, _info = _cb.learn(_valid, finest='all_bonds', beta=_beta,
-                                         max_atoms=_cap, freeze='rings')
-            print(f"    [fg_first_mdl] {_info['n_merges']} merge rules; "
+                                         max_atoms=_cap, freeze='rings', fg_partition=_part,
+                                         max_merges=_maxm)
+            print(f"    [{_tag}_mdl] {_info['n_merges']} merge rules; "
                   f"L {_info['L_traj'][0]:.0f} -> {_info['L_traj'][-1]:.0f}")
             mol_frags_tracked = []
             for orig_smi in smiles_all:
                 mol = Chem.MolFromSmiles(orig_smi)
                 if mol is None:
                     mol_frags_tracked.append([]); _n_bad += 1; continue
-                _tr = _cb.apply_rules(mol, _rules, finest='all_bonds', freeze='rings')
+                _tr = _cb.apply_rules(mol, _rules, finest='all_bonds', freeze='rings',
+                                      fg_partition=_part)
                 mol_frags_tracked.append([(k, set(at))
                                           for k, at in _fgf.rekey_structural(mol, _tr)])
         else:
@@ -1475,8 +1495,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     mol_frags_tracked.append([])
                     _n_bad += 1
                     continue
-                owner, ident = _fgf.partition(mol, subcut_chains=_subcut,
-                                              whole_ring_systems=True)
+                owner, ident = (_part or _fgf.partition)(mol, subcut_chains=_subcut,
+                                                          whole_ring_systems=True)
                 groups: Dict[int, Set[int]] = {}
                 for a, fid in enumerate(owner):
                     groups.setdefault(fid, set()).add(a)
@@ -1783,24 +1803,73 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             # shortcut availability), NO GNN and NO cyclic dependency. Set
             # RULE_TIERS_GRADER=gnn for the trained-P2 prior (slow; the GNN budget
             # env vars below apply only then).
-            _grader = _os.environ.get('RULE_TIERS_GRADER', 'lr')
-            _tk = dict(grader=_grader)
-            if _grader == 'gnn':
-                _tk.update(
-                    backbones=_os.environ.get('RULE_TIERS_SCREEN_BB', 'GIN').split(','),
-                    folds=int(_os.environ.get('RULE_TIERS_SCREEN_FOLDS', '1')),
-                    confirm_backbones=_os.environ.get('RULE_TIERS_CONFIRM_BB', 'GIN,GCN,SAGE').split(','),
-                    confirm_folds=int(_os.environ.get('RULE_TIERS_CONFIRM_FOLDS', '2')),
-                    screen_epochs=int(_os.environ.get('RULE_TIERS_SCREEN_EPOCHS', str(_rt.SCREEN_EPOCHS))),
-                    confirm_epochs=int(_os.environ.get('RULE_TIERS_CONFIRM_EPOCHS', str(_rt.CONFIRM_EPOCHS))),
-                )
-            print(f"    [tiers] grading easy/medium/hard (grader={_grader}, "
-                  f"{len(smiles_all)} mols)…")
-            tiers = _rt.select_tiers(smiles_all, mol_frags_tracked, **_tk)
-            with open(vdir / 'rule_tiers.json', 'w') as _f:
-                json.dump(tiers, _f, indent=2)
-            _band = ', '.join(f"{k}:P2={v.get('P2')}" for k, v in tiers.items())
-            print(f"    [tiers] wrote rule_tiers.json → {_band or '(no bands populated)'}")
+            # RULE_ENGINE=dnf uses the frequent-itemset DNF engine (rule_dnf.select_dnf) instead of
+            # the difficulty-tier selector. Output is the SAME rule_tiers.json schema (dict keyed by
+            # rule name -> {clauses:[{motifs}], ...}), just keyed 'dnf_k1/2/3' instead of easy/med/hard,
+            # so apply_gt.load_tier_rule and the phase4/5 driver read it unchanged. Difficulty is
+            # MEASURED downstream (GT-ROC), not asserted here.
+            if _os.environ.get('RULE_ENGINE', 'tiers') == 'dnf':
+                import rule_dnf as _rd
+                # RULE_DNF_N caps the anchor count: unset => module default (20, top by coverage);
+                # 'all' => full population; int => that many.
+                _nr = _os.environ.get('RULE_DNF_N')
+                if _nr in (None, ''):
+                    _nr = _rd.N_RULES
+                elif _nr == 'all':
+                    _nr = None
+                else:
+                    try:
+                        _nr = int(_nr)
+                    except ValueError:
+                        raise SystemExit(
+                            f"RULE_DNF_N must be a positive integer or 'all' (got {_nr!r}). "
+                            f"Unset it for the default ({_rd.N_RULES}).")
+                    if _nr < 1:
+                        raise SystemExit(
+                            f"RULE_DNF_N must be >= 1 or 'all' (got {_nr}).")
+                # RULE_DNF_ARMS: which complement-growth arm(s) to plant. DEFAULT 'balanced' =
+                # near-disjoint + comparable-coverage complements (prevalent, balanced disjunctions;
+                # keys dnf_k*_r*) — the main-paper benchmark. 'rare' = min-overlap complements (a
+                # rare-tail second cause; keys suffixed _rare) — OPT-IN appendix arm, whose value is
+                # empirical (the rare clause is a minor part of the rule; see notes). 'both' = plant
+                # both (doubles rule count/compute).
+                _arms = _os.environ.get('RULE_DNF_ARMS', 'balanced')
+                print(f"    [dnf] mining DNF rules (rule_dnf, {len(smiles_all)} mols, "
+                      f"n_rules={_nr if _nr is not None else 'all'}, arms={_arms})…")
+                tiers = {}
+                if _arms in ('balanced', 'both'):
+                    for _k, _v in _rd.select_dnf(smiles_all, mol_frags_tracked, n_rules=_nr,
+                                                 comparable_cov=True,
+                                                 log=lambda *a: print('   [bal]', *a)).items():
+                        _v['arm'] = 'balanced'; tiers[_k] = _v
+                if _arms in ('rare', 'both'):
+                    for _k, _v in _rd.select_dnf(smiles_all, mol_frags_tracked, n_rules=_nr,
+                                                 comparable_cov=False,
+                                                 log=lambda *a: print('   [rare]', *a)).items():
+                        _v['arm'] = 'rare'; tiers[f'{_k}_rare'] = _v
+                with open(vdir / 'rule_tiers.json', 'w') as _f:
+                    json.dump(tiers, _f, indent=2)
+                _band = ', '.join(f"{k}:cov={v.get('cov')}" for k, v in tiers.items())
+                print(f"    [dnf] wrote rule_tiers.json → {_band or '(no rules)'}")
+            else:
+                _grader = _os.environ.get('RULE_TIERS_GRADER', 'lr')
+                _tk = dict(grader=_grader)
+                if _grader == 'gnn':
+                    _tk.update(
+                        backbones=_os.environ.get('RULE_TIERS_SCREEN_BB', 'GIN').split(','),
+                        folds=int(_os.environ.get('RULE_TIERS_SCREEN_FOLDS', '1')),
+                        confirm_backbones=_os.environ.get('RULE_TIERS_CONFIRM_BB', 'GIN,GCN,SAGE').split(','),
+                        confirm_folds=int(_os.environ.get('RULE_TIERS_CONFIRM_FOLDS', '2')),
+                        screen_epochs=int(_os.environ.get('RULE_TIERS_SCREEN_EPOCHS', str(_rt.SCREEN_EPOCHS))),
+                        confirm_epochs=int(_os.environ.get('RULE_TIERS_CONFIRM_EPOCHS', str(_rt.CONFIRM_EPOCHS))),
+                    )
+                print(f"    [tiers] grading easy/medium/hard (grader={_grader}, "
+                      f"{len(smiles_all)} mols)…")
+                tiers = _rt.select_tiers(smiles_all, mol_frags_tracked, **_tk)
+                with open(vdir / 'rule_tiers.json', 'w') as _f:
+                    json.dump(tiers, _f, indent=2)
+                _band = ', '.join(f"{k}:P2={v.get('P2')}" for k, v in tiers.items())
+                print(f"    [tiers] wrote rule_tiers.json → {_band or '(no bands populated)'}")
         except Exception as _te:
             print(f"    [tiers][error] tier selection failed: {_te}")
             raise
@@ -1936,7 +2005,8 @@ Examples:
     p.add_argument('--out_dir',   default='./motifsat_output',
                    help='Output root directory')
     p.add_argument('--method',    default='all',
-                   choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl'],
+                   choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl',
+                            'ertl_first', 'ertl_first_mdl', 'rdkit_fg_first', 'rdkit_fg_first_mdl'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--fallback',  action='store_true',

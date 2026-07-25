@@ -29,8 +29,42 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
+
+# ── FG-family signature (for freeze='rings' coverage recovery) ───────────────────
+# freeze='rings' lets a functional-group head grow into its context, so ONE group
+# fragments into environment-dependent motifs (*C=O, *CC=O, *CCC=O), each rarer than the
+# group as a whole. We recover the lost support by recognising these as one family and
+# admitting them disjunctively (§ struct/family pool below). A motif's FAMILY is the set of
+# minimal-FG names its structure contains: grown carbonyls all read {carbonyl}, while an acid
+# *C(=O)O reads {carbonyl, hydroxyl} — a different family. Keyed by the production motif key.
+_FG_SIG_CACHE: Dict[str, Optional[frozenset]] = {}
+
+
+def _fg_family(key: str) -> Optional[frozenset]:
+    """Minimal-FG signature of a motif key, or None for rings / leftovers / FG-free / unparseable.
+    Reuses fg_first_frag's minimal-FG SMARTS so families track the same chemistry the partition
+    uses. Cached because the same key recurs across the corpus."""
+    if key in _FG_SIG_CACHE:
+        return _FG_SIG_CACHE[key]
+    sig: Optional[frozenset] = None
+    if not key.startswith(('ring:', 'chain:', 'frag:')):
+        try:
+            from rdkit import Chem
+            import fg_first_frag as _fgf
+            m = Chem.MolFromSmiles(key)
+            if m is not None:
+                names = frozenset(n for n, p in _fgf._MIN
+                                  if p is not None and m.HasSubstructMatch(p))
+                sig = names or None
+        except Exception:
+            sig = None
+    _FG_SIG_CACHE[key] = sig
+    return sig
+
 # ── difficulty / validity constants (mirror gates_p2.py) ─────────────────────────
 COV_LO, COV_HI = 0.15, 0.50          # non-degenerate label balance
+COV_TARGET = 0.25                    # structural DNFs OR up to this coverage, not just past the
+                                     # floor (0.15), so rules aren't stuck at ~0.18 nor over-homogenised
 TAU_P4 = 0.75                        # learnable (GNN grader only)
 # Prefer chemically-rich rules (rings / ≥2-atom FGs) over bare single atoms. When on,
 # the pool also builds structural DNFs (OR of low-coverage rings/FGs up to the balance
@@ -38,6 +72,7 @@ TAU_P4 = 0.75                        # learnable (GNN grader only)
 # learnability as a gate/tiebreak — so a benzene ring beats a lone chlorine. Set
 # RULE_TIERS_STRUCTURAL=0 to fall back to the old bare-atom-friendly selection.
 PREFER_STRUCTURAL = os.environ.get('RULE_TIERS_STRUCTURAL', '1') == '1'
+FAMILY_OR = os.environ.get('RULE_TIERS_FAMILY_OR', '0') == '1'   # opt-in FG-family clause OR (appendix study)
 MIN_STRUCT_ATOMS = 2                 # a "structural" motif is a ring or has ≥ this many atoms
 BANDS = [('easy', 0.85, 1.01), ('medium', 0.70, 0.85), ('hard', -0.01, 0.70)]  # GNN-P2 bands
 MIN_SUP = 0.01                       # motif must appear in >=1% of molecules to be a literal
@@ -416,8 +451,18 @@ def select_tiers(smiles: List[str],
     def rule_atoms(cls) -> int:           # total atoms the rule references (richness proxy)
         return sum(motif_natoms.get(m, 1) for cl in cls for m in cl)
 
-    def rule_structural(cls) -> bool:     # every motif in every clause is structural
-        return all(_structural(m) for cl in cls for m in cl)
+    def rule_structural(cls) -> bool:     # every CLAUSE (OR disjunct) must carry structure
+        # A bare single-atom motif (*Cl, *O) is admissible ONLY when ANDed with a
+        # structural motif inside the same clause — never as a standalone OR disjunct:
+        #   [[benzene, *Cl]]         -> True   (AND: the ring forces message passing)
+        #   [[benzene], [*Cl]]       -> False  (*Cl is a lone OR disjunct == a shortcut)
+        #   [[*Cl]] / [[*Cl, *O]]    -> False  (no ring / ≥2-atom FG anywhere)
+        # Enforced per clause: each OR disjunct must contain at least one structural
+        # motif; single atoms then survive only as co-constraints in an AND clause.
+        for cl in cls:                                    # cl = one AND clause / OR disjunct
+            if not any(_structural(m) for m in cl):
+                return False                              # clause is all bare atoms -> trivial
+        return True
 
     # ── pool: balanced singles + genuine conjunctions + a few disjoint DNFs ──────
     singles = [(k,) for k in cand if bal(pres[k])]
@@ -487,19 +532,62 @@ def select_tiers(smiles: List[str],
                     nf = fires | pres[k]
                     if nf.mean() <= COV_HI:
                         clause.append([k]); fires = nf; used_local.add(k)
-                if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
-                    break
+                if fires.mean() >= COV_TARGET and len(clause) >= 2:
+                    break                                     # OR up to mid-band, not the floor
             if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
                 struct_dnfs.append([list(c) for c in clause]); used |= used_local
             if len(struct_dnfs) >= POOL_D + 4:
                 break
 
+    # ── FG-family OR recovery (OPT-IN, default OFF) ──────────────────────────────
+    # Directly repairs the freeze='rings' coverage cost: growth splits one group into
+    # variants (*C=O, *CC=O, …) that each fall below COV_LO, so `ring ∧ single-variant`
+    # is rejected. We OR the variants of one FG family back together — standalone, and
+    # distributed over a common ring as the DNF (ring∧v1) ∨ (ring∧v2) ∨ … — restoring the
+    # rule the growth would otherwise have cost. Unlike the coverage-greedy struct pool
+    # above, membership here is CHEMICAL (shared minimal-FG signature), not incidental.
+    # GATED OFF by default so the main benchmark keeps the documented grown-FG coverage
+    # limitation; enable with RULE_TIERS_FAMILY_OR=1 for the "increasing clause coverage"
+    # study (regenerates tiers, changing which rules are planted).
+    fam_dnfs = []
+    if PREFER_STRUCTURAL and FAMILY_OR:
+        from collections import defaultdict as _dd
+        fams: Dict[frozenset, List[str]] = _dd(list)
+        for k in cand:
+            sig = _fg_family(k)
+            if sig is not None:
+                fams[sig].append(k)
+        rings_inband = sorted(
+            [k for k in cand if k.startswith('ring:') and pres[k].mean() >= COV_LO],
+            key=lambda k: -cov[k])
+        for sig, members in fams.items():
+            if len(members) < 2:
+                continue                                  # one motif: nothing to recover
+            fires, picked = np.zeros(n, bool), []
+            for k in sorted(members, key=lambda k: -cov[k]):
+                if fires.mean() >= COV_HI:
+                    break
+                nf = fires | pres[k]
+                if nf.mean() <= COV_HI:
+                    picked.append(k); fires = nf
+            if len(picked) < 2:
+                continue
+            if COV_LO <= fires.mean() <= COV_HI:          # (a) family-OR standalone
+                fam_dnfs.append([[k] for k in picked])
+            for r in rings_inband[:2]:                    # (b) ring ∧ family-OR (distributed)
+                dnf = [[r, k] for k in picked]
+                if COV_LO <= rule_cov(dnf) <= COV_HI:
+                    fam_dnfs.append(dnf); break
+            if len(fam_dnfs) >= POOL_D + 4:
+                break
+
     pool = ([('single', [list(c)]) for c in singles]
             + [('conj', [list(c)]) for c in conjs]
             + [('dnf', d) for d in dnfs]
-            + [('struct', d) for d in struct_dnfs])
+            + [('struct', d) for d in struct_dnfs]
+            + [('family', d) for d in fam_dnfs])
     log(f"    [tiers] pool: {len(singles)} singles + {len(conjs)} conj + "
-        f"{len(dnfs)} dnf + {len(struct_dnfs)} struct")
+        f"{len(dnfs)} dnf + {len(struct_dnfs)} struct + {len(fam_dnfs)} family")
 
     def rule_str(cls):
         return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)

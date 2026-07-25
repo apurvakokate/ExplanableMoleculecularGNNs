@@ -68,7 +68,8 @@ class _MolGraph:
     Tracks atom sets, identities, mergeability, and per-linker-bond rBRICS legality."""
     __slots__ = ('mol', 'atoms', 'ident', 'frozen', '_rb')
 
-    def __init__(self, mol: Chem.Mol, finest: str = 'all_bonds', freeze: str = 'heads'):
+    def __init__(self, mol: Chem.Mol, finest: str = 'all_bonds', freeze: str = 'heads',
+                 fg_partition=None):
         """freeze='heads' (default): FG heads AND ring bodies are inert, only linkers merge (the original
         linker-only mode). freeze='rings': ONLY rings are inert; FG heads may merge with any non-ring
         neighbour (FGs compose into amide/ester/... under the SAME deltaL<0 criterion). Rings are never
@@ -82,7 +83,8 @@ class _MolGraph:
         # heads/bodies from the partition WITHOUT linker subcut; linker atoms = leftover.
         # whole_ring_systems=True: fused rings stay whole so every ring: motif is a closed cycle
         # (a disjoint split would open one fused ring into an acyclic 'ring:CCC' remnant).
-        owner, ids = _FG.partition(mol, subcut_chains=False, whole_ring_systems=True)
+        owner, ids = (fg_partition or _FG.partition)(mol, subcut_chains=False,
+                                                      whole_ring_systems=True)
         groups: Dict[int, Set[int]] = {}
         for a, f in enumerate(owner):
             groups.setdefault(f, set()).add(a)
@@ -172,7 +174,7 @@ class _MolGraph:
 # ── corpus-level learner ──────────────────────────────────────────────────────
 def learn(smiles: Sequence[str], finest: str = 'all_bonds', beta: float = 4.0,
           max_atoms: Optional[int] = None, max_merges: int = 4000, verbose: bool = False,
-          freeze: str = 'heads'):
+          freeze: str = 'heads', fg_partition=None):
     """Greedy MDL-BPE over mergeable adjacencies with an rBRICS prior. finest='all_bonds' fixes
     both over- and under-fragmentation; finest='rbrics' is merge-only. beta = bits charged per
     retained non-rBRICS cut. max_atoms caps a brick's size so it stays a small reusable unit
@@ -182,7 +184,7 @@ def learn(smiles: Sequence[str], finest: str = 'all_bonds', beta: float = 4.0,
     for s in smiles:
         m = Chem.MolFromSmiles(s)
         if m is not None:
-            graphs.append(_MolGraph(m, finest=finest, freeze=freeze))
+            graphs.append(_MolGraph(m, finest=finest, freeze=freeze, fg_partition=fg_partition))
 
     def recount():
         tc: Counter = Counter(); ta: Dict[str, int] = {}; nrb = 0
@@ -252,10 +254,12 @@ def learn(smiles: Sequence[str], finest: str = 'all_bonds', beta: float = 4.0,
 
 
 def apply_rules(mol: Chem.Mol, rules: Sequence[Tuple[str, str]],
-                finest: str = 'all_bonds', freeze: str = 'heads') -> List[Tuple[str, Set[int]]]:
+                finest: str = 'all_bonds', freeze: str = 'heads',
+                fg_partition=None) -> List[Tuple[str, Set[int]]]:
     """Replay learned merge rules (in order) on a new molecule -> [(identity, atoms)].
-    freeze MUST match the value used in learn() or the frozen set (and thus replayability) differs."""
-    g = _MolGraph(mol, finest=finest, freeze=freeze)
+    freeze MUST match the value used in learn() or the frozen set (and thus replayability) differs.
+    fg_partition MUST also match learn() (it sets the frozen heads/rings)."""
+    g = _MolGraph(mol, finest=finest, freeze=freeze, fg_partition=fg_partition)
     for r in rules:
         g.apply_merge(r)
     return g.fragments()

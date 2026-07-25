@@ -38,11 +38,30 @@ from .motif_eval import (
 
 
 def _has_node_attr(graphs, attr: str) -> bool:
-    """True iff at least one graph carries a non-None ``attr`` (e.g.
-    node_label_fired / node_label_spurious). Used to gate the Mode-2 and spurious
-    ROC so compute_gt_roc is never given a missing attr — which would silently
-    fall back to the edge_label-derived (rule) mask and mislabel the metric."""
-    return any(getattr(g, attr, None) is not None for g in graphs)
+    """True iff at least one graph carries a ``attr`` with a POSITIVE entry. Used to
+    gate the Mode-2, spurious, and family ROC so compute_gt_roc is never given a
+    missing attr — which would silently fall back to the edge_label-derived (rule)
+    mask and mislabel the metric.
+
+    Requiring a positive, not merely a non-None tensor, matters because apply_gt
+    initialises node_label_spurious / node_label_family as all-zero tensors on EVERY
+    graph and only sets 1.0 where such an atom exists. A rule with no spurious/family
+    atoms anywhere therefore has the attr present-but-all-zero; scoring it yields an
+    undefined AUC (NaN) that pollutes the summary and the aggregate tables. Skipping
+    it instead leaves the metric absent for that rule. Causal (node_label) and fired
+    (node_label_fired) labels always carry positives on rule-positive graphs, so this
+    never gates them out."""
+    for g in graphs:
+        v = getattr(g, attr, None)
+        if v is None:
+            continue
+        try:
+            if float(v.sum()) > 0:
+                return True
+        except Exception:
+            if bool(v):        # non-tensor truthy attr — presence is enough
+                return True
+    return False
 
 
 def explainability_summary_fields(
@@ -106,6 +125,7 @@ def explainability_summary_fields(
     gt_nx   = results.get(f'gt_roc_node_max_{tag}' if tag else 'gt_roc_node_max', {})
     gt_fired = results.get(f'gt_roc_node_fired_{tag}' if tag else 'gt_roc_node_fired', {})
     spur    = results.get(f'spurious_roc_node_{tag}' if tag else 'spurious_roc_node', {})
+    fam     = results.get(f'family_roc_node_{tag}' if tag else 'family_roc_node', {})
 
     fields = _corr_block()
     fields.update({
@@ -122,6 +142,9 @@ def explainability_summary_fields(
         # Spurious-shortcut ROC — explanation vs strongest non-GT motif (high = fooled)
         f'spurious_roc_node_auc_mean{suffix}': spur.get('auc_mean', nan),
         f'spurious_roc_node_n_graphs{suffix}': spur.get('n_graphs', 0),
+        # Family ROC — explanation vs super/sub-structures of the cause (high = right-chem-wrong-granularity)
+        f'family_roc_node_auc_mean{suffix}': fam.get('auc_mean', nan),
+        f'family_roc_node_n_graphs{suffix}': fam.get('n_graphs', 0),
         f'within_motif_var{suffix}':  results.get(f'within_motif_var_{tag}' if tag else 'within_motif_var', nan),
         f'between_motif_var{suffix}': results.get(f'between_motif_var_{tag}' if tag else 'between_motif_var', nan),
     })
@@ -289,6 +312,11 @@ class EvalPipeline:
                     self.model, gt_graphs, self.device,
                     node_att_fn=self.node_att_fn, level='node',
                     gt_attr='node_label_spurious')
+            if _has_node_attr(gt_graphs, 'node_label_family'):
+                block['family_roc_node'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_family')
 
         # Motif-attention coherence (within/between-motif variance) — a property of the model's
         # attention, independent of GT. within ≈ 0 for MotifSAT (motif-coherent by construction),
@@ -403,6 +431,11 @@ class EvalPipeline:
                     self.model, _gt, self.device,
                     node_att_fn=self.node_att_fn, level='node',
                     gt_attr='node_label_spurious')
+            if _has_node_attr(_gt, 'node_label_family'):
+                results['family_roc_node'] = compute_gt_roc(
+                    self.model, _gt, self.device,
+                    node_att_fn=self.node_att_fn, level='node',
+                    gt_attr='node_label_family')
 
         # Motif-attention coherence (within/between-motif variance) — model attention structure,
         # independent of GT. within ≈ 0 for MotifSAT (motif-coherent), > 0 for GSAT (per-node).

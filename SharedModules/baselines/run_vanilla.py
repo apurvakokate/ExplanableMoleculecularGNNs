@@ -778,7 +778,8 @@ def run(cfg: VanillaConfig) -> dict:
                 # explainer, guarded on the attr's presence (else compute_gt_roc falls
                 # back to the rule-derived edge mask and mislabels the metric).
                 for _attr, _mkey in (('node_label_fired', 'gt_roc_node_fired'),
-                                     ('node_label_spurious', 'spurious_roc_node')):
+                                     ('node_label_spurious', 'spurious_roc_node'),
+                                     ('node_label_family', 'family_roc_node')):
                     if _has_node_attr(_gt_roc_list, _attr):
                         _r = compute_gt_roc(model, _gt_roc_list, device,
                                             node_att_fn=_fn, level='node', gt_attr=_attr)
@@ -1002,9 +1003,9 @@ def main():
                         help='Path to gt_cache directory written by phase4 '
                              '(SharedModules/data/apply_gt.py).')
     parser.add_argument('--gt_tier',         default=None,
-                        choices=['easy', 'medium', 'hard'],
-                        help='Load a difficulty tier (relabel_<tier>/) instead of '
-                             'the single-rule relabel1/ cache.')
+                        help='Load a named GT cell (relabel_<tier>/): a difficulty tier '
+                             '(easy/medium/hard) or a DNF cell (dnf_k1/dnf_k2/dnf_k3), instead '
+                             'of the single-rule relabel1/ cache.')
     parser.add_argument('--mutag_index_maps_path', default=None,
                         help='mutag only: override path to '
                              'mutag_<fold>_index_maps.pkl (default: convention '

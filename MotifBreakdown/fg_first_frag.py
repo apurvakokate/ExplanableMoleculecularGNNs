@@ -373,8 +373,25 @@ def partition(mol: Chem.Mol,
               whole_ring_systems: bool = False) -> Tuple[List[int], Dict[int, str]]:
     """Partition atoms into fragments. Returns (owner[atom]->frag_id, frag_id->identity).
 
-    Priority: minimal FGs (specific first) -> ring systems -> remaining atoms (chains /
-    linkers).
+    Claim order — RINGS FIRST, then functional groups, then leftovers:
+
+      1. ring systems  — claimed BEFORE the FG dictionary, so a ring HETEROATOM (the O in
+         THF/morpholine, the N in piperidine) stays part of its ring instead of being stolen
+         by the ether/amine SMARTS and shattering the ring. Only a genuine closed cycle is
+         keyed ``ring:``; a remnant opened by a fused-system split falls through to step 3.
+      2. minimal FGs   — specific -> general, on the atoms still free, each claimed with
+         ``require_whole`` so a group is skipped unless ALL of its atoms are free. A
+         ring-embedded FG (cyclic carbonyl/sulfone, whose C/S is a ring atom) is therefore
+         NOT claimed; its exocyclic atoms fall to step 3 and are keyed by their real
+         structure (a bare oxo), never as a lone-atom 'carbonyl'.
+      3. leftovers     — remaining atoms as connected components (chains / linkers).
+      4. FG-completeness — a leftover component that is EXACTLY an FG match in the original
+         molecule is relabelled ``fg:<name>`` (never let a real FG hide as filler). Note this
+         changes only the label; ``_is_leftover`` is then False for it, so downstream
+         (cascade_bpe_linker) treats it as a head rather than linker tissue.
+
+    Note the ordering is the reverse of what a "FG-first" name suggests: chemistry-first means
+    ring BODIES and FG HEADS both set boundaries before data does, and rings win ties.
 
     ``split_fused_aliphatic`` splits saturated fused ring systems at their junctions
     (rBRICS L18/L19; cage-guarded). ``subcut_chains`` sub-fragments long alkyl linkers

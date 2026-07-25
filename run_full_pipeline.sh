@@ -185,12 +185,22 @@ fi
 # where it skips real-label training ONLY when the dataset actually has synthetic GT
 # (`_phase5_has_gt_training`). This makes GT_ONLY safe for source-GT datasets (mutag,
 # *_Verified_GT), where the real run IS the experiment and must not be skipped.
-PHASES+=(
-  phase5_vanilla phase5_mose phase5_gsat phase5_motifsat phase5_baselines
-)
+#
+# SKIP_SELF_EXPLAINING=1 drops the ante-hoc self-explaining families (MOSE, GSAT,
+# MotifSAT) from the run, leaving the vanilla GNN + the four post-hoc explainers
+# (GNNExplainer, PGExplainer, MotifOcclusion, MAGE). Use it when the deliverable is
+# the post-hoc benchmark only: it saves the (large) self-explaining training and
+# removes three failure surfaces that otherwise run BEFORE the *_gt phases under
+# FAIL_FAST=1. Also forces RUN_POSTHOC off, since those analyses target MOSE/MotifSAT/GSAT.
+PHASES+=( phase5_vanilla )
+if [ "${SKIP_SELF_EXPLAINING:-0}" != "1" ]; then
+    PHASES+=( phase5_mose phase5_gsat phase5_motifsat )
+fi
+PHASES+=( phase5_baselines )
 if ! _is_special_dataset "$DATASET"; then
     PHASES+=( phase5_vanilla_gt phase5_baselines_gt )
 fi
+[ "${SKIP_SELF_EXPLAINING:-0}" = "1" ] && RUN_POSTHOC=0
 # Post-hoc analyses on the phase-5 checkpoints (no retraining). Default ON; set RUN_POSTHOC=0 to skip.
 #   multi_explanation  — H0/H1/H2 co-occurrence ratios on MOSE/MotifSAT/GSAT
 #   probe_masked_nodes — masked-node feature probe (gated vs raw)

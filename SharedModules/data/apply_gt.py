@@ -306,7 +306,8 @@ def annotate_split(data_list: List,
                    rule_clauses: List[Set[str]],
                    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
                    relabel: bool = True,
-                   spurious_motif: Optional[str] = None) -> Tuple[List, Dict]:
+                   spurious_motif: Optional[str] = None,
+                   family_motifs: Optional[Set[str]] = None) -> Tuple[List, Dict]:
     """Annotate Data objects with GT labels and edge labels.
 
     rule_clauses: list of sets — DNF rule fires when ANY clause fires.
@@ -362,6 +363,7 @@ def annotate_split(data_list: List,
         node_label = torch.zeros(n_nodes, dtype=torch.float32)         # Mode 1: whole-rule
         node_label_fired = torch.zeros(n_nodes, dtype=torch.float32)   # Mode 2: fired-clause only
         node_label_spurious = torch.zeros(n_nodes, dtype=torch.float32)  # strongest non-GT shortcut
+        node_label_family = torch.zeros(n_nodes, dtype=torch.float32)    # right chemistry, wrong granularity
         edge_label = torch.zeros(n_edges, dtype=torch.float32)
 
         # Spurious GT: atoms of the chosen shortcut motif, marked on the SAME positive
@@ -375,6 +377,16 @@ def annotate_split(data_list: List,
                 node_label_spurious[torch.tensor(spur_nodes, dtype=torch.long)] = 1.0
                 n_pos_spurious_nodes += len(spur_nodes)
                 n_graphs_with_spurious += 1
+
+        # Family GT: atoms of motifs that structurally CONTAIN or are CONTAINED IN a causal motif
+        # (carbonyl<->acid/ester/amide) — the "right chemistry, wrong granularity" class. Marked on
+        # rule-positive graphs like spurious; family_roc then sits between gt_roc and spurious_roc.
+        if family_motifs and rule_fires and node_map:
+            fam_nodes = [idx for idx, (smarts, _mid) in node_map.items()
+                         if smarts in family_motifs]
+            if fam_nodes:
+                fam_nodes = _validate_rule_nodes(fam_nodes, n_nodes, smi or '?')
+                node_label_family[torch.tensor(fam_nodes, dtype=torch.long)] = 1.0
 
         if rule_fires and node_map:
             # TWO GT views (both attached; the evaluator picks one via compute_gt_roc(gt_attr=...)):
@@ -407,6 +419,7 @@ def annotate_split(data_list: List,
         data.node_label = node_label               # Mode 1 (whole-rule) — the default GT
         data.node_label_fired = node_label_fired   # Mode 2 (per-instance fired-clause / OR-aware)
         data.node_label_spurious = node_label_spurious  # strongest non-GT shortcut motif
+        data.node_label_family = node_label_family      # super/sub-structure of the cause (granularity)
         data.edge_label = edge_label
         out.append(data)
 
@@ -457,8 +470,8 @@ Examples
     parser.add_argument('--rule_index',  type=int, default=0,
                         help='Index into rules.json (0 = best rule)')
     parser.add_argument('--tier',        default=None,
-                        choices=['easy', 'medium', 'hard'],
-                        help='Relabel using a difficulty tier from rule_tiers.json '
+                        help='Relabel using a named rule from rule_tiers.json (any key: the '
+                             'difficulty tiers easy/medium/hard, or DNF cells dnf_k1/dnf_k2/dnf_k3) '
                              'instead of rules.json[--rule_index]. Output goes to '
                              'relabel_<tier>/ (not relabel1/).')
     parser.add_argument('--data_root',   required=True)
@@ -605,11 +618,18 @@ Examples
     print(f'\n  Spurious shortcut motif: {spurious_motif!r} '
           f'(corr with label = {spurious_corr})')
 
+    # family motifs (right-chemistry-wrong-granularity) come from the DNF rule record (rule_dnf);
+    # empty for legacy tier/index rules that carry none.
+    family_motifs = set(rule.get('family_motifs') or [])
+    if family_motifs:
+        print(f'  Family motifs (granularity class): {len(family_motifs)}')
+
     all_stats = {}
     for (split_name, ds, lookup), data_list in zip(split_configs, _all_split_lists):
         annotated, stats = annotate_split(data_list, rule_clauses, lookup,
                                           relabel=relabel,
-                                          spurious_motif=spurious_motif)
+                                          spurious_motif=spurious_motif,
+                                          family_motifs=family_motifs)
         pt_path = out_base / f'{split_name}_with_gt.pt'
         torch.save(annotated, pt_path)
 

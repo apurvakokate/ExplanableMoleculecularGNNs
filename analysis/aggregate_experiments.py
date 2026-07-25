@@ -85,7 +85,7 @@ INJECTION_AGNOSTIC = {'vanilla', 'baselines'}
 FAMILIES = ('vanilla', 'baselines', 'mose', 'motifsat', 'gsat', 'base_gsat')
 
 # every config axis we normalize (recorded as columns on every tidy row)
-ALL_AXES = ['fragmentation', 'threshold', 'synthetic',
+ALL_AXES = ['fragmentation', 'threshold', 'synthetic', 'tier',
             'norm', 'features', 'injection', 'epochs']
 
 # axes that define an experiment BY DEFAULT (everything but architecture/
@@ -93,7 +93,7 @@ ALL_AXES = ['fragmentation', 'threshold', 'synthetic',
 # MotifSAT and GSAT (which carry different per-family injection defaults) all
 # land in the SAME experiment table. Promote it via --experiment_axes when you
 # are deliberately sweeping injection for a single family.
-DEFAULT_EXPERIMENT_AXES = ['fragmentation', 'threshold', 'synthetic',
+DEFAULT_EXPERIMENT_AXES = ['fragmentation', 'threshold', 'synthetic', 'tier',
                            'norm', 'features', 'epochs']
 
 REGRESSION_DATASETS = {
@@ -286,7 +286,12 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     _parsed_tier = parsed.map(lambda t: t[3])        # easy/medium/hard or 'none'
     if 'gt_tier' in df.columns:
         _field_tier = df['gt_tier'].astype(str).str.strip().str.lower()
-        _field_tier = _field_tier.where(_field_tier.isin(_RULE_TIERS), other='none')
+        # Keep legacy difficulty tiers (easy/medium/hard) AND the DNF-engine rule
+        # keys (dnf_k<k>_r<i>[ _rare]) as distinct tier values; coerce anything
+        # else to 'none'. Without the dnf_* pass-through every DNF rule/arity/arm
+        # collapses into one bucket and the per-rule ROC distribution is lost.
+        _valid = _field_tier.isin(_RULE_TIERS) | _field_tier.str.match(r'^dnf_k\d+_r\d+(_rare)?$')
+        _field_tier = _field_tier.where(_valid, other='none')
         df['tier'] = _field_tier.where(_field_tier != 'none', _parsed_tier)
     else:
         df['tier'] = _parsed_tier
@@ -364,6 +369,15 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         ('gt_roc_edge_auc_mean', 'gt_roc_edge_auc_mean'),
         ('gt_roc_node_auc_mean_all', 'gt_roc_node_auc_mean_all'),
         ('gt_roc_edge_auc_mean_all', 'gt_roc_edge_auc_mean_all'),
+        # Three-way attribution channels (DNF engine): Mode-2 fired-clause GT-ROC
+        # plus the spurious-shortcut and family-granularity ROCs. run_vanilla emits
+        # these per explainer as {ex}_{agg}_<name>_auc_mean[_all].
+        ('gt_roc_node_fired_auc_mean', 'gt_roc_node_fired_auc_mean'),
+        ('gt_roc_node_fired_auc_mean_all', 'gt_roc_node_fired_auc_mean_all'),
+        ('spurious_roc_node_auc_mean', 'spurious_roc_node_auc_mean'),
+        ('spurious_roc_node_auc_mean_all', 'spurious_roc_node_auc_mean_all'),
+        ('family_roc_node_auc_mean', 'family_roc_node_auc_mean'),
+        ('family_roc_node_auc_mean_all', 'family_roc_node_auc_mean_all'),
         ('top_k_abs_disc', 'top_k_abs_disc'),
         ('score_disc_spearman', 'score_disc_spearman'),
     ]
