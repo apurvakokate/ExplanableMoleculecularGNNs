@@ -11,6 +11,14 @@
 set -uo pipefail
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT="${PROJECT:-$(cd "$_HERE/.." && pwd)}"
+
+# Activate the project conda env (rdkit / torch / PyG) — REQUIRED for all python.
+# Inherited by child processes (workers → run_cell → python). Idempotent.
+if [ "${CONDA_DEFAULT_ENV:-}" != "${CONDA_ENV:-l2xgnn}" ]; then
+    # shellcheck disable=SC1091
+    source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate "${CONDA_ENV:-l2xgnn}"
+fi
+
 # Base config (PROJECT, DATA_ROOT, NODE_ENCODER, EPOCHS, CONV_NORMALIZE, ...).
 # shellcheck disable=SC1091
 source "$PROJECT/experiment_config.sh"
