@@ -83,6 +83,10 @@ _gt_tier_list()   {
     # variant dir) or no variant was passed.
     local _v="${1:-}" _ds="${2:-}"
     [ -z "$_ds" ] && _ds="${DATASETS%% *}"
+    # GT_TIER_ONLY scopes every GT phase to a single tier — the last axis needed to make
+    # one invocation == one independent CELL (with DATASETS/VOCAB_FOCUS/BACKBONES/FOLDS),
+    # so cells can be fanned out one-per-GPU (SLURM array) or one-per-thread (local).
+    if [ -n "${GT_TIER_ONLY:-}" ]; then echo "$GT_TIER_ONLY"; return; fi
     if [ "${RULE_ENGINE:-tiers}" = "dnf" ]; then
         # DNF engine emits dnf_k{k}_r{i} (N rules per arity); some cells may be empty.
         # Reading the ACTUAL keys excludes empty cells automatically.
