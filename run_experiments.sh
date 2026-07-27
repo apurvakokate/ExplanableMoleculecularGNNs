@@ -244,7 +244,7 @@ _vocab_focus_resolve_one() {
 
 _vocab_focus_base_variants() {
     if [ -z "$VOCAB_FOCUS" ]; then
-        echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL $V_FG_FIRST"
+        echo "$V_OLD $V_RBRICS $V_RBRICS_SF $V_ALL $V_FG_FIRST $V_ERTL_FIRST $V_RDKIT_FG"
         return
     fi
     local resolved="" token v
