@@ -210,6 +210,9 @@ V_RBRICS_SF_TH="rbrics_with_struct_fallback_filter"
 V_ALL_TH="all_fallback_bpe_filter"
 V_RBRICS_PROT_TH="rbrics_protected_filter"          # FG-protected + threshold
 V_ALL_PROT_TH="all_fallback_bpe_protected_filter"   # FG-protected + threshold
+V_FG_FIRST_TH="fg_first_filter"                     # FG-first (curated) + threshold
+V_ERTL_FIRST_TH="ertl_first_filter"                 # Ertl FG-first + threshold
+V_RDKIT_FG_TH="rdkit_fg_first_filter"               # RDKit FG-first + threshold
 
 # GT-relabelled out_dir suffix (from phase4): {base_variant}_relabelled
 _gt_variant_name() { echo "${1}_relabelled$(_gt_tier_suffix)"; }
@@ -270,6 +273,9 @@ _vocab_focus_filtered_for() {
         "$V_ALL")      echo "$V_ALL_TH" ;;
         "$V_RBRICS_PROT") echo "$V_RBRICS_PROT_TH" ;;
         "$V_ALL_PROT")    echo "$V_ALL_PROT_TH" ;;
+        "$V_FG_FIRST")    echo "$V_FG_FIRST_TH" ;;
+        "$V_ERTL_FIRST")  echo "$V_ERTL_FIRST_TH" ;;
+        "$V_RDKIT_FG")    echo "$V_RDKIT_FG_TH" ;;
         *)             echo "$1" ;;
     esac
 }
@@ -290,6 +296,9 @@ _baseline_weight_variant() {
         "$V_ALL_TH")       echo "$V_ALL" ;;
         "$V_RBRICS_PROT_TH") echo "$V_RBRICS_PROT" ;;
         "$V_ALL_PROT_TH")    echo "$V_ALL_PROT" ;;
+        "$V_FG_FIRST_TH")    echo "$V_FG_FIRST" ;;
+        "$V_ERTL_FIRST_TH")  echo "$V_ERTL_FIRST" ;;
+        "$V_RDKIT_FG_TH")    echo "$V_RDKIT_FG" ;;
         *)                 echo "$1" ;;
     esac
 }
@@ -1331,6 +1340,12 @@ phase3() {
         echo "3d. rbrics_with_struct_fallback_filter"; run_frag_thresh rbrics 1 0 "$V_RBRICS_SF_TH"; }
     _in_focus "$V_ALL" && {
         echo "3c. all_fallback_bpe_filter";          run_frag_thresh all 1 1 "$V_ALL_TH"; }
+    _in_focus "$V_FG_FIRST" && {
+        echo "3g. fg_first_filter";                  run_frag_thresh fg_first_mdl 0 0 "$V_FG_FIRST_TH"; }
+    _in_focus "$V_ERTL_FIRST" && {
+        echo "3h. ertl_first_filter";                run_frag_thresh ertl_first_mdl 0 0 "$V_ERTL_FIRST_TH"; }
+    _in_focus "$V_RDKIT_FG" && {
+        echo "3i. rdkit_fg_first_filter";            run_frag_thresh rdkit_fg_first_mdl 0 0 "$V_RDKIT_FG_TH"; }
 
     # FG-protected + threshold (built when the protected base is in VOCAB_FOCUS)
     _in_focus "$V_RBRICS_PROT" && {
@@ -1487,7 +1502,9 @@ phase5_mose() {
         fi
     fi
 
-    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
+    if [ "${REAL_ONLY:-0}" = "1" ]; then
+        echo "  [skip] +GT training — REAL_ONLY=1 (original-labels cell)"
+    elif _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         if [ "${MOSE_BASE:-0}" = "1" ]; then
             echo "  [skip] MOSE+GT — synthetic GT MOSE uses filtered vocabs (MOSE_BASE=0)"
         else
@@ -1531,7 +1548,9 @@ phase5_gsat() {
         done
     fi
 
-    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
+    if [ "${REAL_ONLY:-0}" = "1" ]; then
+        echo "  [skip] +GT training — REAL_ONLY=1 (original-labels cell)"
+    elif _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
             for _t in $(_gt_tier_list "$variant"); do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
@@ -1661,7 +1680,9 @@ phase5_motifsat() {
         done
     fi
 
-    if _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
+    if [ "${REAL_ONLY:-0}" = "1" ]; then
+        echo "  [skip] +GT training — REAL_ONLY=1 (original-labels cell)"
+    elif _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
             for _t in $(_gt_tier_list "$variant"); do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"

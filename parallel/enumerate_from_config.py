@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""enumerate_from_config.py — expand config/experiment_matrix.yaml into the full
+cell list the dispatcher runs. One TAB-separated line per cell:
+
+    dataset<TAB>variant<TAB>backbone<TAB>fold<TAB>tier<TAB>celltype<TAB>device
+
+  variant  : BASE fragmentation (fg_first / rbrics / ertl_first / rdkit_fg_first).
+             The run_experiments.sh phases DERIVE the right vocab from it:
+               vtrain/posthoc(full)   -> the base vocab
+               posthoc(filter)/mose   -> the *_filter vocab (_vocab_focus_filtered_variants)
+               gsat/motifsat          -> the base (full) vocab
+  tier     : 'real' (original-labels regime) | 'dnf_*' (relabelled/synthetic-GT regime).
+             source_gt datasets use 'source' (trained on original labels; SMARTS GT).
+  celltype : vtrain | posthoc | mose | gsat | motifsat
+  device   : cpu  (post-hoc explainers — GPU useless)
+             gpu  (vanilla-train + ante-hoc — GPU-preferred, CPU-eligible in the mixed pool)
+
+Usage:
+    enumerate_from_config.py config/experiment_matrix.yaml [--only-dataset BBBP]
+"""
+import sys, argparse
+try:
+    import yaml
+except ImportError:
+    sys.exit("pyyaml required: pip install pyyaml")
+
+ap = argparse.ArgumentParser()
+ap.add_argument("config")
+ap.add_argument("--only-dataset", default=None, help="restrict to one display dataset name (e.g. BBBP)")
+args = ap.parse_args()
+
+c = yaml.safe_load(open(args.config))
+bbs = c["backbones"]
+base_frags = [f["variant"] for f in c["fragmentations"] if not f["filtered"]]  # 4 base
+ds_meta = c["datasets"]
+r = c["regimes"]
+
+# (display_dataset, tier) pairs across both regimes -----------------------------
+runs = []
+for disp in r["original_labels"]["datasets"]:
+    runs.append((disp, "real"))
+sg = r["relabelled"]["groups"]["synthetic_gt"]
+for disp in sg["datasets"]:
+    for t in sg["tiers"]:
+        runs.append((disp, t))
+srcg = r["relabelled"]["groups"]["source_gt"]
+for disp in srcg["datasets"]:
+    for t in srcg["tiers"]:
+        runs.append((disp, t))
+
+# every cell is keyed by a BASE variant; the phase derives full-vs-filter per celltype
+CELLTYPES = [("vtrain", "gpu"), ("posthoc", "cpu"), ("mose", "gpu"), ("gsat", "gpu"), ("motifsat", "gpu")]
+
+out = []
+for disp, tier in runs:
+    if args.only_dataset and disp != args.only_dataset:
+        continue
+    if disp not in ds_meta:
+        sys.exit(f"dataset {disp!r} in regimes but not in datasets: block")
+    code = ds_meta[disp]["code"]
+    folds = list(range(ds_meta[disp]["folds"]))
+    for bb in bbs:
+        for fold in folds:
+            for base in base_frags:
+                for celltype, device in CELLTYPES:
+                    out.append((code, base, bb, str(fold), tier, celltype, device))
+
+# stable de-dup (a dataset could appear in >1 regime with the same tier only if mis-specified)
+seen = set(); lines = []
+for row in out:
+    if row in seen:
+        continue
+    seen.add(row); lines.append("\t".join(row))
+sys.stdout.write("\n".join(lines) + ("\n" if lines else ""))

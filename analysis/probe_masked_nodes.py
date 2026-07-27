@@ -378,10 +378,147 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
 
 _PROBE_PATH_MARKERS = ('mose', 'motifsat', 'gsat', 'base_gsat')
 
+# Post-hoc explainers whose saved per-motif attributions we can broadcast to
+# nodes for a node-mask probe (the 4 that run on the Vanilla backbone).
+_POSTHOC_METHODS = ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official')
+
 
 def _is_probeable_run(summary_path: Path) -> bool:
     s = str(summary_path).lower()
     return any(m in s for m in _PROBE_PATH_MARKERS)
+
+
+def _load_motif_scores(run_dir: Path, method: str, agg: str = 'max'):
+    """Load a post-hoc explainer's saved per-motif attribution ({motif_id: score}).
+
+    These are the global (dataset-level) attributions written by
+    baselines/run_vanilla.py::_save_explainer_scores. Returns None if absent.
+    """
+    import pandas as pd
+    p = Path(run_dir) / f'{method}_motif_scores_{agg}.csv'
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_csv(p)
+    except Exception:
+        return None
+    col = f'score_{agg}'
+    if 'motif_id' not in df.columns or col not in df.columns:
+        return None
+    return {int(r['motif_id']): float(r[col]) for _, r in df.iterrows()
+            if pd.notna(r['motif_id']) and pd.notna(r[col])}
+
+
+def _available_posthoc_methods(run_dir: Path) -> list:
+    return [m for m in _POSTHOC_METHODS
+            if (Path(run_dir) / f'{m}_motif_scores_max.csv').exists()]
+
+
+def _load_vanilla_and_data(run_dir: Path, data_root: str, vocab_root: str, device):
+    """Build a VanillaGNN from summary.json, load its checkpoint + test data.
+
+    Used for the post-hoc node-mask probe. Uses dmeta.deg / dmeta.x_dim so PNA
+    (which needs the degree histogram) loads correctly alongside GIN/GCN/SAGE/GAT.
+    """
+    from types import SimpleNamespace
+    sj = Path(run_dir) / 'summary.json'
+    if not sj.exists():
+        return None, None, 'no summary.json'
+    meta = json.load(open(sj, encoding='utf-8'))
+    ckpt = Path(run_dir) / 'best_model.pt'
+    if not ckpt.exists():
+        cands = list(Path(run_dir).glob('*.pt'))
+        if not cands:
+            return None, None, 'no checkpoint .pt'
+        ckpt = cands[0]
+
+    cfg = SimpleNamespace(
+        dataset=meta['dataset'], fold=int(meta.get('fold', 0)),
+        vocab_variant=meta.get('vocab_variant', 'all_fallback_bpe'),
+        vocab_root=vocab_root, data_root=meta.get('data_root', data_root),
+        processed_root=meta.get('processed_root'), batch_size=128,
+        mutag_index_maps_path=meta.get('mutag_index_maps_path'),
+        mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
+        mutag_splits_path=meta.get('mutag_splits_path'),
+        mutag_seed=int(meta.get('mutag_seed') or 42),
+    )
+    try:
+        test_list, _task_type, dmeta, _vocab = _load_test_list(cfg, vocab_root)
+    except Exception as e:  # pragma: no cover - environment-specific
+        return None, None, f'data load failed: {e}'
+    if not test_list:
+        return None, None, 'no test data'
+    try:
+        from SharedModules.baselines.vanilla_gnn import VanillaGNN
+        from SharedModules.data.loader import NUM_CLASSES, resolve_node_encoder
+        nenc = resolve_node_encoder(meta.get('node_encoder'),
+                                    getattr(dmeta, 'node_encoder', 'onehot'))
+        model = VanillaGNN(
+            x_dim=int(getattr(dmeta, 'x_dim', test_list[0].x.shape[1])),
+            hidden_dim=int(meta.get('hidden_dim', 64)),
+            num_layers=int(meta.get('num_layers', 3)),
+            backbone=meta.get('backbone', 'GIN'), node_encoder=nenc,
+            apply_layer_norm=bool(meta.get('apply_layer_norm', False)),
+            dropout=float(meta.get('dropout', 0.5)),
+            conv_normalize=meta.get('conv_normalize', 'none'),
+            gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
+            num_classes=NUM_CLASSES.get(meta['dataset'], 1),
+            deg=getattr(dmeta, 'deg', None))
+        state = torch.load(ckpt, map_location=device, weights_only=False)
+        state = state.get('model_state_dict', state) if isinstance(state, dict) else state
+        model.load_state_dict(state, strict=False)
+        model.to(device).eval()
+    except Exception as e:  # pragma: no cover
+        return None, None, f'vanilla rebuild failed: {e}'
+    return model, test_list, 'ok'
+
+
+@torch.no_grad()
+def _probe_posthoc(model, data_list, motif_scores, device,
+                   att_threshold=None, max_graphs=500, seed=0):
+    """Node-mask probe for a post-hoc explainer.
+
+    There is no attention gate to toggle here, so the contrast is the SPLIT, not
+    the embedding: split the (raw) vanilla node embeddings into low- vs
+    high-attribution nodes using the explainer's per-motif score broadcast to
+    nodes, then probe feature-recoverability of each group. A random split of the
+    same size is the control — its gap should be ~0. expl_gap >> rand_gap means
+    the nodes the explainer calls unimportant genuinely carry less recoverable
+    input-feature information in the embedding.
+    """
+    embs, imps, ys = [], [], []
+    default = min(motif_scores.values()) if motif_scores else 0.0
+    for d in data_list[:max_graphs]:
+        dd = d.to(device)
+        n2m = getattr(dd, 'nodes_to_motifs', None)
+        if n2m is None:
+            continue
+        batch = torch.zeros(dd.x.size(0), dtype=torch.long, device=device)
+        node_emb = model.get_emb(dd.x, dd.edge_index, batch=batch,
+                                 edge_attr=getattr(dd, 'edge_attr', None))
+        n2m = n2m.view(-1).cpu().numpy()
+        imp = np.array([motif_scores.get(int(m), default) for m in n2m])
+        embs.append(node_emb.cpu().numpy()); imps.append(imp)
+        ys.append(_atom_class(dd.x.cpu().numpy()))
+    if not embs:
+        return {}
+    E = np.concatenate(embs); I = np.concatenate(imps); Y = np.concatenate(ys)
+    out = {}
+    thr = att_threshold if att_threshold is not None else float(np.median(I))
+    masked = I <= thr; unmasked = ~masked
+    am, nm = _probe_accuracy(E[masked], Y[masked], seed)
+    au, nu = _probe_accuracy(E[unmasked], Y[unmasked], seed)
+    out.update(expl_acc_masked=am, expl_acc_unmasked=au,
+               expl_gap_unmasked_minus_masked=(au - am if am == am and au == au else float('nan')),
+               expl_n_masked=nm, expl_n_unmasked=nu, expl_att_threshold=thr)
+    # random split control (same masked fraction, embeddings unchanged)
+    frac = float(masked.mean()) if len(I) else 0.5
+    rmask = np.random.default_rng(seed).random(len(I)) <= frac
+    am2, _ = _probe_accuracy(E[rmask], Y[rmask], seed)
+    au2, _ = _probe_accuracy(E[~rmask], Y[~rmask], seed)
+    out.update(rand_acc_masked=am2, rand_acc_unmasked=au2,
+               rand_gap_unmasked_minus_masked=(au2 - am2 if am2 == am2 and au2 == au2 else float('nan')))
+    return out
 
 
 def main():
@@ -400,6 +537,10 @@ def main():
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--dataset', nargs='*', default=None,
                     help='only probe runs for these dataset(s), e.g. --dataset mutag')
+    ap.add_argument('--include_posthoc', type=int, default=1,
+                    help='also probe the 4 post-hoc explainers on Vanilla runs (default: on).')
+    ap.add_argument('--posthoc_agg', default='max', choices=('max', 'mean'),
+                    help='which saved per-motif aggregation to broadcast to nodes.')
     args = ap.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -407,15 +548,48 @@ def main():
 
     if args.run_dir:
         run_dirs = [Path(args.run_dir)]
+        posthoc_dirs = [Path(args.run_dir)] if args.include_posthoc else []
     elif args.out_root:
         # iter_summaries skips _archive/_trash/_old and applies the dataset filter.
         from analysis.aggregate_experiments import iter_summaries
-        run_dirs = [p.parent for p in iter_summaries(Path(args.out_root), datasets=datasets)
-                    if _is_probeable_run(p)]
+        summaries = list(iter_summaries(Path(args.out_root), datasets=datasets))
+        run_dirs = [p.parent for p in summaries if _is_probeable_run(p)]
+        # post-hoc targets: any run that saved per-motif attributions (Vanilla runs)
+        posthoc_dirs = ([p.parent for p in summaries
+                         if _available_posthoc_methods(p.parent)]
+                        if args.include_posthoc else [])
     else:
         raise SystemExit('provide --run_dir or --out_root')
 
     rows = []
+    # ── post-hoc explainer probes (Vanilla backbone + saved per-motif scores) ──
+    for rd in posthoc_dirs:
+        methods = _available_posthoc_methods(rd)
+        if not methods:
+            continue
+        model, test_list, status = _load_vanilla_and_data(
+            rd, args.data_root, args.vocab_root, device)
+        if status != 'ok':
+            print(f'  [skip posthoc] {rd}: {status}')
+            continue
+        for m in methods:
+            ms = _load_motif_scores(rd, m, agg=args.posthoc_agg)
+            if not ms:
+                continue
+            res = _probe_posthoc(model, test_list, ms, device,
+                                 att_threshold=args.att_threshold,
+                                 max_graphs=args.max_graphs, seed=args.seed)
+            if not res:
+                print(f'  [posthoc] {rd.name}/{m}: no probe data (skipped)')
+                continue
+            res['run_dir'] = str(rd); res['family'] = 'vanilla'; res['method'] = m
+            rows.append(res)
+            _f = lambda v: f'{v:.4f}' if isinstance(v, (int, float)) else 'n/a'
+            print(f'  [posthoc] {rd.name}/{m}: '
+                  f'expl_gap={_f(res.get("expl_gap_unmasked_minus_masked"))} '
+                  f'rand_gap={_f(res.get("rand_gap_unmasked_minus_masked"))}')
+
+    # ── ante-hoc (MOSE / MotifSAT / GSAT native node-attention) probes ──
     for rd in run_dirs:
         model, test_list, status = _load_model_and_data(
             rd, args.data_root, args.vocab_root, device)
@@ -425,7 +599,7 @@ def main():
         res = probe_run(model, test_list, device,
                         att_threshold=args.att_threshold,
                         max_graphs=args.max_graphs, seed=args.seed)
-        res['run_dir'] = str(rd)
+        res['run_dir'] = str(rd); res['family'] = 'antehoc'
         gated_gap = res.get('gated_gap_unmasked_minus_masked')
         raw_gap = res.get('raw_gap_unmasked_minus_masked')
         if gated_gap is None and raw_gap is None:
