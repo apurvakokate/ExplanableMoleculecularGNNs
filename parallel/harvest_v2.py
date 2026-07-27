@@ -33,7 +33,8 @@ def _rule_for(ds, variant, tier):
         return ""
     try:
         v = json.load(open(p)).get(tier, "")
-        return v.get("rule", v.get("best_rule", "")) if isinstance(v, dict) else str(v)
+        # rule_tiers.json stores the rule under 'rule_str'; fall back to older keys.
+        return v.get("rule_str", v.get("rule", v.get("best_rule", ""))) if isinstance(v, dict) else str(v)
     except Exception:
         return ""
 
