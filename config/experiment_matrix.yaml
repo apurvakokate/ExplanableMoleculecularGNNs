@@ -1,0 +1,130 @@
+# =====================================================================
+# experiment_matrix.yaml
+# Machine-readable source of truth mapping the two result workbooks to exact run
+# parameters. The dispatcher/enumerator reads THIS file to generate every cell —
+# nothing is hard-coded elsewhere.
+#
+#   Workbook 1  "Results Table Original Labels"      -> regime: original_labels
+#   Workbook 2  "Synthetic Ground Truth +Source GT"  -> regime: relabelled (synthetic_gt + source_gt)
+#
+# Scale (confirmed): ~11,000 model-cells (Vanilla each fans to 4 post-hoc explainers).
+# =====================================================================
+
+meta:
+  results_root: final_v2                 # new dir; nothing overwritten
+  append_to: final_v1/tables/results.csv # results appended to the same sheet
+  reuse_from_final_v1: true              # skip cells whose checkpoints/summaries already exist
+
+# --- "Parameters that stay constant" sheet ---
+constants:
+  node_features: onehot        # 1-hot   (EXCEPTION: OGB datasets -> atom_encoder, 9-dim integer feats)
+  conv_normalize: none         # No normalization between layers
+  graph_readout: add           # Add (global_add_pool)
+  edge_features: false         # Not used
+  epochs: 500                  # with early-stop
+  aggregate: mean_over_folds   # result sheets average ONLY over folds
+
+backbones: [GIN, GCN, SAGE, GAT, PNA]
+
+# --- fragmentation: sheet label -> code variant ---
+# 4 families x {full, +Filter} = 8.  The three FG-first *_filter are NEW (must be built in Stage 0).
+fragmentations:
+  - {label: "Rbrics",                    variant: rbrics,                base: rbrics,          filtered: false}
+  - {label: "Rbrics+Filter",             variant: rbrics_filter,         base: rbrics,          filtered: true}
+  - {label: "FG_First(curated)",         variant: fg_first,              base: fg_first,        filtered: false}
+  - {label: "FG_First(curated)+Filter",  variant: fg_first_filter,       base: fg_first,        filtered: true,  build_new: true}
+  - {label: "RDKIT_FG_first",            variant: rdkit_fg_first,        base: rdkit_fg_first,  filtered: false}
+  - {label: "RDKIT_FG_first+Filter",     variant: rdkit_fg_first_filter, base: rdkit_fg_first,  filtered: true,  build_new: true}
+  - {label: "Ertl_FG_first",             variant: ertl_first,            base: ertl_first,      filtered: false}
+  - {label: "Ertl_FG_first+Filter",      variant: ertl_first_filter,     base: ertl_first,      filtered: true,  build_new: true}
+
+# --- models & their explainability methods ---
+# Vanilla uses the 3-step recipe: (1) train GPU<->CPU skip-if-exists; (2a) post-hoc explainers CPU.
+# Ante-hoc (MOSE/MotifSAT/GSAT) train GPU<->CPU with native explanations (2b, concurrent).
+models:
+  Vanilla:
+    train_phase: phase5_vanilla        # step 1: GPU<->CPU, SKIP if best_model.pt exists
+    explain_phase: phase5_baselines    # step 2a: CPU
+    resource: {train: gpu_or_cpu, explain: cpu}
+    vocabs: all                        # all 8 fragmentations (full + filtered)
+    explainers: [GNNExplainer, PGExplainer, MAGE, MotifOcclusion]
+  MOSE:
+    train_phase: phase5_mose           # step 2b: GPU<->CPU
+    resource: gpu_or_cpu
+    injection: "--w_feat --w_readout"          # 101
+    vocabs: filtered_only              # rbrics_filter, fg_first_filter, rdkit_fg_first_filter, ertl_first_filter
+  GSAT:
+    train_phase: phase5_gsat
+    resource: gpu_or_cpu
+    injection: "--w_message"                    # 010
+    vocabs: full_only                  # rbrics, fg_first, rdkit_fg_first, ertl_first
+  MotifSAT:
+    train_phase: phase5_motifsat
+    resource: gpu_or_cpu
+    injection: "--w_feat --w_message --w_readout"  # 111
+    vocabs: full_only                  # NOTE: MotifSAT fails-fast on filtered vocab -> cannot run *_filter
+# ^ model x fragmentation coverage: Vanilla=8, MOSE=4(filtered), GSAT=4(full), MotifSAT=4(full).
+#   In the result sheets, the (model x fragmentation) cells outside a model's vocab set stay EMPTY.
+#   FLAG: if you want MOSE on full and/or GSAT/MotifSAT on filtered, MotifSAT needs its filtered
+#   fail-fast guard relaxed first — say so and I'll change `vocabs`.
+
+# 7 explainability methods across the Pearson/GTROC/Top/Bottom sheets
+explainability_methods: [GNNExplainer, PGExplainer, MAGE, MotifOcclusion, MOSE, MotifSAT, GSAT]
+
+# --- datasets: display -> code name / task / encoder / #folds ---
+datasets:
+  Mutagenicity:      {code: Mutagenicity,                  task: classification, encoder: onehot,       folds: 5}
+  BBBP:              {code: BBBP,                           task: classification, encoder: onehot,       folds: 5}
+  hERG:              {code: hERG,                           task: classification, encoder: onehot,       folds: 5}
+  OGBG-molhiv:       {code: ogbg-molhiv,                    task: classification, encoder: atom_encoder, folds: 1}   # official scaffold split
+  OGBG-molbace:      {code: ogbg-molbace,                   task: classification, encoder: atom_encoder, folds: 1}
+  esol:              {code: esol,                           task: regression,     encoder: onehot,       folds: 5}
+  Lipophilicity:     {code: Lipophilicity,                  task: regression,     encoder: onehot,       folds: 5}
+  Benzene:           {code: Benzene_Verified_GT,            task: classification, encoder: onehot,       folds: 5}
+  Alkane_Carbonyl:   {code: Alkane_Carbonyl_Verified_GT,    task: classification, encoder: onehot,       folds: 5}
+  Fluoride_Carbonyl: {code: Fluoride_Carbonyl_Verified_GT,  task: classification, encoder: onehot,       folds: 5}
+
+# --- the two regimes (= the two workbooks) ---
+regimes:
+
+  original_labels:                       # Workbook 1: models trained on ORIGINAL labels, no planted GT
+    train_on: original_labels
+    gt: none
+    tier: real
+    datasets: [esol, Lipophilicity, Mutagenicity, BBBP, hERG, OGBG-molhiv, OGBG-molbace]
+    sheets: [Model Performance, Grouped Pearson, Instance Pearson, Top 10, Bottom 10]   # NO GTROC
+
+  relabelled:                            # Workbook 2
+    sheets: [Model Performance, Grouped Pearson, Grouped GTROC, Instance Pearson, Instance GTROC, Top 10, Bottom 10]
+    groups:
+      synthetic_gt:                      # planted DNF GT via relabelling
+        train_on: dnf_relabelled
+        rule_engine: dnf
+        datasets: [Mutagenicity, BBBP, hERG, OGBG-molhiv, OGBG-molbace]
+        tiers: [dnf_k2_r1, dnf_k3_r1, dnf_k2_r2, dnf_k3_r2]   # -> GT-tier column; each carries a GT-rule string
+      source_gt:                         # _Verified_GT: trained on ORIGINAL labels, GT from planted SMARTS
+        train_on: original_labels
+        gt: source_smarts
+        datasets: [Benzene, Alkane_Carbonyl, Fluoride_Carbonyl]
+        tiers: [source]                  # GT-tier = "source"; GT-rule = the planted SMARTS
+
+# --- result-sheet output spec (fold-averaged, one row per config) ---
+output:
+  index_columns: [dataset, backbone, fragmentation, filtered, gt_tier, gt_rule]  # +explainer for method-level sheets
+  new_columns_added: [gt_tier, gt_rule]  # flag-2: differentiate the 4 tier values + record the rule string
+  sheets:
+    Model Performance: {per: model,  metrics: [auc_or_rmse, rmse_original]}       # Vanilla, MOSE, MotifSAT, GSAT
+    Grouped Pearson:   {per: method, metric: pearson_motif}
+    Instance Pearson:  {per: method, metric: pearson_instance}
+    Grouped GTROC:     {per: method, metric: global_gt_roc_node_auc_mean, relabelled_only: true}
+    Instance GTROC:    {per: method, metric: instance_gt_roc_node_auc_mean, relabelled_only: true}
+    Top 10:            {per: [config, motif_rank, method], rank_by: importance, ranks: [1, 10],
+                        fields: [top_n_motif_id, importance, impact, discriminativeness, node_mask_probe]}
+    Bottom 10:         {per: [config, motif_rank, method], rank_by: importance, ranks: [vocab_size-9, vocab_size],
+                        fields: [top_n_motif_id, importance, impact, discriminativeness, node_mask_probe]}
+
+# --- extra experiments the sheets require ---
+experiments:
+  node_mask_probe:
+    run_for: all_7_methods    # flag-4: incl. GNNExplainer/PGExplainer/MAGE/MotifOcclusion (not just readout models)
+    metric: masked_vs_unmasked_atom_type_recovery
