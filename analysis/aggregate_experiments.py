@@ -378,6 +378,9 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         ('spurious_roc_node_auc_mean_all', 'spurious_roc_node_auc_mean_all'),
         ('family_roc_node_auc_mean', 'family_roc_node_auc_mean'),
         ('family_roc_node_auc_mean_all', 'family_roc_node_auc_mean_all'),
+        # DNF granularity: Instance (any clause) + Global (all clauses) GT-ROC.
+        ('instance_gt_roc_node_auc_mean', 'instance_gt_roc_node_auc_mean'),
+        ('global_gt_roc_node_auc_mean', 'global_gt_roc_node_auc_mean'),
         ('top_k_abs_disc', 'top_k_abs_disc'),
         ('score_disc_spearman', 'score_disc_spearman'),
     ]

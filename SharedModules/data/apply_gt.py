@@ -364,6 +364,10 @@ def annotate_split(data_list: List,
         node_label_fired = torch.zeros(n_nodes, dtype=torch.float32)   # Mode 2: fired-clause only
         node_label_spurious = torch.zeros(n_nodes, dtype=torch.float32)  # strongest non-GT shortcut
         node_label_family = torch.zeros(n_nodes, dtype=torch.float32)    # right chemistry, wrong granularity
+        # [N, K] per-fired-clause atom masks (K = #clauses). Column j = atoms of clause j
+        # when clause j FIRED here (else all-zero). Enables Instance (max over fired
+        # clauses) vs Global (union) GT-ROC; node_label_fired == its per-node max over j.
+        node_label_clauses = torch.zeros(n_nodes, max(len(rule_clauses), 1), dtype=torch.float32)
         edge_label = torch.zeros(n_edges, dtype=torch.float32)
 
         # Spurious GT: atoms of the chosen shortcut motif, marked on the SAME positive
@@ -415,9 +419,18 @@ def annotate_split(data_list: List,
             if fired_nodes:
                 fired_nodes = _validate_rule_nodes(fired_nodes, n_nodes, smi or '?')
                 node_label_fired[torch.tensor(fired_nodes, dtype=torch.long)] = 1.0
+            # Per-clause masks: mark clause j's atoms iff clause j fired (all its motifs present).
+            for j, cl in enumerate(rule_clauses):
+                if not cl or not cl.issubset(frag_set):
+                    continue
+                cj = [idx for idx, (smarts, _mid) in node_map.items() if smarts in cl]
+                cj = _validate_rule_nodes(cj, n_nodes, smi or '?')
+                if cj:
+                    node_label_clauses[torch.tensor(cj, dtype=torch.long), j] = 1.0
 
         data.node_label = node_label               # Mode 1 (whole-rule) — the default GT
         data.node_label_fired = node_label_fired   # Mode 2 (per-instance fired-clause / OR-aware)
+        data.node_label_clauses = node_label_clauses  # [N,K] per-fired-clause (Instance vs Global GT-ROC)
         data.node_label_spurious = node_label_spurious  # strongest non-GT shortcut motif
         data.node_label_family = node_label_family      # super/sub-structure of the cause (granularity)
         data.edge_label = edge_label

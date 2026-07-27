@@ -1394,6 +1394,49 @@ class TestExplainabilitySummaryFields(unittest.TestCase):
 # data/loader.py — MutagTUDataset and MUTAG_X_DIM
 # ──────────────────────────────────────────────────────────────────────────────
 
+class TestVerifiedGTSourceLabels(unittest.TestCase):
+    """*_Verified_GT source GT is attached from SMARTS, aligned to the graph, and
+    identical for a molecule regardless of fold (derived from its own structure)."""
+
+    def _label(self, ds, smi):
+        import torch
+        from rdkit import Chem
+        from SharedModules.data.dataset import build_graph, attach_source_gt
+        from SharedModules.data.dataset_schema import SOURCE_GT_SMARTS
+        q = [Chem.MolFromSmarts(s) for s in SOURCE_GT_SMARTS[ds]]
+        d = build_graph(smi, torch.tensor([1.0]), None)
+        attach_source_gt(d, q)
+        return d
+
+    def test_marks_planted_substructure_atoms(self):
+        # benzene ring atoms of aspirin
+        d = self._label('Benzene_Verified_GT', 'O=C(C)Oc1ccccc1')
+        self.assertEqual(int(d.node_label.sum()), 6)
+        # fluoroacetone: F + carbonyl C=O = 3 atoms
+        d = self._label('Fluoride_Carbonyl_Verified_GT', 'CC(=O)CF')
+        self.assertEqual(int(d.node_label.sum()), 3)
+
+    def test_alignment_and_edges(self):
+        d = self._label('Benzene_Verified_GT', 'O=C(C)Oc1ccccc1')
+        self.assertEqual(d.node_label.numel(), d.num_nodes)
+        self.assertEqual(d.edge_label.numel(), d.edge_index.size(1))
+        # every GT edge connects two GT atoms
+        for e in range(d.edge_index.size(1)):
+            if d.edge_label[e] > 0:
+                u, v = d.edge_index[0, e], d.edge_index[1, e]
+                self.assertTrue(d.node_label[u] > 0 and d.node_label[v] > 0)
+
+    def test_true_negative_all_zero(self):
+        d = self._label('Benzene_Verified_GT', 'CCO')   # no benzene
+        self.assertEqual(int(d.node_label.sum()), 0)
+
+    def test_fold_consistent(self):
+        # same molecule -> identical GT, so any fold assignment yields the same labels
+        a = self._label('Alkane_Carbonyl_Verified_GT', 'CCCCC(=O)C')
+        b = self._label('Alkane_Carbonyl_Verified_GT', 'CCCCC(=O)C')
+        self.assertTrue(bool((a.node_label == b.node_label).all()))
+
+
 class TestMutagTUDataset(unittest.TestCase):
     """Tests for MutagTUDataset without requiring the actual TUDataset PKL.
 

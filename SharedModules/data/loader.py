@@ -848,6 +848,11 @@ def get_loaders(
     label_col = DATASET_COLUMN[dataset]
     task_type = TASK_TYPE.get(dataset, 'BinaryClass')
     num_classes = NUM_CLASSES.get(dataset, 1)
+    # *_Verified_GT: attach source-explanation GT (planted substructure) from SMARTS
+    # at load, so the standard eval scores explainers against the planted cause
+    # (fold-consistent — derived per molecule). None for every other dataset.
+    from .dataset_schema import SOURCE_GT_SMARTS
+    source_gt_smarts = SOURCE_GT_SMARTS.get(dataset)
 
     kept_motif_ids = None
     threshold_pct = None
@@ -909,6 +914,7 @@ def get_loaders(
         lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
+        source_gt_smarts=source_gt_smarts,
     )
 
     val_ds = MolDataset(
@@ -922,6 +928,7 @@ def get_loaders(
         lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
+        source_gt_smarts=source_gt_smarts,
     )
 
     test_ds = MolDataset(
@@ -935,6 +942,7 @@ def get_loaders(
         lookup=lookup,
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
+        source_gt_smarts=source_gt_smarts,
     )
 
     _apply_thr = threshold_pct is not None

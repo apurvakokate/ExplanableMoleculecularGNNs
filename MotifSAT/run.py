@@ -552,7 +552,9 @@ def run(cfg: MotifSATConfig) -> dict:
     tdc  = results.get("top_disc_check", {})
     from SharedModules.evaluation.metrics import motif_score_stats
     sstats = motif_score_stats(summary_scores)
+    from SharedModules.evaluation.provenance import provenance_fields
     summary = {
+        **provenance_fields(cfg),   # git_sha / run_timestamp / config_hash (Rule Set 1 #1)
         "model_type":       "MotifSAT",
         # base GSAT (motif_method='none') vs motif-aware MotifSAT (readout/loss)
         "family":           "motifsat" if cfg.motif_method in ("readout", "loss") else "gsat",

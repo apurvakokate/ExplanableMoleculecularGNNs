@@ -1307,3 +1307,91 @@ def compute_gt_roc(
         'n_skipped': n_skipped,
     }
 
+
+# ── DNF GT-ROC: Instance (any clause) vs Global (all clauses) ──────────────────
+# Ground truth for a DNF rule is per-instance the FIRED clauses only (a present-but-
+# unfired clause did not cause this label). The disjunction gives two questions:
+#   Instance — did the explainer recover ANY one complete fired clause? (sufficiency)
+#   Global   — did it recover the UNION of all fired clauses?          (completeness)
+# apply_gt stores data.node_label_clauses as [N, K]: column j = atoms of clause j when
+# clause j fired here (else all-zero). node_label_fired == its per-node max over j.
+
+def _auc_pos_neg(scores, pos_idx, neg_idx) -> float:
+    """ROC-AUC ranking pos_idx above neg_idx by ``scores``. NaN if either side empty."""
+    if not pos_idx or not neg_idx:
+        return float('nan')
+    from sklearn.metrics import roc_auc_score
+    y = [1] * len(pos_idx) + [0] * len(neg_idx)
+    s = [float(scores[i]) for i in pos_idx] + [float(scores[i]) for i in neg_idx]
+    try:
+        return float(roc_auc_score(y, s))
+    except ValueError:
+        return float('nan')
+
+
+def _fired_clause_atomsets(node_label_clauses) -> List[List[int]]:
+    """[N, K] float → list of atom-index lists, one per FIRED clause (non-empty columns)."""
+    if node_label_clauses is None or node_label_clauses.ndim != 2:
+        return []
+    m = node_label_clauses
+    out = []
+    for j in range(m.shape[1]):
+        idx = (m[:, j] > 0).nonzero(as_tuple=True)[0].tolist()
+        if idx:
+            out.append(idx)
+    return out
+
+
+def dnf_gt_roc_graph(node_att, node_label_clauses):
+    """One graph → (instance_auc, global_auc).
+
+    Negatives for every AUC = atoms in NO fired clause (V \\ U_fired). For a clause's
+    Instance AUC the OTHER fired clauses' atoms are excluded (neither pos nor neg) — never
+    penalise surfacing a second genuine cause. Instance = max over fired clauses; Global =
+    union of fired vs non-causal. Returns (nan, nan) if no fired clause or no negatives.
+    """
+    clauses = _fired_clause_atomsets(node_label_clauses)
+    if not clauses:
+        return float('nan'), float('nan')
+    n = node_label_clauses.shape[0]
+    U = set().union(*[set(c) for c in clauses])
+    neg = [i for i in range(n) if i not in U]
+    if not neg:
+        return float('nan'), float('nan')
+    per = [a for a in (_auc_pos_neg(node_att, c, neg) for c in clauses) if a == a]
+    inst = max(per) if per else float('nan')
+    glob = _auc_pos_neg(node_att, sorted(U), neg)
+    return inst, glob
+
+
+def compute_dnf_gt_roc(model, data_list, device, node_att_fn):
+    """Mean per-graph Instance and Global DNF GT-ROC over rule-positive graphs.
+
+    Post-hoc path: node scores come from ``node_att_fn(data) -> Tensor[N]`` (the same
+    reduction compute_gt_roc uses for baseline explainers). Graphs without
+    ``node_label_clauses`` (non-DNF, or no fired clause) are skipped.
+    """
+    model.eval()
+    inst_all, glob_all = [], []
+    for data in data_list:
+        nlc = getattr(data, 'node_label_clauses', None)
+        if nlc is None:
+            continue
+        data_dev = data.clone().to(device)
+        na = node_att_fn(data_dev)
+        if na is None:
+            continue
+        na = na.view(-1).detach().cpu()
+        inst, glob = dnf_gt_roc_graph(na, nlc.detach().cpu())
+        if inst == inst:
+            inst_all.append(inst)
+        if glob == glob:
+            glob_all.append(glob)
+    nan = float('nan')
+    return {
+        'instance_auc_mean': float(np.mean(inst_all)) if inst_all else nan,
+        'instance_auc_std':  float(np.std(inst_all)) if inst_all else nan,
+        'global_auc_mean':   float(np.mean(glob_all)) if glob_all else nan,
+        'n_graphs':          len(inst_all),
+    }
+

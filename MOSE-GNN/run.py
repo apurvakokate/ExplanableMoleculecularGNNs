@@ -327,7 +327,9 @@ def run(cfg: MOSEConfig) -> dict:
     tdc  = results.get('top_disc_check', {})
     from SharedModules.evaluation.metrics import motif_score_stats
     sstats = motif_score_stats(flat_scores)
+    from SharedModules.evaluation.provenance import provenance_fields
     summary = {
+        **provenance_fields(cfg),   # git_sha / run_timestamp / config_hash (Rule Set 1 #1)
         'model_type':    'MOSE-GNN',
         'family':        'mose',
         'motif_method':  'mose',

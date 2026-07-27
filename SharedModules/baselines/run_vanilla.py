@@ -38,7 +38,7 @@ from SharedModules.data.loader import (
 )
 from SharedModules.evaluation.pipeline import EvalPipeline
 from SharedModules.evaluation.metrics import evaluate_predictions
-from SharedModules.evaluation.motif_eval import compute_gt_roc
+from SharedModules.evaluation.motif_eval import compute_gt_roc, compute_dnf_gt_roc
 from SharedModules.utils import set_seed, get_device
 from SharedModules.baselines.vanilla_gnn import VanillaGNN, train_vanilla_gnn
 from SharedModules.baselines.gnn_explainer import run_gnnexplainer
@@ -788,8 +788,15 @@ def run(cfg: VanillaConfig) -> dict:
                         _ra = compute_gt_roc(model, _gt_roc_list_all, device,
                                              node_att_fn=_fn, level='node', gt_attr=_attr)
                         explainer_metrics[f'{_ex}_{_agg}_{_mkey}_auc_mean_all'] = _ra['auc_mean']
+                # DNF GT-ROC: Instance (max over fired clauses, any-one) + Global (union).
+                _dnf = compute_dnf_gt_roc(model, _gt_roc_list, device, _fn)
+                if _dnf['n_graphs'] > 0:
+                    explainer_metrics[f'{_ex}_{_agg}_instance_gt_roc_node_auc_mean'] = _dnf['instance_auc_mean']
+                    explainer_metrics[f'{_ex}_{_agg}_global_gt_roc_node_auc_mean'] = _dnf['global_auc_mean']
 
+    from SharedModules.evaluation.provenance import provenance_fields
     summary = {
+        **provenance_fields(cfg),   # git_sha / run_timestamp / config_hash (Rule Set 1 #1)
         'dataset':          cfg.dataset,
         'fold':             cfg.fold,
         'backbone':         cfg.backbone,

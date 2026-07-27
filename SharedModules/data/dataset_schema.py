@@ -20,7 +20,7 @@ already used and the value that makes it consistent with its sibling datasets).
 If your Fluoride_Carbonyl CSVs genuinely use a native 'Fluoride_Carbonyl'
 column, change the single line below — it now updates both phases at once.
 """
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 DATASET_COLUMN: Dict[str, Optional[str]] = {
     # real datasets — native column name
@@ -90,4 +90,22 @@ TASK_TYPE: Dict[str, str] = {
     'ogbg-molfreesolv':  'Regression',
     'ogbg-mollipo':      'Regression',
     'mutag':             'BinaryClass',
+}
+
+# ── Source-GT SMARTS ─────────────────────────────────────────────────────────
+# For the *_Verified_GT benchmarks the explanation ground truth is the PLANTED
+# substructure(s) — the same SMARTS that define the label in
+# MotifBreakdown/export_planted_gt.py. The node-level GT is the set of atoms that
+# match ANY listed pattern (union: a rule is the CONJUNCTION of these substructures
+# being present, and every matched substructure is causal, e.g. F ∧ carbonyl marks
+# both the F atom and the carbonyl atoms). Because it is recomputed from each
+# molecule's own structure at load time, the GT is IDENTICAL for a molecule in
+# every fold — the stratified-random folds only reshuffle train/val/test membership,
+# never a molecule's causal atoms. The loader attaches node_label/edge_label from
+# these so the standard eval (compute_gt_roc) scores explainers against the planted
+# cause without any synthetic relabelling (these are NOT in GT_SUPPORTED_DATASETS).
+SOURCE_GT_SMARTS: Dict[str, List[str]] = {
+    'Benzene_Verified_GT':           ['c1ccccc1'],
+    'Fluoride_Carbonyl_Verified_GT': ['[FX1]', '[CX3]=O'],
+    'Alkane_Carbonyl_Verified_GT':   ['[R0;D2,D1][R0;D2][R0;D2,D1]', '[CX3]=O'],
 }

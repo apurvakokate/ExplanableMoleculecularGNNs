@@ -189,6 +189,41 @@ def build_graph(
     )
 
 
+def attach_source_gt(data, queries) -> None:
+    """In-place: set ``data.node_label`` [N] and ``data.edge_label`` [E] from
+    source-GT SMARTS ``queries`` (pre-compiled ``Chem.MolFromSmarts`` objects, or
+    ``None`` entries which are skipped).
+
+    ``node_label[i] = 1`` iff atom i matches ANY query — the union of the planted
+    causal substructures (e.g. F ∧ carbonyl marks both the F atom and the carbonyl
+    atoms). ``edge_label[e] = 1`` iff both endpoints of edge e are GT atoms.
+
+    Atom indices come from ``Chem.MolFromSmiles(data.smiles)``; ``build_graph``
+    parsed that same verbatim SMILES to build ``data.x`` / ``data.edge_index``, so
+    the labels align row-for-row with the graph. Because it is derived from the
+    molecule's own structure, the GT is identical for that molecule in every fold.
+    A molecule with no match (a true negative) correctly gets an all-zero
+    node_label and contributes no positives to GT-ROC."""
+    n = int(data.num_nodes)
+    node_label = torch.zeros(n, dtype=torch.float32)
+    mol = Chem.MolFromSmiles(data.smiles) if getattr(data, 'smiles', None) else None
+    if mol is not None and mol.GetNumAtoms() == n:
+        gt = set()
+        for q in queries:
+            if q is None:
+                continue
+            for m in mol.GetSubstructMatches(q):
+                gt.update(m)
+        gt = [a for a in gt if 0 <= a < n]
+        if gt:
+            node_label[torch.tensor(sorted(gt), dtype=torch.long)] = 1.0
+    ei = getattr(data, 'edge_index', None)
+    if ei is not None and ei.numel():
+        edge_label = ((node_label[ei[0]] > 0) & (node_label[ei[1]] > 0)).float()
+    else:
+        edge_label = torch.zeros(0, dtype=torch.float32)
+    data.node_label = node_label
+    data.edge_label = edge_label
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +380,7 @@ class MolDataset(InMemoryDataset):
         lookup: Optional[Dict] = None,
         num_classes: Optional[int] = None,
         force_reprocess: bool = False,
+        source_gt_smarts: Optional[list] = None,
         transform=None,
         pre_transform=None,
         pre_filter=None,
@@ -355,6 +391,14 @@ class MolDataset(InMemoryDataset):
         self.lookup = lookup
         self._num_classes = num_classes
         self.normalize = normalize
+        # Source-GT (e.g. *_Verified_GT): pre-compile the SMARTS once; process()
+        # attaches node_label/edge_label from them. A distinct cache suffix keeps
+        # a GT-annotated .pt from ever being confused with a plain one.
+        self._source_gt_queries = (
+            [Chem.MolFromSmarts(s) for s in source_gt_smarts]
+            if source_gt_smarts else None
+        )
+        self._pt_suffix = '_srcgt' if source_gt_smarts else ''
 
         reject_wildcard_smiles_in_csv(csv_file)
 
@@ -391,7 +435,7 @@ class MolDataset(InMemoryDataset):
             self.std = 1.0
 
         proc_dir = Path(root) / 'processed'
-        pt_name = f'{split}_{Path(csv_file).stem}.pt'
+        pt_name = f'{split}_{Path(csv_file).stem}{self._pt_suffix}.pt'
         proc_file = proc_dir / pt_name
 
         if force_reprocess:
@@ -410,7 +454,7 @@ class MolDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return f'{self.split}_{Path(self.csv_file).stem}.pt'
+        return f'{self.split}_{Path(self.csv_file).stem}{self._pt_suffix}.pt'
 
     def process(self):
         data_list = []
@@ -428,6 +472,8 @@ class MolDataset(InMemoryDataset):
             if data is None or data.num_nodes == 0:
                 skipped += 1
                 continue
+            if self._source_gt_queries is not None:
+                attach_source_gt(data, self._source_gt_queries)
             if self.pre_filter is not None and not self.pre_filter(data):
                 continue
             if self.pre_transform is not None:
