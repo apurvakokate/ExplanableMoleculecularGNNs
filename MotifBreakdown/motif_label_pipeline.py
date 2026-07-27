@@ -185,14 +185,12 @@ def check_sub(sa: str, sb: str) -> bool:
         return False
     ha, hb = heteroatoms(ca), heteroatoms(cb)
     ab, ba = False, False
-    try:    ab = cb.HasSubstructMatch(ca)
-    except Exception: pass
+    ab = cb.HasSubstructMatch(ca)
     if ab:
         if too_generic(ca): ab = False
         elif aliphatic_pure_C(ca, ha) and hb: ab = False
         elif ha and not ha <= hb: ab = False
-    try:    ba = ca.HasSubstructMatch(cb)
-    except Exception: pass
+    ba = ca.HasSubstructMatch(cb)
     if ba:
         if too_generic(cb): ba = False
         elif aliphatic_pure_C(cb, hb) and ha: ba = False
@@ -253,13 +251,11 @@ def compute_subsuming_families(top_motifs, all_cands):
             ha = th.get(t, set()); na = ca.GetNumAtoms()
             ab = ba = False
             if na <= nb and (not ha or ha <= hb):
-                try: ab = cb.HasSubstructMatch(ca)
-                except Exception: pass
+                ab = cb.HasSubstructMatch(ca)
                 if ab and (too_generic(ca) or (aliphatic_pure_C(ca,ha) and hb)
                            or (ha and not ha <= hb)): ab = False
             if nb <= na and (not hb or hb <= ha):
-                try: ba = ca.HasSubstructMatch(cb)
-                except Exception: pass
+                ba = ca.HasSubstructMatch(cb)
                 if ba and (too_generic(cb) or (aliphatic_pure_C(cb,hb) and ha)
                            or (hb and not hb <= ha)): ba = False
             if ab and ba:
@@ -526,14 +522,12 @@ def build_metadata_structural(selected: List[dict],
             na, nb = cai.GetNumAtoms(), caj.GetNumAtoms()
             ab = ba = False
             if na <= nb and (not hai or hai <= haj):
-                try: ab = caj.HasSubstructMatch(cai)
-                except Exception: pass
+                ab = caj.HasSubstructMatch(cai)
                 if ab and (too_generic(cai) or
                            (aliphatic_pure_C(cai,hai) and haj) or
                            (hai and not hai <= haj)): ab = False
             if nb <= na and (not haj or haj <= hai):
-                try: ba = cai.HasSubstructMatch(caj)
-                except Exception: pass
+                ba = cai.HasSubstructMatch(caj)
                 if ba and (too_generic(caj) or
                            (aliphatic_pure_C(caj,haj) and hai) or
                            (haj and not haj <= hai)): ba = False

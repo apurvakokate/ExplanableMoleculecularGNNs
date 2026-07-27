@@ -136,6 +136,13 @@ INFO_LOSS_COEF_BY_DATASET = {
     "ogbg-mollipo": 0.5,
 }
 
+# Verified-GT datasets share their base dataset's IB schedule (same molecules,
+# corrected labels). Added as explicit keys so the resolvers stay fail-fast for
+# genuinely unknown datasets.
+for _tbl in (INFO_LOSS_COEF_BY_DATASET, FINAL_R_BY_DATASET, DECAY_INTERVAL_BY_DATASET):
+    for _base in ("Benzene", "Alkane_Carbonyl", "Fluoride_Carbonyl"):
+        _tbl.setdefault(f"{_base}_Verified_GT", _tbl[_base])
+
 
 def resolve_info_loss_coef(
     dataset: str,
@@ -150,8 +157,15 @@ def resolve_info_loss_coef(
     """
     if info_loss_coef is not None:
         return float(info_loss_coef), False
-    return (float(INFO_LOSS_COEF_BY_DATASET.get(dataset, _INFO_LOSS_COEF_DEFAULT)),
-            True)
+    if dataset not in INFO_LOSS_COEF_BY_DATASET:
+        raise KeyError(
+            f"resolve_info_loss_coef: no info_loss_coef configured for dataset "
+            f"{dataset!r}. Known: {sorted(INFO_LOSS_COEF_BY_DATASET)}. Pass "
+            f"--info_loss_coef to override, or add the dataset to "
+            f"INFO_LOSS_COEF_BY_DATASET. Refusing to silently fall back to "
+            f"{_INFO_LOSS_COEF_DEFAULT} (rule: no silent fallback)."
+        )
+    return float(INFO_LOSS_COEF_BY_DATASET[dataset]), True
 
 
 def resolve_gsat_r(
@@ -169,13 +183,20 @@ def resolve_gsat_r(
     """
     used_table = False
 
+    if (final_r is None or decay_interval is None) and dataset not in FINAL_R_BY_DATASET:
+        raise KeyError(
+            f"resolve_gsat_r: no GSAT IB schedule configured for dataset "
+            f"{dataset!r}. Known: {sorted(FINAL_R_BY_DATASET)}. Pass --final_r / "
+            f"--decay_interval to override, or add the dataset to FINAL_R_BY_DATASET "
+            f"and DECAY_INTERVAL_BY_DATASET. Refusing to silently fall back to "
+            f"final_r={DEFAULT_FINAL_R}, decay_interval={DEFAULT_DECAY_INTERVAL} "
+            f"(rule: no silent fallback)."
+        )
     if final_r is None:
-        final_r = float(FINAL_R_BY_DATASET.get(dataset, DEFAULT_FINAL_R))
+        final_r = float(FINAL_R_BY_DATASET[dataset])
         used_table = True
     if decay_interval is None:
-        decay_interval = int(
-            DECAY_INTERVAL_BY_DATASET.get(dataset, DEFAULT_DECAY_INTERVAL)
-        )
+        decay_interval = int(DECAY_INTERVAL_BY_DATASET[dataset])
         used_table = True
     if init_r is None:
         init_r = DEFAULT_INIT_R

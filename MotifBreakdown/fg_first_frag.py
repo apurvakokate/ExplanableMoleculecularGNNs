@@ -38,6 +38,7 @@ the project and the planted-GT export).
 """
 from __future__ import annotations
 
+import warnings
 from collections import Counter
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -302,7 +303,9 @@ def _canon_smiles(mol: Chem.Mol, atoms: Set[int]) -> Optional[str]:
     try:
         Chem.SanitizeMol(m2)
         try: m2 = _RING_CANON['unch'].uncharge(m2) or m2
-        except Exception: pass
+        except Exception as _e:
+            warnings.warn(f"fg_first ring keying: uncharge failed, keeping charged "
+                          f"form: {_e}", RuntimeWarning)
         mt = _RING_CANON['taut'].Canonicalize(m2); m2 = mt if mt else m2
         return Chem.MolToSmiles(m2, canonical=True, isomericSmiles=False)
     except Exception:

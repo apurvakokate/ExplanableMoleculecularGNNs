@@ -25,7 +25,9 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 BACKBONE_ORDER = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
-PIVOT_INDEX = ['dataset', 'family', 'synthetic', 'vocab_base', 'is_filter']
+# 'tier' keeps each DNF tier (dnf_k2_r1, …) on its OWN row so cells never average
+# across tiers — only across folds. 'synthetic' (real|gt) stays for the real/gt split.
+PIVOT_INDEX = ['dataset', 'family', 'synthetic', 'tier', 'vocab_base', 'is_filter']
 
 PREDICTION_METRICS = frozenset({
     'auc', 'val_auc', 'train_auc', 'rmse', 'mae', 'rmse_orig', 'mae_orig',
@@ -119,6 +121,9 @@ def _warn_config_conflation(df: pd.DataFrame, metric: str, index: list) -> None:
 
 def _pivot(df: pd.DataFrame, metric: str, index: list | None = None) -> pd.DataFrame:
     index = index or PIVOT_INDEX
+    # Drop any index axis not present in this df (e.g. 'tier' absent in an older
+    # aggregate) so the pivot never KeyErrors; fold-only aggregation is preserved.
+    index = [c for c in index if c in df.columns]
     _warn_config_conflation(df, metric, index)
     piv = df.pivot_table(
         index=index, columns='backbone', values=metric, aggfunc=_cell)

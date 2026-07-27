@@ -59,7 +59,14 @@ REG_CONFIG = {
 # PNA reuses GIN's configuration (per request).
 REG_CONFIG["PNA"] = REG_CONFIG["GIN"]
 
-# Fallback when a (backbone, dataset) pair is not in the table.
+# Verified-GT datasets are corrected-label variants of the same molecules, so
+# they share their base dataset's regularization. Added as explicit keys (not a
+# silent alias) so resolve_reg stays fail-fast for genuinely unknown datasets.
+for _bb_cfg in REG_CONFIG.values():
+    for _base in ("Benzene", "Alkane_Carbonyl", "Fluoride_Carbonyl"):
+        _bb_cfg.setdefault(f"{_base}_Verified_GT", _bb_cfg[_base])
+
+# Referenced only in the resolve_reg error message now (no longer a silent fallback).
 DEFAULT_REG: Tuple[float, float] = (0.01, 0.0)
 
 
@@ -94,12 +101,20 @@ def resolve_reg(backbone: str, dataset: str,
     True iff at least one value came from the lookup (not an explicit flag).
     """
     table = REG_CONFIG.get(backbone, {}).get(dataset)
-    t_ent, t_size = table if table is not None else DEFAULT_REG
+    if (ent_reg is None or size_reg is None) and table is None:
+        raise KeyError(
+            f"resolve_reg: no (ent_reg, size_reg) configured for "
+            f"(backbone={backbone!r}, dataset={dataset!r}). Known backbones: "
+            f"{sorted(REG_CONFIG)}; datasets for {backbone!r}: "
+            f"{sorted(REG_CONFIG.get(backbone, {}))}. Pass --ent_reg/--size_reg to "
+            f"override, or add the pair to REG_CONFIG. Refusing to silently fall "
+            f"back to {DEFAULT_REG} (rule: no silent fallback)."
+        )
     used_table = False
     if ent_reg is None:
-        ent_reg = t_ent
+        ent_reg = table[0]
         used_table = True
     if size_reg is None:
-        size_reg = t_size
+        size_reg = table[1]
         used_table = True
     return float(ent_reg), float(size_reg), used_table

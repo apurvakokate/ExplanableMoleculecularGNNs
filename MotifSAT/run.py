@@ -704,9 +704,9 @@ def main():
     parser.add_argument("--gt_cache",        default=None,
                         help="Path to gt_cache directory written by phase4")
     parser.add_argument("--gt_tier",         default=None,
-                        choices=['easy', 'medium', 'hard'],
-                        help="Load a difficulty tier (relabel_<tier>/) instead of "
-                             "the single-rule relabel1/ cache.")
+                        help="Load a named GT cell (relabel_<tier>/): a difficulty tier "
+                             "(easy/medium/hard) or a DNF cell (dnf_k1/dnf_k2/dnf_k3, "
+                             "e.g. dnf_k2_r1), instead of the single-rule relabel1/ cache.")
     parser.add_argument("--mutag_index_maps_path", default=None,
                         help="mutag only: override path to "
                              "mutag_<fold>_index_maps.pkl (default: convention "
