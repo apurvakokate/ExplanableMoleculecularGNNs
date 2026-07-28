@@ -78,9 +78,18 @@ for regime, rdf in df.groupby("regime"):
     if regime == "relabelled":
         sheets["Grouped GTROC"] = per_method(rdf, "gt_roc_node_auc_mean", "max_gt_roc_node_auc_mean")
         sheets["Instance GTROC"] = per_method(rdf, "gt_roc_node_fired_auc_mean", "max_gt_roc_node_fired_auc_mean")
+    # Explicit single-string config id as the first column of every sheet, so each
+    # row is self-identifying (backbone·fragmentation·filtered·tier) rather than the
+    # reader stitching the 6 index columns together.
+    def _cfg_id(r):
+        return "·".join([str(r["backbone"]), str(r["fragmentation"]),
+                         "filter" if r["filtered"] else "full",
+                         str(r["gt_tier"]) if str(r["gt_tier"]) else "real"])
+    for _name, _t in sheets.items():
+        _t.insert(0, "config", _t.apply(_cfg_id, axis=1))
     status = pd.DataFrame({"note": [
         f"Regime: {regime}",
-        f"Configs (rows): {len(sheets['Model Performance'])}",
+        f"One row = one config (see the 'config' column). {len(sheets['Model Performance'])} configs = backbone x fragmentation x filtered x gt_tier.",
         f"Perf metric: {PERF_METRIC}   |   Fold-averaged.",
         "Partial run — blank cells = that (model x config) not finished yet.",
         "Post-hoc columns (gnnexplainer/pgexplainer/mage_official/motif_occlusion) fill in as CPU posthoc lands.",
