@@ -34,9 +34,25 @@ while true; do
                 continue                                           # dep not ready → try next scan
             fi
             mkdir "$CLAIMS/$key" 2>/dev/null || continue           # lost the race
-            bash "$PDIR/run_cell.sh" "$ds" "$variant" "$bb" "$fold" "$tier" "$celltype" \
-                > "$FINAL_LOGS/cell_${key}.log" 2>&1
-            touch "$DONE/$key"
+            if bash "$PDIR/run_cell.sh" "$ds" "$variant" "$bb" "$fold" "$tier" "$celltype" \
+                    > "$FINAL_LOGS/cell_${key}.log" 2>&1; then
+                touch "$DONE/$key"                                 # success → done
+            else
+                # Failure is usually a transient NFS processed-cache build race
+                # (PytorchStreamReader / EOFError): the first cell for a
+                # (variant,fold) is still writing the .pt while siblings read it.
+                # Auto-retry by RELEASING the claim so another pass re-runs it —
+                # by then the cache is warm. Attempts persist outside the claim;
+                # after RETRY_CAP we give up and mark done (rc!=0 stays in the
+                # timing log) so the queue can still terminate.
+                _adir="$(dirname "$CLAIMS")/attempts"; mkdir -p "$_adir"
+                _n=$(( $(cat "$_adir/$key" 2>/dev/null || echo 0) + 1 )); echo "$_n" > "$_adir/$key"
+                if [ "$_n" -ge "${RETRY_CAP:-3}" ]; then
+                    touch "$DONE/$key"                             # give up after cap
+                else
+                    rmdir "$CLAIMS/$key" 2>/dev/null               # release → retry next pass
+                fi
+            fi
             progress=1
         done < "$cf"
     done
