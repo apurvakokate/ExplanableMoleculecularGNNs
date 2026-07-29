@@ -17,7 +17,10 @@ if [ -n "$CUDA_VISIBLE_DEVICES" ]; then export OMP_NUM_THREADS=2 MKL_NUM_THREADS
 else export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1; fi
 
 ckpt_ready() {   # ds variant bb fold tier
-    local suf; suf=$([ "$5" = real ] && echo real || echo "gt_$5")
+    # 'source' tier trains on ORIGINAL labels like 'real' (source-GT / *_Verified_GT datasets),
+    # so its vtrain checkpoint lands under the _real suffix, NOT _gt_source. Gate posthoc on the
+    # real ckpt for both, else source posthoc is never claimable.
+    local suf; if [ "$5" = real ] || [ "$5" = source ]; then suf=real; else suf="gt_$5"; fi
     [ -f "$OUT_ROOT/vanilla/$1/fold$4/$2/bb-${3}_enc-onehot_norm-none_${suf}/best_model.pt" ]
 }
 
