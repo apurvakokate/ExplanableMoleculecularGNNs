@@ -77,7 +77,10 @@ def _load_clause_gt_test(meta, data_root, vocab_root, batch_size=128):
         processed_root=proc_root, batch_size=batch_size,
         normalize=(task_type == "Regression"))
     gt_tier = meta.get("gt_tier")
-    gt_vocab = meta.get("gt_vocab_variant") or variant
+    # The phase-4 gt_cache is keyed by the BASE variant — relabel dirs live under
+    # e.g. gt_cache/<ds>/fold<k>/rdkit_fg_first/relabel_<tier>/, NOT the _filter name.
+    # So strip any _filter suffix for the clause-GT lookup (matches where apply_gt wrote it).
+    gt_vocab = (meta.get("gt_vocab_variant") or variant).replace("_filter", "")
     loaders, test_ds = apply_gt_loaders(
         loaders, test_ds, gt_cache=meta["gt_cache"], dataset=ds, fold=fold,
         vocab_variant=variant, batch_size=batch_size, gt_vocab_variant=gt_vocab,
