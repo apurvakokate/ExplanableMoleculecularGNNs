@@ -19,6 +19,23 @@ OUT = os.path.join(PROJ, args.out_root) if not os.path.isabs(args.out_root) else
 TABLES = os.path.join(OUT, "tables"); os.makedirs(TABLES, exist_ok=True)
 VOCAB = os.path.join(PROJ, "vocab_" + os.path.basename(OUT))   # vocab_final_v2
 
+# source-GT datasets (the *_Verified_GT datasets; mutag would join this set if run) train on
+# ORIGINAL labels, so run_cell.sh routes them like 'real' and summary.json leaves gt_tier
+# blank. But their GT is real (source-provided, planted SMARTS baked into node_label), so we
+# self-describe them here from dataset identity: gt_tier='source', gt_rule=the planted SMARTS.
+# This keeps results.csv the analysis source of truth (build_workbook then routes them to the
+# GT-ROC regime). Distinct from GT_SUPPORTED_DATASETS, which is the *planted-rule* (DNF) set.
+sys.path.insert(0, PROJ)
+try:
+    from SharedModules.data.dataset_schema import SOURCE_GT_SMARTS
+except Exception:
+    SOURCE_GT_SMARTS = {}
+
+def _source_gt_rule(ds):
+    """The planted-SMARTS gt_rule for a source-GT dataset, else None (not source-GT)."""
+    smarts = SOURCE_GT_SMARTS.get(ds)
+    return " ∧ ".join(smarts) if smarts else None
+
 # ---- 1. results.csv via the existing, tested harvester ----
 subprocess.run([sys.executable, os.path.join(PROJ, "analysis", "harvest_results.py"),
                 "--out_root", OUT, "--save_dir", TABLES], check=False)
@@ -45,7 +62,13 @@ if rf:
     rows = list(csv.DictReader(open(path)))
     if rows:
         for r in rows:
-            r["gt_rule"] = _rule_for(r.get("dataset", ""), r.get("vocab_variant", ""), r.get("gt_tier", ""))
+            ds = r.get("dataset", "")
+            _src = _source_gt_rule(ds)
+            if _src is not None:                       # source-GT: stamp tier + real SMARTS
+                r["gt_tier"] = "source"                # summary.json left it blank (real routing)
+                r["gt_rule"] = _src
+            else:
+                r["gt_rule"] = _rule_for(ds, r.get("vocab_variant", ""), r.get("gt_tier", ""))
         cols = list(rows[0].keys())
         if "gt_rule" not in cols:
             cols.append("gt_rule")

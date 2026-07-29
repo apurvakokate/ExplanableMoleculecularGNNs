@@ -25,8 +25,14 @@ cd "${PROJECT:?set PROJECT}"
 
 # tier regime scoping ---------------------------------------------------------
 #   real     -> original labels:  GT_ONLY=0, REAL_ONLY=1 (no gt), no GT_TIER_ONLY
+#   source   -> _Verified_GT datasets (Benzene/Alkane_Carbonyl/Fluoride_Carbonyl): the model
+#               is ALSO trained on ORIGINAL labels; GT-ROC vs the planted cause is scored from
+#               data.node_label, which the loader bakes in from SOURCE_GT_SMARTS via
+#               attach_source_gt (no --use_gt / gt_cache needed). So 'source' must use the SAME
+#               routing as 'real' — the real-label phases. The *_gt phases skip these datasets
+#               (not in GT_SUPPORTED_DATASETS) and validate_use_gt would reject --use_gt for them.
 #   dnf_*    -> relabelled GT:     GT_ONLY=1, GT_TIER_ONLY=<tier> (that tier only)
-if [ "$tier" = "real" ]; then
+if [ "$tier" = "real" ] || [ "$tier" = "source" ]; then
     unset GT_TIER_ONLY; export GT_ONLY=0 REAL_ONLY=1; _gt=""
 else
     export GT_TIER_ONLY="$tier" GT_ONLY=1 REAL_ONLY=0; _gt="_gt"

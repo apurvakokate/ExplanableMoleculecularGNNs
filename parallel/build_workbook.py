@@ -27,7 +27,13 @@ df["filtered"] = df["vocab_variant"].astype(str).str.endswith("_filter")
 df["fragmentation"] = df["vocab_variant"].astype(str).str.replace("_filter", "", regex=False)
 df["gt_tier"] = df.get("gt_tier", "").fillna("").astype(str).replace("None", "")
 df["gt_rule"] = df.get("gt_rule", "").fillna("").astype(str)
-df["regime"] = np.where(df["gt_tier"].str.startswith("dnf"), "relabelled", "original_labels")
+# relabelled regime = has ground-truth node labels to score against: planted DNF tiers
+# (gt_tier 'dnf_*') AND source-GT datasets (gt_tier 'source', stamped by harvest_v2). Both
+# get the GTROC sheets. Source-GT carries only whole-rule GT (node_label) → its Grouped GTROC
+# (gt_roc_node_auc_mean) populates while Instance GTROC (fired-clause) is legitimately blank.
+df["regime"] = np.where(
+    df["gt_tier"].str.startswith("dnf") | df["gt_tier"].eq("source"),
+    "relabelled", "original_labels")
 IDX = ["dataset", "backbone", "fragmentation", "filtered", "gt_tier", "gt_rule"]
 
 POSTHOC = ["gnnexplainer", "pgexplainer", "mage_official", "motif_occlusion"]
@@ -94,10 +100,14 @@ for regime, rdf in df.groupby("regime"):
         "Partial run — blank cells = that (model x config) not finished yet.",
         "Post-hoc columns (gnnexplainer/pgexplainer/mage_official/motif_occlusion) fill in as CPU posthoc lands.",
         "KNOWN: PGExplainer NaN on high-dynamic-range backbones (mask collapse: PNA 100%, GAT/GCN/SAGE partial, GIN 0%). Honest limitation, not a gap.",
-        "Top 10 / Bottom 10 + node_mask_probe: PENDING (need per-motif rank export + probe pass).",
+        "Top 10 / Bottom 10 + node_mask_probe: PENDING (need per-motif rank export + probe pass) — for ALL regimes.",
         "GTROC uses gt_roc_node_auc_mean (grouped) / gt_roc_node_fired_auc_mean (instance proxy).",
+        "source-GT datasets (gt_tier=source): whole-rule Grouped GTROC populated (all 7 methods via node_label); Instance GTROC blank by design (no per-clause GT). gt_rule = planted SMARTS.",
+        "KNOWN gap: MOSE/GSAT/MotifSAT emit only whole-rule GT-ROC — for planted (dnf) tiers their Instance GTROC (fired-clause) is unavailable from the trainers.",
     ]})
-    path = os.path.join(OUT, f"BBBP_{regime}.xlsx")
+    _dss = sorted(rdf["dataset"].astype(str).unique())
+    _prefix = _dss[0] if len(_dss) == 1 else "results"
+    path = os.path.join(OUT, f"{_prefix}_{regime}.xlsx")
     try:
         with pd.ExcelWriter(path, engine="openpyxl") as xw:
             status.to_excel(xw, "STATUS", index=False)
@@ -107,5 +117,5 @@ for regime, rdf in df.groupby("regime"):
               + "  ".join(f"{n}:{_nonblank(t)}nb" for n, t in sheets.items()))
     except Exception as e:                       # openpyxl missing → CSV fallback
         for name, t in sheets.items():
-            t.to_csv(os.path.join(OUT, f"BBBP_{regime}__{name.replace(' ', '_')}.csv"), index=False)
+            t.to_csv(os.path.join(OUT, f"{_prefix}_{regime}__{name.replace(' ', '_')}.csv"), index=False)
         print(f"[no xlsx: {e}] wrote CSV sheets for {regime}")

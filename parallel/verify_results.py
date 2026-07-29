@@ -134,14 +134,17 @@ def main():
         # ante-hoc GT cells: also recompute native GT-ROC node AUC
         if row["family"] in ("mose", "motifsat", "gsat") and str(row.get("gt_tier", "")).startswith("dnf"):
             try:
-                from SharedModules.evaluation.motif_eval import compute_dnf_gt_roc
-                node_att_fn = lambda m, d: m(d.x, d.edge_index,
-                                             torch.zeros(d.x.size(0), dtype=torch.long, device=device),
-                                             getattr(d, "nodes_to_motifs", None))[1]
-                gtr = compute_dnf_gt_roc(model, test_list, device, node_att_fn)
-                val = gtr.get("node_auc_mean") if isinstance(gtr, dict) else None
-                if val is not None:
-                    checks.append(("gt_roc_node", float(val)))
+                from SharedModules.evaluation.motif_eval import compute_dnf_gt_roc, model_node_att_fn
+                # compute_dnf_gt_roc calls node_att_fn(data) with ONE arg; use the canonical
+                # native-attention fn (model's node_att_soft) — a 2-arg lambda would crash.
+                gtr = compute_dnf_gt_roc(model, test_list, device, model_node_att_fn(model, device))
+                # compute_dnf_gt_roc returns instance_auc_mean / global_auc_mean / n_graphs
+                # (there is NO 'node_auc_mean'). The eval-only DNF script writes the instance
+                # metric to gt_roc_node_fired_auc_mean, so verify THAT column. NOTE: test_list
+                # here must carry node_label_clauses (dnf cache) or n_graphs==0 → skipped;
+                # ensure this harness loads with --use_gt/--gt_tier for a real verification.
+                if isinstance(gtr, dict) and gtr.get("n_graphs", 0) > 0:
+                    checks.append(("gt_roc_node_fired_auc_mean", float(gtr["instance_auc_mean"])))
             except Exception as e:
                 print(f"{tag} {'gt_roc_node':10} {'(recompute err: '+str(e)[:20]+')':>32}")
 
