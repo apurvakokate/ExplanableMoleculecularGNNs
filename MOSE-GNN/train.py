@@ -280,7 +280,13 @@ def train_mose_gnn(
         # Per-epoch explainability telemetry (auxiliary; never raises — see
         # TrainingExplTracker). Evaluated on the current (in-progress) model.
         if epoch_hook is not None:
-            epoch_hook(model, epoch)
+            # Pass current val task metric (AUC/RMSE) so the tracker can log
+            # per-epoch val_auc alongside faithfulness/gt_roc. Fallback keeps
+            # hooks that don't accept the kwarg working.
+            try:
+                epoch_hook(model, epoch, val_auc=val_score)
+            except TypeError:
+                epoch_hook(model, epoch)
 
         # Smoothed validation task loss (paper early-stop / scheduler signal).
         vloss = _val_task_loss(model, criterion, loaders['valid'], device,

@@ -78,7 +78,8 @@ class TrainingExplTracker:
         self._has_fired = _has_node_attr(self.graphs, 'node_label_fired')
         self._has_spur = _has_node_attr(self.graphs, 'node_label_spurious')
 
-    def __call__(self, model, epoch: int) -> None:
+    def __call__(self, model, epoch: int,
+                 val_auc: Optional[float] = None) -> None:
         if self.every <= 0 or not self.graphs or (epoch % self.every):
             return
         try:
@@ -89,6 +90,11 @@ class TrainingExplTracker:
             att = model_node_att_fn(model, self.device)
 
             scal = {}
+            # Per-epoch validation task metric (AUC for classification), logged
+            # alongside gt_roc so the score-vs-impact trajectory can be selected
+            # under a val-AUC tolerance (faithfulness s.t. val_auc >= best-eps).
+            if val_auc is not None:
+                scal['val_auc'] = float(val_auc)
             g = compute_gt_roc(model, self.graphs, self.device,
                                node_att_fn=att, level='node')
             scal['gt_roc_node_auc'] = g['auc_mean']
