@@ -83,6 +83,7 @@ datasets:
   Benzene:           {code: Benzene_Verified_GT,            task: classification, encoder: onehot,       folds: 5}
   Alkane_Carbonyl:   {code: Alkane_Carbonyl_Verified_GT,    task: classification, encoder: onehot,       folds: 5}
   Fluoride_Carbonyl: {code: Fluoride_Carbonyl_Verified_GT,  task: classification, encoder: onehot,       folds: 5}
+  mutag:             {code: mutag,                           task: classification, encoder: onehot,       folds: 1}   # TUDataset + source GT (single fold; SOURCE_GT_DATASETS)
 
 # --- the two regimes (= the two workbooks) ---
 regimes:
@@ -102,11 +103,11 @@ regimes:
         rule_engine: dnf
         datasets: [Mutagenicity, BBBP, hERG, OGBG-molhiv, OGBG-molbace]
         tiers: [dnf_k2_r1, dnf_k3_r1, dnf_k2_r2, dnf_k3_r2]   # -> GT-tier column; each carries a GT-rule string
-      source_gt:                         # _Verified_GT: trained on ORIGINAL labels, GT from planted SMARTS
+      source_gt:                         # _Verified_GT + mutag: trained on ORIGINAL labels, GT from source annotations
         train_on: original_labels
         gt: source_smarts
-        datasets: [Benzene, Alkane_Carbonyl, Fluoride_Carbonyl]
-        tiers: [source]                  # GT-tier = "source"; GT-rule = the planted SMARTS
+        datasets: [Benzene, Alkane_Carbonyl, Fluoride_Carbonyl, mutag]   # mutag GT = TUDataset edge_gt (toxicophore)
+        tiers: [source]                  # GT-tier = "source"; GT-rule = the planted SMARTS (mutag: toxicophore)
 
 # --- result-sheet output spec (fold-averaged, one row per config) ---
 output:

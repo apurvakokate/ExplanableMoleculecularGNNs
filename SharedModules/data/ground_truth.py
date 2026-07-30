@@ -48,6 +48,11 @@ import torch
 GT_SUPPORTED_DATASETS = {
     'Mutagenicity', 'Benzene', 'BBBP', 'hERG', 'Alkane_Carbonyl',
     'Fluoride_Carbonyl',
+    # OGB classification benchmarks: planted DNF rules replace the official task
+    # labels for the synthetic-GT regime (matches experiment_matrix synthetic_gt
+    # group). Rule mining already produces rule_tiers.json for these; this gate
+    # lets Phase 4 build the relabelled gt_cache so they get rule-based GT-ROC.
+    'ogbg-molbace', 'ogbg-molhiv',
 }
 
 

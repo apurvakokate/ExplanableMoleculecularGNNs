@@ -66,6 +66,16 @@ for _bb_cfg in REG_CONFIG.values():
     for _base in ("Benzene", "Alkane_Carbonyl", "Fluoride_Carbonyl"):
         _bb_cfg.setdefault(f"{_base}_Verified_GT", _bb_cfg[_base])
 
+# Newly-added datasets. mutag IS the Mutagenicity molecules (with source-GT edges),
+# so it principledly shares Mutagenicity's regularization. The OGB datasets have no
+# tuned analog yet, so they take the table's modal (0.2, 5e-5) as an explicit,
+# UNTUNED starting default (kept explicit so resolve_reg stays fail-fast). Override
+# per backbone once results are in, or pass --ent_reg/--size_reg.
+for _bb_cfg in REG_CONFIG.values():
+    _bb_cfg.setdefault("mutag", _bb_cfg["Mutagenicity"])
+    _bb_cfg.setdefault("ogbg-molbace", (0.2, 0.00005))
+    _bb_cfg.setdefault("ogbg-molhiv", (0.2, 0.00005))
+
 # Referenced only in the resolve_reg error message now (no longer a silent fallback).
 DEFAULT_REG: Tuple[float, float] = (0.01, 0.0)
 

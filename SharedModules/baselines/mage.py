@@ -94,9 +94,26 @@ NodeScoreResult = Dict[str, Dict[int, float]]
 # Motif-graph construction from vocab SMARTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _motif_graph_from_smarts(smarts: str) -> Optional[Data]:
-    """Build a model-input graph (51-dim one-hot atom features) from a vocab
-    motif SMARTS, stripping rBRICS ``[*]`` attachment (dummy) atoms.
+def _uses_atom_encoder(model) -> bool:
+    """True if the frozen model encodes nodes with the OGB ``AtomEncoder`` (which
+    expects an ``[N, 9]`` *integer* atom-feature tensor) rather than the 51-dim
+    one-hot scheme. Checked on the model and its ``backbone_net``. Used to pick
+    the motif-graph featurisation so OGB datasets get matching features; non-OGB
+    (one-hot) datasets are unaffected."""
+    for m in (model, getattr(model, 'backbone_net', None)):
+        if m is not None and type(getattr(m, 'node_encoder', None)).__name__ == 'AtomEncoder':
+            return True
+    return False
+
+
+def _motif_graph_from_smarts(smarts: str, ogb_features: bool = False) -> Optional[Data]:
+    """Build a model-input graph from a vocab motif SMARTS, stripping rBRICS
+    ``[*]`` attachment (dummy) atoms.
+
+    Node features match the frozen model's encoder: the 51-dim one-hot scheme by
+    default, or the OGB ``[N, 9]`` integer atom features
+    (``ogb.utils.features.atom_to_feature_vector``) when ``ogb_features=True``
+    (i.e. the model uses ``AtomEncoder``).
 
     Returns None if the fragment cannot be parsed, contains an atom outside the
      atom vocabulary, or has no real atoms after stripping.
@@ -133,9 +150,22 @@ def _motif_graph_from_smarts(smarts: str) -> Optional[Data]:
         except Exception:
             return None
 
-    x = _atom_features(mol)          # None if an atom is outside ATOMS
-    if x is None:
-        return None
+    if ogb_features:
+        # OGB AtomEncoder models need [N, 9] integer atom features, built the
+        # same way the OGB molecules were (atom_to_feature_vector). A blind
+        # dtype cast of the one-hot features would be the wrong schema.
+        try:
+            from ogb.utils.features import atom_to_feature_vector
+            feats = [atom_to_feature_vector(a) for a in mol.GetAtoms()]
+        except Exception:
+            return None
+        if not feats:
+            return None
+        x = torch.tensor(feats, dtype=torch.long)
+    else:
+        x = _atom_features(mol)      # None if an atom is outside ATOMS
+        if x is None:
+            return None
 
     A = np.array(GetAdjacencyMatrix(mol))
     rows, cols = np.nonzero(A)
@@ -295,10 +325,11 @@ def run_mage(
     # ── Motif embeddings h_m = phi(motif_graph_m) (frozen) ────────────────────
     motif_ids: List[int] = []
     motif_embs: List[torch.Tensor] = []
+    _ogb_feats = _uses_atom_encoder(model)   # OGB motif features iff atom_encoder
     for mid in sorted(present):
         if mid >= len(motif_list):
             continue
-        g = _motif_graph_from_smarts(str(motif_list[mid]))
+        g = _motif_graph_from_smarts(str(motif_list[mid]), ogb_features=_ogb_feats)
         if g is None:
             continue
         motif_embs.append(_graph_embed(model, g, device).squeeze(0))
