@@ -727,10 +727,15 @@ def _get_ogb_loaders(
     The model is responsible for applying AtomEncoder or a Linear projection.
     Returns (loaders, test_dataset, meta) matching the same signature as get_loaders.
     """
-    import numpy as np
+    import numpy as np, os as _os
     from .dataset import load_ogb_dataset, OGB_NODE_FEAT_DIM, OGB_EDGE_FEAT_DIM
 
-    ogb_dataset, split_idx = load_ogb_dataset(data_root, dataset)
+    # The OGB cache + exported fold CSV live at the canonical OGB root, which is NOT
+    # necessarily the passed data_root — MOSE passes the CSV FOLDS dir while run_vanilla
+    # passes OGB_DATA_ROOT. Resolve it from OGB_DATA_ROOT so the dataset load AND the CSV
+    # threshold-support read agree (otherwise build_fold_annotation reads a missing CSV).
+    _ogb_root = (_os.environ.get('OGB_DATA_ROOT') or data_root).rstrip('/')
+    ogb_dataset, split_idx = load_ogb_dataset(_ogb_root, dataset)
     task_type = TASK_TYPE.get(dataset, 'BinaryClass')
     num_classes = NUM_CLASSES.get(dataset, 1)
 
@@ -762,7 +767,7 @@ def _get_ogb_loaders(
                 f"Vocab {dataset}/{vocab.variant} missing required artifacts: "
                 f"{', '.join(_missing)}. Re-run phase 1 (generate_vocab_rules.py). "
                 f"Legacy split-lookup fallback is disabled.")
-        _ogb_csv = f'{data_root}/{dataset}_0.csv'
+        _ogb_csv = f'{_ogb_root}/{dataset}_0.csv'
         lookup, kept_motif_ids, _thr_motifs, threshold_pct = build_fold_annotation(
             lookup_all=vocab.lookup_all,
             motif_list=vocab.motif_list,
