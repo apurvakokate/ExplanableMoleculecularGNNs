@@ -106,14 +106,32 @@ def _uses_atom_encoder(model) -> bool:
     return False
 
 
-def _motif_graph_from_smarts(smarts: str, ogb_features: bool = False) -> Optional[Data]:
+def _motif_feature_scheme(model, sample) -> str:
+    """Which node featurisation the frozen model expects for motif graphs:
+      'ogb'    — OGB AtomEncoder ([N, 9] integer features),
+      'mutag'  — 14-dim one-hot over the Mutagenicity TUDataset atom-type map,
+      'onehot' — the generic 51-dim one-hot scheme (default).
+    OGB is detected from the encoder; mutag from the molecule feature width (it is
+    the only 14-dim dataset), so all other one-hot datasets stay on 'onehot'."""
+    if _uses_atom_encoder(model):
+        return 'ogb'
+    try:
+        from ..data.graph_to_smiles import MUTAG_ATOM_TYPE_MAP
+        if sample is not None and int(sample.x.shape[1]) == len(MUTAG_ATOM_TYPE_MAP):
+            return 'mutag'
+    except Exception:
+        pass
+    return 'onehot'
+
+
+def _motif_graph_from_smarts(smarts: str, scheme: str = 'onehot') -> Optional[Data]:
     """Build a model-input graph from a vocab motif SMARTS, stripping rBRICS
     ``[*]`` attachment (dummy) atoms.
 
-    Node features match the frozen model's encoder: the 51-dim one-hot scheme by
-    default, or the OGB ``[N, 9]`` integer atom features
-    (``ogb.utils.features.atom_to_feature_vector``) when ``ogb_features=True``
-    (i.e. the model uses ``AtomEncoder``).
+    Node features match the frozen model's featurisation (see ``_motif_feature_scheme``):
+    the generic 51-dim one-hot by default (``scheme='onehot'``), the OGB ``[N, 9]``
+    integer atom features (``scheme='ogb'``), or the 14-dim Mutagenicity-TUDataset
+    one-hot (``scheme='mutag'``).
 
     Returns None if the fragment cannot be parsed, contains an atom outside the
      atom vocabulary, or has no real atoms after stripping.
@@ -150,7 +168,7 @@ def _motif_graph_from_smarts(smarts: str, ogb_features: bool = False) -> Optiona
         except Exception:
             return None
 
-    if ogb_features:
+    if scheme == 'ogb':
         # OGB AtomEncoder models need [N, 9] integer atom features, built the
         # same way the OGB molecules were (atom_to_feature_vector). A blind
         # dtype cast of the one-hot features would be the wrong schema.
@@ -162,6 +180,22 @@ def _motif_graph_from_smarts(smarts: str, ogb_features: bool = False) -> Optiona
         if not feats:
             return None
         x = torch.tensor(feats, dtype=torch.long)
+    elif scheme == 'mutag':
+        # mutag (Mutagenicity TUDataset) uses 14-dim one-hot over its own atom-type
+        # map (C,O,Cl,H,N,F,Br,S,P,I,Na,K,Li,Ca) — NOT the generic 51-dim scheme.
+        from ..data.graph_to_smiles import MUTAG_ATOM_TYPE_MAP
+        _num = len(MUTAG_ATOM_TYPE_MAP)                       # 14
+        _atnum_to_idx = {an: i for i, an in MUTAG_ATOM_TYPE_MAP.items()}
+        idxs = []
+        for a in mol.GetAtoms():
+            j = _atnum_to_idx.get(a.GetAtomicNum())
+            if j is None:
+                return None                                  # atom outside mutag's 14 types
+            idxs.append(j)
+        if not idxs:
+            return None
+        x = torch.zeros((len(idxs), _num), dtype=torch.float32)
+        x[torch.arange(len(idxs)), torch.tensor(idxs)] = 1.0
     else:
         x = _atom_features(mol)      # None if an atom is outside ATOMS
         if x is None:
@@ -325,11 +359,11 @@ def run_mage(
     # ── Motif embeddings h_m = phi(motif_graph_m) (frozen) ────────────────────
     motif_ids: List[int] = []
     motif_embs: List[torch.Tensor] = []
-    _ogb_feats = _uses_atom_encoder(model)   # OGB motif features iff atom_encoder
+    _scheme = _motif_feature_scheme(model, graphs[0] if graphs else None)  # ogb / mutag / onehot
     for mid in sorted(present):
         if mid >= len(motif_list):
             continue
-        g = _motif_graph_from_smarts(str(motif_list[mid]), ogb_features=_ogb_feats)
+        g = _motif_graph_from_smarts(str(motif_list[mid]), scheme=_scheme)
         if g is None:
             continue
         motif_embs.append(_graph_embed(model, g, device).squeeze(0))
