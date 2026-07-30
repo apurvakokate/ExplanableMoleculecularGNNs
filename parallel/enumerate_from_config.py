@@ -35,6 +35,26 @@ base_frags = [f["variant"] for f in c["fragmentations"] if not f["filtered"]]  #
 ds_meta = c["datasets"]
 r = c["regimes"]
 
+# --- phantom-tier guard ------------------------------------------------------
+# Only emit a synthetic-GT (dnf_*) cell for a (dataset, variant) whose rule_tiers.json
+# actually contains that tier. The DNF engine does NOT guarantee every arity/rank
+# exists per fragmentation (e.g. rbrics has no dnf_k3_r2), so the uniform config tier
+# list would otherwise emit orphaned cells that soft-skip and get marked done.
+# Conservative: if rule_tiers.json is absent/unreadable (vocab not built yet), do NOT
+# filter — emit exactly as before (never drop a legitimate cell on a missing file).
+import os, re
+_VOCAB_ROOT = os.environ.get("VOCAB_ROOT", "vocab_final_v2")
+_tier_cache = {}
+def _accepted_dnf_tiers(code, base):
+    key = (code, base)
+    if key not in _tier_cache:
+        p = os.path.join(_VOCAB_ROOT, code, base, "rule_tiers.json")
+        try:
+            _tier_cache[key] = set(re.findall(r"dnf_k\d+_r\d+", open(p).read()))
+        except OSError:
+            _tier_cache[key] = None   # missing/unreadable → do not filter
+    return _tier_cache[key]
+
 # (display_dataset, tier) pairs across both regimes -----------------------------
 runs = []
 for disp in r["original_labels"]["datasets"]:
@@ -62,6 +82,10 @@ for disp, tier in runs:
     for bb in bbs:
         for fold in folds:
             for base in base_frags:
+                if tier.startswith("dnf_"):
+                    _acc = _accepted_dnf_tiers(code, base)
+                    if _acc is not None and tier not in _acc:
+                        continue   # phantom tier — rule not planted for this variant
                 for celltype, device in CELLTYPES:
                     out.append((code, base, bb, str(fold), tier, celltype, device))
 

@@ -381,6 +381,7 @@ class MolDataset(InMemoryDataset):
         num_classes: Optional[int] = None,
         force_reprocess: bool = False,
         source_gt_smarts: Optional[list] = None,
+        apply_threshold: bool = False,
         transform=None,
         pre_transform=None,
         pre_filter=None,
@@ -389,6 +390,7 @@ class MolDataset(InMemoryDataset):
         self.split = split
         self.label_col = label_col
         self.lookup = lookup
+        self._apply_threshold = apply_threshold
         self._num_classes = num_classes
         self.normalize = normalize
         # Source-GT (e.g. *_Verified_GT): pre-compile the SMARTS once; process()
@@ -472,6 +474,16 @@ class MolDataset(InMemoryDataset):
             if data is None or data.num_nodes == 0:
                 skipped += 1
                 continue
+            # Fail fast on a broken motif partition (unfiltered ⇒ no -1). The CSV path
+            # previously had no per-graph validation (unlike OGB/mutag), so a fold-CSV /
+            # lookup_all SMILES mismatch could silently produce all-UNK graphs.
+            if self.lookup is not None:
+                from .graph_to_smiles import validate_nodes_to_motifs
+                validate_nodes_to_motifs(
+                    data.nodes_to_motifs, smiles=str(smiles),
+                    apply_threshold=self._apply_threshold,
+                    smi_lookup=self.lookup.get(str(smiles), {}),
+                )
             if self._source_gt_queries is not None:
                 attach_source_gt(data, self._source_gt_queries)
             if self.pre_filter is not None and not self.pre_filter(data):

@@ -33,15 +33,21 @@ for line in exp_lines:
 
 # done / failed from the timing log (rc column is source of truth)
 timing = os.path.join(OUT, "logs", "cell_timing.tsv")
-done = set(); failed = set(); done_ct = Counter(); fail_ct = Counter()
+# A cell can appear multiple times (retries): it is DONE if ANY attempt had rc==0,
+# and FAILED only if NO attempt succeeded. (Fixes the retry double-count where a
+# fail-then-succeed cell previously landed in both sets and inflated FAILED.)
+_rc_ok = {}
 if os.path.exists(timing):
     for line in open(timing):
         p = line.rstrip("\n").split("\t")
         if len(p) < 8:
             continue
         key = tuple(p[:6])          # ds,variant,bb,fold,tier,celltype
-        (done if p[7] == "0" else failed).add(key)
-        (done_ct if p[7] == "0" else fail_ct)[p[5]] += 1
+        _rc_ok[key] = _rc_ok.get(key, False) or (p[7] == "0")
+done   = {k for k, ok in _rc_ok.items() if ok}
+failed = {k for k, ok in _rc_ok.items() if not ok}
+done_ct = Counter(k[5] for k in done)
+fail_ct = Counter(k[5] for k in failed)
 
 pending = expected - done - failed
 pend_ct = Counter(k[5] for k in pending)
@@ -55,6 +61,23 @@ if failed:
     print(f"\n  FAILED ({len(failed)}):")
     for k in sorted(failed)[:25]:
         print("    " + "/".join(k))
+
+# Artifact reconciliation (M3 safety net): 'done' above is rc==0 from the timing log.
+# A soft-skipped cell (missing gt_cache / vocab) exits rc==0 yet produces NO artifact,
+# so it silently counts as done. Cross-check the on-disk artifact count per celltype
+# so those gaps surface instead of reading as complete.
+_codes = {k[0] for k in expected}
+print("\n  artifact reconciliation (done=rc==0 vs files on disk):")
+for _ct, _mdir, _fn in [("vtrain", "vanilla", "best_model.pt"),
+                        ("posthoc", "baselines", "summary.json"),
+                        ("mose", "mose", "summary.json"),
+                        ("gsat", "base_gsat", "summary.json"),
+                        ("motifsat", "motifsat", "summary.json")]:
+    _files = glob.glob(os.path.join(OUT, _mdir, "**", _fn), recursive=True)
+    _n = sum(1 for f in _files if any(("/" + code + "/") in f for code in _codes))
+    _gap = done_ct[_ct] - _n
+    _flag = "   <-- SOFT-SKIP / missing artifacts" if _gap > 0 else ""
+    print(f"    {_ct:10s} done={done_ct[_ct]:5d}  artifacts={_n:5d}  gap={_gap:+d}{_flag}")
 
 # metric-presence spot check on results.csv
 rf = sorted(glob.glob(os.path.join(OUT, "tables", "results_*.csv")))

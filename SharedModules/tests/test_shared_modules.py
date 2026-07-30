@@ -1522,12 +1522,15 @@ class TestMutagTUDataset(unittest.TestCase):
             gmi_train={},
             gmi_test={},
         )
-        ds_bad = MutagTUDataset(
-            items, vocab=vocab,
-            index_maps={}, smiles_list=['CC', None, 'CCO', ''],
-        )
+        # Vocab set but no motif_lookup → fail fast AT CONSTRUCTION. The legacy
+        # vocab.lookup_for_split fallback is disabled (it silently degraded to a
+        # mining-time per-split slice / empty lookup that only errored later); the
+        # loader must be given a fold annotation from build_fold_annotation.
         with self.assertRaises(ValueError):
-            DataLoader(ds_bad, batch_size=4, shuffle=False).__iter__().__next__()
+            MutagTUDataset(
+                items, vocab=vocab,
+                index_maps={}, smiles_list=['CC', None, 'CCO', ''],
+            )
 
     def test_with_vocab_and_index_map(self):
         """When a valid vocab + index_map are provided, known nodes get motif_id >= 0."""

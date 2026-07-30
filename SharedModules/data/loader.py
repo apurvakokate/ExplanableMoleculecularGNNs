@@ -294,8 +294,13 @@ class MutagTUDataset(torch.utils.data.Dataset):
         if motif_lookup is not None:
             self._lookup = motif_lookup
         elif vocab is not None:
-            self._lookup = vocab.lookup_for_split(split)
-            self._apply_threshold = getattr(vocab, 'apply_threshold', False)
+            # No silent fallback to the mining-time per-split legacy slice — it is
+            # disjoint by molecule and mis-thresholded per fold (motif_id=-1 risk).
+            # The production mutag loader always supplies motif_lookup via
+            # build_fold_annotation; require it here rather than degrade silently.
+            raise ValueError(
+                "MutagTUDataset: motif_lookup (from build_fold_annotation) is required "
+                "when a vocab is used; the vocab.lookup_for_split fallback is disabled.")
         else:
             self._lookup = {}
 
@@ -359,11 +364,22 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         label_std: float = 1.0,
         normalize_labels: bool = False,
         require_smiles: bool = False,
+        motif_lookup: Optional[Dict] = None,
+        apply_threshold: bool = False,
     ):
         self._ds = ogb_dataset
         self._indices = list(indices)
-        self._lookup = vocab.lookup_for_split(split) if vocab else {}
-        self._apply_threshold = getattr(vocab, 'apply_threshold', False) if vocab else False
+        # Motif annotation MUST come from build_fold_annotation (full pre-threshold
+        # pool + per-fold threshold), exactly like the CSV and mutag paths. The legacy
+        # vocab.lookup_for_split(split) per-split slice is a mining-time artifact
+        # (disjoint by molecule, mis-thresholded per fold) that produced motif_id=-1
+        # on unfiltered vocabs — the silent fallback is removed (fail fast instead).
+        if vocab is not None and motif_lookup is None:
+            raise ValueError(
+                "OGBMotifDataset: motif_lookup (from build_fold_annotation) is required "
+                "when a vocab is used; the vocab.lookup_for_split fallback is disabled.")
+        self._lookup = motif_lookup if motif_lookup is not None else {}
+        self._apply_threshold = bool(apply_threshold)
         self._label_mean = float(label_mean)
         self._label_std = float(label_std) if float(label_std) != 0.0 else 1.0
         self._normalize_labels = normalize_labels
@@ -729,9 +745,45 @@ def _get_ogb_loaders(
 
     _require_smiles = vocab is not None
     _norm = normalize and task_type == 'Regression'
+
+    # Fold-annotated motif lookup (full pre-threshold pool + per-fold threshold),
+    # identical sourcing to the CSV/mutag paths — NOT vocab.lookup_for_split (the
+    # legacy per-split mining slice that silently produced motif_id=-1). OGB is
+    # single-fold; the exported CSV ({dataset}_0.csv, group∈training/valid/test)
+    # supplies the split for support counting.
+    lookup, kept_motif_ids, threshold_pct = None, None, None
+    if vocab is not None:
+        from .fold_threshold import build_fold_annotation
+        from pathlib import Path as _Path
+        if vocab.lookup_all is None or vocab.mol_fragment_smarts is None:
+            _missing = [n for n, c in (('_lookup_all.pickle', vocab.lookup_all is None),
+                        ('_mol_fragment_smarts.pickle', vocab.mol_fragment_smarts is None)) if c]
+            raise FileNotFoundError(
+                f"Vocab {dataset}/{vocab.variant} missing required artifacts: "
+                f"{', '.join(_missing)}. Re-run phase 1 (generate_vocab_rules.py). "
+                f"Legacy split-lookup fallback is disabled.")
+        _ogb_csv = f'{data_root}/{dataset}_0.csv'
+        lookup, kept_motif_ids, _thr_motifs, threshold_pct = build_fold_annotation(
+            lookup_all=vocab.lookup_all,
+            motif_list=vocab.motif_list,
+            mol_fragment_smarts=vocab.mol_fragment_smarts,
+            csv_path=_ogb_csv,
+            label_col='label',
+            dataset=dataset,
+            variant=vocab.variant or '',
+            vocab_dir=_Path(vocab.vocab_dir) if vocab.vocab_dir else _Path('.'),
+            apply_threshold=vocab.apply_threshold,
+            threshold_pct=vocab.threshold_pct,
+        )
+        _n_kept = len(kept_motif_ids) if kept_motif_ids is not None else vocab.num_motifs
+        print(f'  [fold {"threshold pct="+str(threshold_pct) if threshold_pct is not None else "lookup no-threshold"}] '
+              f'{dataset} kept={_n_kept}/{vocab.num_motifs} motifs')
+
+    _apply_thr = threshold_pct is not None
     _ds_kw = dict(
         label_mean=label_mean, label_std=label_std,
         normalize_labels=_norm, require_smiles=_require_smiles,
+        motif_lookup=lookup, apply_threshold=_apply_thr,
     )
 
     train_ds = OGBMotifDataset(
@@ -740,6 +792,13 @@ def _get_ogb_loaders(
         ogb_dataset, split_idx['valid'], vocab, split='valid', **_ds_kw)
     test_ds = OGBMotifDataset(
         ogb_dataset, split_idx['test'], vocab, split='test', **_ds_kw)
+
+    # Fail fast if motif annotation wholesale-failed (mirrors CSV/mutag guard).
+    if vocab is not None:
+        _tag = f'{dataset} fold=0'
+        guard_excessive_all_unk_motifs(train_ds, apply_threshold=_apply_thr, label=f'{_tag} train')
+        guard_excessive_all_unk_motifs(val_ds, apply_threshold=_apply_thr, label=f'{_tag} valid')
+        guard_excessive_all_unk_motifs(test_ds, apply_threshold=_apply_thr, label=f'{_tag} test')
 
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size, shuffle=True,
@@ -761,6 +820,9 @@ def _get_ogb_loaders(
         deg=_deg,
         norm_mean=label_mean,
         norm_std=label_std,
+        kept_motif_ids=kept_motif_ids,
+        threshold_pct=threshold_pct,
+        motif_lookup=lookup if vocab is not None else None,
     )
     return loaders, test_ds, meta
 
@@ -903,6 +965,7 @@ def get_loaders(
         proc_base = f'{proc_base}/{proc_tag}'
 
     reject_wildcard_smiles_in_csv(csv)
+    _apply_thr = threshold_pct is not None   # thresholded vocab ⇒ -1 (UNK) allowed
 
     # Training split — compute normalisation stats from training data
     train_ds = MolDataset(
@@ -915,6 +978,7 @@ def get_loaders(
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
+        apply_threshold=_apply_thr,
     )
 
     val_ds = MolDataset(
@@ -929,6 +993,7 @@ def get_loaders(
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
+        apply_threshold=_apply_thr,
     )
 
     test_ds = MolDataset(
@@ -943,6 +1008,7 @@ def get_loaders(
         num_classes=num_classes if task_type == 'MultiLabel' else None,
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
+        apply_threshold=_apply_thr,
     )
 
     _apply_thr = threshold_pct is not None
@@ -1065,7 +1131,13 @@ def apply_gt_loaders(
                 from .graph_to_smiles import refresh_motif_annotations_on_graphs
                 lookup = _refresh_lookup
                 if lookup is None:
-                    lookup = refresh_vocab.lookup_for_split(_lookup_split[split])
+                    # No silent fallback to the legacy per-split slice — require the
+                    # fold annotation (meta.motif_lookup from build_fold_annotation).
+                    raise ValueError(
+                        "apply_gt_loaders: cross-variant motif refresh requires a fold "
+                        "motif_lookup (from build_fold_annotation, passed via "
+                        "meta.motif_lookup); the refresh_vocab.lookup_for_split fallback "
+                        "is disabled (legacy per-split slice → motif_id=-1 risk).")
                 refresh_motif_annotations_on_graphs(
                     gt_loaded[split],
                     lookup,

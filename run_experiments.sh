@@ -334,17 +334,24 @@ _skip_redundant_fold() {
 # still fragment, threshold, and plot node coverage.
 # Synthetic GT (phase 4) only applies to GT_SUPPORTED_DATASETS CSV benchmarks.
 _skip_synthetic_gt_dataset() {
-    # Return 0 = apply GT; return 1 = skip (regression, mutag, OGB, etc.).
-    PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
+    # Return 0 = apply GT; return 1 = skip (regression, mutag, OGB not-in-set, etc.).
+    # GT_SUPPORTED_DATASETS is the single source of truth. Distinct exit codes keep
+    # "cleanly not supported" (3) apart from an evaluation error (import/env) so we
+    # NEVER fall back to a stale hardcoded list — that silently re-drops datasets
+    # (e.g. OGB) whenever the set is extended, reintroducing the original scope bug.
+    local _out _rc
+    _out=$(PYTHONPATH="$PROJECT:${PYTHONPATH:-}" python3 -c "
 from SharedModules.data.ground_truth import GT_SUPPORTED_DATASETS
 import sys
-sys.exit(0 if sys.argv[1] in GT_SUPPORTED_DATASETS else 1)
-" "$1" 2>/dev/null || {
-        case "$1" in Mutagenicity|Benzene|BBBP|hERG|Alkane_Carbonyl|Fluoride_Carbonyl)
-            return 0 ;;
-        esac
-        return 1
-    }
+sys.exit(0 if sys.argv[1] in GT_SUPPORTED_DATASETS else 3)
+" "$1" 2>&1); _rc=$?
+    case "$_rc" in
+        0) return 0 ;;   # in GT_SUPPORTED_DATASETS → apply GT
+        3) return 1 ;;   # cleanly not supported → skip
+        *) echo "FATAL: _skip_synthetic_gt_dataset('$1') could not evaluate "\
+                "GT_SUPPORTED_DATASETS (rc=$_rc): $_out" >&2
+           exit 1 ;;     # import/env failure → fail loud, never guess a stale list
+    esac
 }
 
 # Phase 1 writes four base variants per dataset (no threshold).

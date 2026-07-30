@@ -78,7 +78,7 @@ class VanillaConfig:
     # MAGE (official, arXiv 2405.12519 Stage 2) scoring options. The identifier is
     # 'mage_official' (not 'mage') so its outputs never collide with legacy
     # 'mage_*' result dirs that actually hold the renamed Motif-Occlusion.
-    mage_official_positive_class: int = 1     # S_cm column exposed (mutag uses 0)
+    mage_official_positive_class: Optional[int] = None  # None → dataset-aware (mutag→0, else 1)
     mage_official_predicted_class: bool = False  # collapse with graph's predicted class
     run_motif_impact: bool = True
     gnnex_max_graphs: Optional[int] = None
@@ -314,6 +314,9 @@ def run(cfg: VanillaConfig) -> dict:
         df.to_csv(out_dir / f'{name}.csv', index=False)
 
     results: Dict = {'prediction': all_preds, 'eval': eval_results}
+    # Sentinel: records any explainer that raised, so a downstream nan can be told
+    # apart from a genuine metric (a swallowed [warn] previously left no trace).
+    failed_explainers: Dict[str, str] = {}
 
     # ── Post-hoc explainers ───────────────────────────────────────────────────
     # IMPORTANT: PyG's GNNExplainer / PGExplainer instrument the model IN PLACE to
@@ -406,6 +409,7 @@ def run(cfg: VanillaConfig) -> dict:
             results['gnnexplainer_max']  = gnnex_scores.get('max', {})
         except Exception as e:
             print(f'  [warn] GNNExplainer failed: {e}')
+            failed_explainers['gnnexplainer'] = f'{type(e).__name__}: {e}'
 
     # PGExplainer
     if cfg.run_pgexplainer and not cfg.reuse_explainer_scores:
@@ -422,6 +426,7 @@ def run(cfg: VanillaConfig) -> dict:
             results['pgexplainer_max']  = pgex_scores.get('max', {})
         except Exception as e:
             print(f'  [warn] PGExplainer failed: {e}')
+            failed_explainers['pgexplainer'] = f'{type(e).__name__}: {e}'
 
     # Motif-Occlusion (formerly mislabelled "MAGE")
     if cfg.run_motif_occlusion and not cfg.reuse_explainer_scores:
@@ -437,16 +442,24 @@ def run(cfg: VanillaConfig) -> dict:
             results['motif_occlusion_max']  = mo_scores.get('max', {})
         except Exception as e:
             print(f'  [warn] Motif-Occlusion failed: {e}')
+            failed_explainers['motif_occlusion'] = f'{type(e).__name__}: {e}'
 
     # MAGE (official — arXiv 2405.12519 Stage 2 class-wise motif scores)
     if cfg.run_mage_official and not cfg.reuse_explainer_scores:
         try:
+            # Dataset-aware positive class (which S_cm column MAGE exposes). mutag's
+            # property-positive class is 0; every other dataset is 1. Resolved here so
+            # ALL launch paths are correct (shell AND the python re-run path), not only
+            # the shell that passes --mage_official_positive_class explicitly.
+            _mage_pc = (cfg.mage_official_positive_class
+                        if cfg.mage_official_positive_class is not None
+                        else (0 if cfg.dataset == 'mutag' else 1))
             _mode = ('predicted-class' if cfg.mage_official_predicted_class
-                     else f'positive-class={cfg.mage_official_positive_class}')
+                     else f'positive-class={_mage_pc}')
             print(f'\n  Running MAGE (official) (score mode: {_mode}) ...')
             mage_scores, _mage_pi = run_mage(
                 _clean_model(), test_list, vocab, device, task_type,
-                positive_class=cfg.mage_official_positive_class,
+                positive_class=_mage_pc,
                 use_predicted_class=cfg.mage_official_predicted_class,
                 verbose=cfg.verbose, return_per_instance=True)
             explainer_node_atts['mage_official_per_instance'] = _mage_pi  # {mid:{gi:alpha*P}}
@@ -456,6 +469,7 @@ def run(cfg: VanillaConfig) -> dict:
             results['mage_official_max']  = mage_scores.get('max', {})
         except Exception as e:
             print(f'  [warn] MAGE (official) failed: {e}')
+            failed_explainers['mage_official'] = f'{type(e).__name__}: {e}'
 
     # Per-explainer score-vs-impact correlation, top-motif discriminativeness,
     # and score distribution. The post-hoc explainer's attribution IS its motif
@@ -801,6 +815,9 @@ def run(cfg: VanillaConfig) -> dict:
         'fold':             cfg.fold,
         'backbone':         cfg.backbone,
         'variant_tag':      tag,
+        # Which explainers raised (empty = all ran). Distinguishes a failure-nan from a
+        # genuine metric so a swallowed [warn] no longer looks like a complete result.
+        'failed_explainers': failed_explainers,
         'vocab_variant':    cfg.vocab_variant,
         'node_encoder':     cfg.node_encoder,
         'apply_layer_norm': cfg.apply_layer_norm,
@@ -993,9 +1010,10 @@ def main():
                         help='Skip the official MAGE Stage-2 attention scorer '
                              '(arXiv 2405.12519). Identifier "mage_official" so '
                              'its outputs never collide with legacy mage_* dirs.')
-    parser.add_argument('--mage_official_positive_class', type=int, default=1,
+    parser.add_argument('--mage_official_positive_class', type=int, default=None,
                         help='MAGE (official): S_cm class column exposed as the '
-                             'per-motif score (default 1; mutag TUDataset uses 0).')
+                             'per-motif score. Default None → dataset-aware '
+                             '(mutag TUDataset uses 0; every other dataset uses 1).')
     parser.add_argument('--mage_official_predicted_class', action='store_true',
                         help="MAGE (official): collapse S_cm with each graph's own "
                              'predicted class instead of the fixed positive-class column.')

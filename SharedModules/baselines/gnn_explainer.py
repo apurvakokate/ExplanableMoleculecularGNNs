@@ -88,8 +88,16 @@ def run_gnnexplainer(
                 return_type='raw',
             ),
         )
-    except Exception:
-        explainer = None
+    except Exception as _e:
+        # Do NOT silently substitute gradient-saliency under the 'gnnexplainer' label
+        # (this is exactly the contract PGExplainer enforces). If PyG's Explainer
+        # cannot be built for this model — e.g. OGB integer AtomEncoder features can't
+        # require_grad — fail loudly so the caller records GNNExplainer as FAILED, not
+        # as mislabelled saliency scores.
+        raise RuntimeError(
+            f"GNNExplainer unavailable: PyG Explainer construction failed ({type(_e).__name__}: {_e}). "
+            f"Refusing to silently substitute gradient-saliency under the 'gnnexplainer' label."
+        ) from _e
 
     mean_sum: Dict[int, float] = {}
     mean_cnt: Dict[int, int]   = {}
@@ -112,6 +120,7 @@ def run_gnnexplainer(
         print(f'    GNNExplainer: explaining {n_total}/{n_test} test graph(s) '
               f'({cap_note}), {epochs} epochs/graph')
 
+    _n_fallback = 0
     for gi, data in enumerate(graphs):
         if verbose and n_total > 25 and gi > 0 and gi % 25 == 0:
             print(f'    GNNExplainer: {gi}/{n_total} graphs ...')
@@ -122,17 +131,22 @@ def run_gnnexplainer(
             continue
 
         try:
-            if explainer is not None:
-                expl      = explainer(
-                    data.x, data.edge_index,
-                    batch=torch.zeros(n, dtype=torch.long, device=device),
-                    nodes_to_motifs=n2m,
-                )
-                node_mask = expl.node_mask.mean(dim=-1).abs().detach().cpu()
-            else:
-                node_mask = _gradient_saliency(wrapped, data, device)
-        except Exception:
-            node_mask = _gradient_saliency(wrapped, data, device)
+            expl = explainer(
+                data.x, data.edge_index,
+                batch=torch.zeros(n, dtype=torch.long, device=device),
+                nodes_to_motifs=n2m,
+            )
+            node_mask = expl.node_mask.mean(dim=-1).abs().detach().cpu()
+        except Exception as _pe:
+            # A genuine GNNExplainer failure on this graph — SKIP it (do not inject
+            # gradient-saliency under the gnnexplainer label). Track + warn so the
+            # dropout is visible, never silent.
+            _n_fallback += 1
+            if _n_fallback <= 3:
+                print(f'    [warn] GNNExplainer failed on graph {gi} '
+                      f'({type(_pe).__name__}: {_pe}); skipping this graph '
+                      f'(no saliency substitution)')
+            continue
 
         if node_mask is None:
             continue
@@ -153,6 +167,11 @@ def run_gnnexplainer(
             mean_cnt[mid] = mean_cnt.get(mid, 0)   + 1
             max_sum[mid]  = max_sum.get(mid, 0.0)  + local_max
             max_cnt[mid]  = max_cnt.get(mid, 0)    + 1
+
+    if _n_fallback:
+        print(f'    [warn] GNNExplainer: {_n_fallback}/{n_total} graph(s) failed and '
+              f'were SKIPPED (not saliency-substituted); scores computed on '
+              f'{n_total - _n_fallback} graph(s).')
 
     scores = {
         'mean': {mid: mean_sum[mid] / mean_cnt[mid]

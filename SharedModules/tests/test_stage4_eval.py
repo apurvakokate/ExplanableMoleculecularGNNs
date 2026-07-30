@@ -137,11 +137,19 @@ class Stage4CorrelationMetrics(unittest.TestCase):
 
 
 class Stage4MagePolarity(unittest.TestCase):
-    """MAGE must attribute toward the property-active class: default 1, mutag 0."""
+    """MAGE must attribute toward the property-active class: dataset-aware (mutag 0, else 1)."""
 
-    def test_run_vanilla_default_is_1(self):
+    def test_run_vanilla_default_is_dataset_aware(self):
         from SharedModules.baselines.run_vanilla import VanillaConfig
-        self.assertEqual(VanillaConfig.__dataclass_fields__['mage_official_positive_class'].default, 1)
+        # Default is None → resolved per dataset at run time (mutag→0, else 1), so ALL
+        # launch paths are correct — not only the shell that passes it explicitly.
+        self.assertIsNone(
+            VanillaConfig.__dataclass_fields__['mage_official_positive_class'].default)
+        import inspect
+        from SharedModules.baselines import run_vanilla as _rv
+        self.assertIn(
+            "0 if cfg.dataset == 'mutag' else 1", inspect.getsource(_rv),
+            'run_vanilla lost the dataset-aware MAGE positive-class resolution')
 
     def test_pipeline_sets_mutag_to_0(self):
         # the shell maps mutag → 0 (else default 1); guard the regression that would
