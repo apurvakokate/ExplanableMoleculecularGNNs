@@ -407,6 +407,10 @@ def run(cfg: VanillaConfig) -> dict:
             _save_explainer_scores(gnnex_scores, out_dir / 'gnnexplainer_motif_scores', vocab)
             results['gnnexplainer_mean'] = gnnex_scores.get('mean', {})
             results['gnnexplainer_max']  = gnnex_scores.get('max', {})
+            if not gnnex_scores.get('mean'):   # every graph skipped → no scores
+                failed_explainers['gnnexplainer'] = ('no scores: all graphs skipped '
+                    '(unsupported for this model — e.g. atom_encoder integer features '
+                    'cannot requires_grad; not silently saliency-substituted)')
         except Exception as e:
             print(f'  [warn] GNNExplainer failed: {e}')
             failed_explainers['gnnexplainer'] = f'{type(e).__name__}: {e}'
