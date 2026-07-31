@@ -21,7 +21,11 @@ ckpt_ready() {   # ds variant bb fold tier
     # so its vtrain checkpoint lands under the _real suffix, NOT _gt_source. Gate posthoc on the
     # real ckpt for both, else source posthoc is never claimable.
     local suf; if [ "$5" = real ] || [ "$5" = source ]; then suf=real; else suf="gt_$5"; fi
-    [ -f "$OUT_ROOT/vanilla/$1/fold$4/$2/bb-${3}_enc-onehot_norm-none_${suf}/best_model.pt" ]
+    # Encoder must match how vtrain names the checkpoint: OGB datasets train with the
+    # atom_encoder, everything else with onehot. Hardcoding onehot made every OGB posthoc
+    # cell permanently un-claimable (checkpoint sought at the wrong path).
+    local enc=onehot; case "$1" in ogbg-*) enc=atom_encoder ;; esac
+    [ -f "$OUT_ROOT/vanilla/$1/fold$4/$2/bb-${3}_enc-${enc}_norm-none_${suf}/best_model.pt" ]
 }
 
 while true; do

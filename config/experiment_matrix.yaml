@@ -76,7 +76,7 @@ datasets:
   Mutagenicity:      {code: Mutagenicity,                  task: classification, encoder: onehot,       folds: 5}
   BBBP:              {code: BBBP,                           task: classification, encoder: onehot,       folds: 5}
   hERG:              {code: hERG,                           task: classification, encoder: onehot,       folds: 5}
-  OGBG-molhiv:       {code: ogbg-molhiv,                    task: classification, encoder: atom_encoder, folds: 1}   # official scaffold split
+  OGBG-molhiv:       {code: ogbg-molhiv,                    task: classification, encoder: atom_encoder, folds: 1, frag_variants: [rbrics]}   # official scaffold split; rbrics-only (FG fragmenters fail on molhiv's ~3.2% organometallics)
   OGBG-molbace:      {code: ogbg-molbace,                   task: classification, encoder: atom_encoder, folds: 1}
   esol:              {code: esol,                           task: regression,     encoder: onehot,       folds: 5}
   Lipophilicity:     {code: Lipophilicity,                  task: regression,     encoder: onehot,       folds: 5}

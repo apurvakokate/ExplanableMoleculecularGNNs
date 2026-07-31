@@ -79,9 +79,12 @@ for disp, tier in runs:
         sys.exit(f"dataset {disp!r} in regimes but not in datasets: block")
     code = ds_meta[disp]["code"]
     folds = list(range(ds_meta[disp]["folds"]))
+    # Per-dataset fragmentation restriction (default: all 4 base variants). e.g. molhiv
+    # is rbrics-only because the FG fragmenters fail on its organometallic molecules.
+    _frags = ds_meta[disp].get("frag_variants", base_frags)
     for bb in bbs:
         for fold in folds:
-            for base in base_frags:
+            for base in _frags:
                 if tier.startswith("dnf_"):
                     _acc = _accepted_dnf_tiers(code, base)
                     if _acc is not None and tier not in _acc:
