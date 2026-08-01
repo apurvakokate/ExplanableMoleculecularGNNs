@@ -51,6 +51,7 @@ class VanillaGNN(nn.Module):
         edge_dim: Optional[int] = None,
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
+        graph_pool: str = 'add',
     ):
         super().__init__()
         self.backbone_net = BaseGNN(
@@ -65,6 +66,7 @@ class VanillaGNN(nn.Module):
             edge_dim=edge_dim,
             conv_normalize=conv_normalize,
             gin_inner_bn=gin_inner_bn,
+            graph_pool=graph_pool,
         )
         self.backbone_net.lin2 = nn.Linear(hidden_dim, num_classes)
         self.num_classes = num_classes

@@ -61,6 +61,7 @@ class VanillaConfig:
     num_layers: int       = 3
     apply_layer_norm: bool = False
     conv_normalize: str = 'none'
+    graph_pool: str = 'add'
     gin_inner_bn: bool = True
     dropout: float        = 0.5
     epochs: int           = 100
@@ -117,9 +118,9 @@ class VanillaConfig:
 
     def variant_tag(self) -> str:
         enc = self.node_encoder
-        # Effective inter-layer norm (none|l2|layernorm). apply_layer_norm=True
-        # forces layernorm. Encoded so none/l2/layernorm runs never collide.
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
+        _norm = self.conv_normalize.lower()   # field default guarantees a str
+        if _norm == 'none' and self.apply_layer_norm:
+            _norm = 'layernorm'
         # NOTE: epochs is deliberately NOT in the tag. A baseline/explainer run
         # uses --epochs 0 to LOAD the checkpoint trained at epochs>0; if epochs
         # were in the tag the load would look in the wrong directory.
@@ -132,7 +133,8 @@ class VanillaConfig:
             hp = hp_suffix(self)
         except Exception:
             hp = ''
-        base = f'{self.backbone}_{enc}_norm-{_norm}_{_gt}_{self.vocab_variant}'
+        pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
+        base = f'{self.backbone}_{enc}_norm-{_norm}{pool}_{_gt}_{self.vocab_variant}'
         return f'{base}_{hp}' if hp else base
 
     def to_dict(self) -> Dict:
@@ -213,6 +215,7 @@ def run(cfg: VanillaConfig) -> dict:
         backbone=cfg.backbone, node_encoder=_node_encoder,
         apply_layer_norm=cfg.apply_layer_norm, dropout=cfg.dropout,
         conv_normalize=getattr(cfg,'conv_normalize','none'),
+        graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg,'gin_inner_bn',True),
         num_classes=num_classes,
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
@@ -240,14 +243,17 @@ def run(cfg: VanillaConfig) -> dict:
     # training run wrote to), except the vocab variant may differ when a post-hoc
     # baseline evaluates under a filtered vocab but loads weights trained on the
     # unfiltered one. Keep this in lockstep with variant_tag().
-    _norm = 'layernorm' if cfg.apply_layer_norm else getattr(cfg, 'conv_normalize', 'none')
+    _norm = cfg.conv_normalize.lower()   # field default guarantees a str
+    if _norm == 'none' and cfg.apply_layer_norm:
+        _norm = 'layernorm'
     _gt = 'gt' if getattr(cfg, 'use_gt', False) else 'real'
     try:
         from SharedModules.data.loader import hp_suffix as _hp_suffix
         _hp = _hp_suffix(cfg)
     except Exception:
         _hp = ''
-    _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}_{_gt}_{_ckpt_variant}'
+    _pool = '' if getattr(cfg, 'graph_pool', 'add') == 'add' else f'_pool-{cfg.graph_pool}'
+    _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}{_pool}_{_gt}_{_ckpt_variant}'
     if _hp:
         _ckpt_tag = f'{_ckpt_tag}_{_hp}'
     if not cfg.load_weights_from:
@@ -960,11 +966,17 @@ def main():
     parser.add_argument('--node_encoder',    default='onehot')
     parser.add_argument('--apply_layer_norm', action='store_true')
     parser.add_argument('--conv_normalize', default='none', choices=['l2','layernorm','none'])
+    parser.add_argument('--graph_pool', default='add', choices=['add','mean'],
+                        help='Graph readout pooling: add (sum, default) | mean.')
     parser.add_argument('--no_gin_inner_bn', dest='gin_inner_bn', action='store_false')
     parser.set_defaults(gin_inner_bn=True)
     parser.add_argument('--hidden_dim',      type=int, default=64)
     parser.add_argument('--num_layers',      type=int, default=3)
     parser.add_argument('--epochs',          type=int, default=100)
+    parser.add_argument('--patience',        type=int, default=None,
+                        help='Early-stop patience; overrides VanillaConfig default '
+                             '(20) only when set. Ablation raises it to 100 for M1 '
+                             '(balanced-sampler) runs; normal runs leave it unset.')
     parser.add_argument('--lr',              type=float, default=1e-3)
     parser.add_argument('--data_root',       default='./datasets/FOLDS')
     parser.add_argument('--vocab_root',      default='./vocab_output')
@@ -1068,7 +1080,7 @@ def main():
     cfg = VanillaConfig(
         dataset=args.dataset, fold=args.fold, backbone=args.backbone,
         node_encoder=args.node_encoder, apply_layer_norm=args.apply_layer_norm,
-        conv_normalize=args.conv_normalize, gin_inner_bn=args.gin_inner_bn,
+        conv_normalize=args.conv_normalize, graph_pool=args.graph_pool, gin_inner_bn=args.gin_inner_bn,
         hidden_dim=args.hidden_dim, num_layers=args.num_layers,
         epochs=args.epochs, lr=args.lr, data_root=args.data_root,
         vocab_root=args.vocab_root, vocab_variant=args.vocab_variant,
@@ -1099,6 +1111,10 @@ def main():
         mutag_splits_path=args.mutag_splits_path,
         mutag_seed=args.mutag_seed,
     )
+    # Override early-stop patience only when explicitly passed (config default
+    # otherwise), so normal runs stay comparable to finished experiments.
+    if args.patience is not None:
+        cfg.patience = args.patience
     run(cfg)
 
 

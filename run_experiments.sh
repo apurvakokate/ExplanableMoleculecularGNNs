@@ -58,6 +58,16 @@ BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 EPOCHS="${EPOCHS:-500}"
 CONV_NORMALIZE="${CONV_NORMALIZE:-none}"
 MOSE_CONV_NORMALIZE="${MOSE_CONV_NORMALIZE:-none}"
+# Graph readout pooling ablation: add (sum, default) | mean. Applies to all trainers.
+GRAPH_POOL="${GRAPH_POOL:-add}"
+# Early-stop patience override. Empty (default) = each trainer keeps its config
+# default (MoSE 30, MotifSAT/GSAT 20, vanilla 20) so normal runs stay comparable
+# to finished experiments. The ablation sets PATIENCE=100 for M1 (balanced-
+# sampler) runs only; passed through as --patience only when non-empty.
+PATIENCE="${PATIENCE:-}"
+_patience_flag() { [ -n "$PATIENCE" ] && echo "--patience $PATIENCE"; }
+# MoSE unknown-token ablation: fixed (default) | learnable_shared.
+MOSE_UNK_MODE="${MOSE_UNK_MODE:-fixed}"
 MOSE_RUN_MULTI_EXPLANATION="${MOSE_RUN_MULTI_EXPLANATION:-0}"
 RULE_INDEX="${RULE_INDEX:-}"
 # Difficulty tiers. RULE_TIERS=1 makes phase1 emit rule_tiers.json (--rule_tiers),
@@ -447,7 +457,13 @@ _vanilla_cfg_slug() {
     local syn="${1:-real}" bb="${2:?backbone required}" enc="${3:-$NODE_ENCODER}"
     local nrm="norm-${CONV_NORMALIZE}"
     [ "${ENCODER_NORM:-off}" = "on" ] && nrm="${nrm}+encLN"
-    echo "bb-${bb}_enc-${enc}_${nrm}_${syn}"
+    # Readout pooling in the slug so add/mean runs never collide (only for the
+    # non-default 'mean', keeping existing add-pool dirs backward-compatible).
+    # Vanilla uses --final_out_dir, so THIS slug — not Python variant_tag() — is
+    # the on-disk dir name; both training and post-hoc lookup call this helper.
+    local pool=""
+    [ "${GRAPH_POOL:-add}" != "add" ] && pool="_pool-${GRAPH_POOL}"
+    echo "bb-${bb}_enc-${enc}_${nrm}${pool}_${syn}"
 }
 
 # Canonical run dirs (same layout as run_experiments.py config_tag + --final_out_dir).
@@ -657,9 +673,11 @@ run_vanilla() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
+                    $(_patience_flag) \
                     $expl_flags \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -707,6 +725,7 @@ run_vanilla_gt() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root "$PROCESSED_ROOT" \
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --out_dir      "$out_dir" \
@@ -751,7 +770,10 @@ run_mose() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --conv_normalize "$MOSE_CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
+                    --unk_mode "$MOSE_UNK_MODE" \
                     --processed_root "$PROCESSED_ROOT" \
+                    $(_patience_flag) \
                     --out_dir      "$OUT_ROOT/mose/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $(_mose_extra_flags) \
@@ -795,7 +817,9 @@ run_gsat() {
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --conv_normalize  "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root  "$PROCESSED_ROOT" \
+                    $(_patience_flag) \
                     --out_dir         "$OUT_ROOT/base_gsat/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -850,6 +874,7 @@ run_gsat_gt() {
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --conv_normalize  "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/base_gsat/${gt_variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
@@ -891,7 +916,9 @@ run_motifsat() {
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --conv_normalize  "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root  "$PROCESSED_ROOT" \
+                    $(_patience_flag) \
                     --out_dir         "$OUT_ROOT/motifsat/${variant}" \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -940,6 +967,7 @@ run_baselines() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$eval_variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root "$PROCESSED_ROOT" \
                     --load_weights_from "$wdir" \
                     --weight_vocab_variant "$weight_variant" \
@@ -997,6 +1025,7 @@ run_baselines_gt() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$variant" \
                     --conv_normalize "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root "$PROCESSED_ROOT" \
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --load_weights_from "$wdir" \
@@ -1091,6 +1120,8 @@ run_mose_gt() {
                     --vocab_root   "$VOCAB_ROOT" \
                     --vocab_variant "$filter_variant" \
                     --conv_normalize "$MOSE_CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
+                    --unk_mode "$MOSE_UNK_MODE" \
                     --processed_root "$PROCESSED_ROOT" \
                     --out_dir      "$OUT_ROOT/mose/${gt_variant}" \
                     $(_mose_extra_flags) \
@@ -1141,6 +1172,7 @@ run_motifsat_gt() {
                     --vocab_root      "$VOCAB_ROOT" \
                     --vocab_variant   "$variant" \
                     --conv_normalize  "$CONV_NORMALIZE" \
+                    --graph_pool "$GRAPH_POOL" \
                     --processed_root  "$PROCESSED_ROOT" \
                     --out_dir         "$OUT_ROOT/motifsat/${gt_variant}" \
                     $(_mutag_train_flags "$ds" "$fold") \
@@ -1497,16 +1529,18 @@ phase5_mose() {
     if [ "$GT_ONLY" = "1" ] && _phase5_has_gt_training; then
         echo "  [skip] real-label MOSE — GT_ONLY=1 (synthetic GT only)"
     else
-        for variant in $(_vocab_focus_filtered_variants); do
-            run_mose "$variant" "$MOSE_INJ"
-        done
-        if [ "${MOSE_BASE:-0}" = "1" ]; then
-            for variant in $(_vocab_focus_base_variants); do
-                run_mose "$variant" "$MOSE_INJ"
-            done
-        else
-            echo "  [skip] unfiltered MOSE — MOSE_BASE=0 (filtered variants only)"
-        fi
+        # Filtered vs unfiltered selection. MOSE_FILTER_MODE=filtered|base|both lets a cell
+        # run EXACTLY one vocabulary (ablation isolation). Default derives from legacy
+        # MOSE_BASE (0 -> filtered, 1 -> both) so existing callers are unchanged.
+        local _fmode="${MOSE_FILTER_MODE:-$([ "${MOSE_BASE:-0}" = "1" ] && echo both || echo filtered)}"
+        case "$_fmode" in filtered|both)
+            for variant in $(_vocab_focus_filtered_variants); do run_mose "$variant" "$MOSE_INJ"; done ;;
+        esac
+        case "$_fmode" in base|both)
+            for variant in $(_vocab_focus_base_variants); do run_mose "$variant" "$MOSE_INJ"; done ;;
+        esac
+        [ "$_fmode" = "filtered" ] && echo "  [info] MOSE filtered-only (MOSE_FILTER_MODE=filtered)"
+        [ "$_fmode" = "base" ]     && echo "  [info] MOSE unfiltered-only (MOSE_FILTER_MODE=base)"
     fi
 
     if [ "${REAL_ONLY:-0}" = "1" ]; then

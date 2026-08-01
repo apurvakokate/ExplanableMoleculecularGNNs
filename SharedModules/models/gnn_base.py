@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch_geometric.nn import global_add_pool
+from torch_geometric.nn import global_add_pool, global_mean_pool
 
 from .conv_layers import create_conv_layers, CONV_FACTORIES
 
@@ -67,6 +67,7 @@ class BaseGNN(nn.Module):
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
         self_gate: bool = False,
+        graph_pool: str = 'add',
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -78,19 +79,27 @@ class BaseGNN(nn.Module):
         self.self_gate = bool(self_gate)
         self.node_encoder_type = node_encoder
         self.dropout = dropout
-        # Per-conv normalization applied AFTER each conv, BEFORE ReLU:
-   #   'l2'        — F.normalize(x, p=2, dim=1): unit-length node embeddings.
-   #   'layernorm' — LayerNorm(hidden_dim) per layer (learned scale/shift).
-   #   'none'      — no per-conv normalization (default).
-        # Back-compat: apply_layer_norm=True forces 'layernorm'.
         conv_normalize = (conv_normalize or 'none').lower()
-        if apply_layer_norm:
+        if conv_normalize == 'l2':
+            conv_normalize = 'l2'
+        elif conv_normalize == 'layernorm':
             conv_normalize = 'layernorm'
-        if conv_normalize not in ('l2', 'layernorm', 'none'):
+        elif conv_normalize == 'none':
+            if apply_layer_norm:
+                conv_normalize = 'layernorm'
+            else:
+                conv_normalize = 'none'
+        else:
             raise ValueError(f"conv_normalize must be l2|layernorm|none, "
                              f"got {conv_normalize!r}")
         self.conv_normalize = conv_normalize
         self.apply_layer_norm = (conv_normalize == 'layernorm')
+
+        # Graph readout pooling: 'add' (default, current behaviour) | 'mean'.
+        graph_pool = (graph_pool or 'add').lower()
+        if graph_pool not in ('add', 'mean'):
+            raise ValueError(f"graph_pool must be add|mean, got {graph_pool!r}")
+        self.graph_pool = graph_pool
 
         # Node encoder:
         #   'onehot'       — identity passthrough (x is already one-hot, dim = x_dim)
@@ -233,7 +242,8 @@ class BaseGNN(nn.Module):
         # w_readout: scale node embeddings before pooling
         h_readout = h * node_att.view(-1, 1) if (w_readout and node_att is not None) else h
 
-        graph_emb = global_add_pool(h_readout, batch)
+        _pool = global_mean_pool if self.graph_pool == 'mean' else global_add_pool
+        graph_emb = _pool(h_readout, batch)
 
         return graph_emb, h
 

@@ -59,6 +59,7 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
         dropout=cfg.dropout,
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
         conv_normalize=getattr(cfg, 'conv_normalize', 'none'),
+        graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
         self_gate=getattr(cfg, 'self_gate', False),
     )
@@ -350,6 +351,7 @@ def run(cfg: MOSEConfig) -> dict:
         'explainer_lr':  getattr(cfg, 'explainer_lr', None),
         'gnn_lr':        getattr(cfg, 'gnn_lr', None),
         'conv_normalize': getattr(cfg, 'conv_normalize', 'none'),
+        'graph_pool':    cfg.graph_pool,
         'gin_inner_bn':  getattr(cfg, 'gin_inner_bn', True),
         **training_summary_extras(cfg),  # includes self_gate
         # prediction
@@ -433,6 +435,10 @@ def main():
     parser.add_argument('--early_stop_metric', default=None, choices=['loss', 'auc'],
                         help="Early-stop/scheduler signal: 'loss' = smoothed val "
                              "loss (default, paper); 'auc' = legacy val-AUC.")
+    parser.add_argument('--patience', type=int, default=None,
+                        help='Early-stop patience; overrides MOSEConfig default (30) '
+                             'only when set. Ablation raises it to 100 for M1 '
+                             '(balanced-sampler) runs; normal runs leave it unset.')
     parser.add_argument('--gnn_lr',      type=float, default=None,
                         help='LR for GNN backbone params (default 0.001 from MOSEConfig).')
     parser.add_argument('--explainer_lr', type=float, default=None,
@@ -486,6 +492,8 @@ def main():
                         choices=['l2', 'layernorm', 'none'],
                         help='Per-conv normalization (default none for MOSE; '
                              'l2 cancels motif-weight magnitude scaling).')
+    parser.add_argument('--graph_pool', default='add', choices=['add', 'mean'],
+                        help='Graph readout pooling: add (sum, default) | mean.')
     parser.add_argument('--run_multi_explanation', action='store_true',
                         help='Run multiple-explanation / co-occurrence (H0/H1/H2) '
                              'analysis after training and save multi_explanation.*')
@@ -532,6 +540,7 @@ def main():
             **({} if args.optimizer is None else {'optimizer': args.optimizer}),
             **({} if args.weight_decay is None else {'weight_decay': args.weight_decay}),
             **({} if args.early_stop_metric is None else {'early_stop_metric': args.early_stop_metric}),
+            **({} if args.patience is None else {'patience': args.patience}),
             gnn_lr=0.001 if args.gnn_lr is None else args.gnn_lr,
             explainer_lr=0.01 if args.explainer_lr is None else args.explainer_lr,
             data_root=args.data_root,
@@ -553,6 +562,7 @@ def main():
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,
+            graph_pool=args.graph_pool,
             gin_inner_bn=args.gin_inner_bn,
             self_gate=args.self_gate,
             run_multi_explanation=args.run_multi_explanation,

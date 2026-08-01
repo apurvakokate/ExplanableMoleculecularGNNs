@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch_geometric.nn import global_add_pool
+from torch_geometric.nn import global_add_pool, global_mean_pool
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -179,6 +179,7 @@ class SingleChannelGNN(nn.Module):
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
         self_gate: bool = False,
+        graph_pool: str = 'add',
     ):
         super().__init__()
         self.w_feat = w_feat
@@ -186,6 +187,11 @@ class SingleChannelGNN(nn.Module):
         self.w_readout = w_readout
         self.unk_mode = unk_mode
         self.unk_value = unk_value
+        # Graph readout pooling for the per-class motif forward (see below): 'add' | 'mean'.
+        graph_pool = (graph_pool or 'add').lower()
+        if graph_pool not in ('add', 'mean'):
+            raise ValueError(f"graph_pool must be add|mean, got {graph_pool!r}")
+        self.graph_pool = graph_pool
 
         self.backbone = BaseGNN(
             x_dim=x_dim, hidden_dim=hidden_dim, num_layers=num_layers,
@@ -193,7 +199,7 @@ class SingleChannelGNN(nn.Module):
             apply_layer_norm=apply_layer_norm, dropout=dropout,
             deg=deg, edge_dim=edge_dim,
             conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
-            self_gate=self_gate,
+            self_gate=self_gate, graph_pool=graph_pool,
         )
         self.backbone.lin2 = nn.Linear(hidden_dim, 1)
 
@@ -292,6 +298,7 @@ class MultiChannelGNN(nn.Module):
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
         self_gate: bool = False,
+        graph_pool: str = 'add',
     ):
         super().__init__()
         if self_gate:
@@ -307,9 +314,25 @@ class MultiChannelGNN(nn.Module):
         self.w_readout = w_readout
         self.unk_mode = unk_mode
         self.unk_value = unk_value
+        # Graph readout pooling for the per-class forward (used at the readout in
+        # forward()): 'add' | 'mean'. Mirrors SingleChannelGNN / BaseGNN.
+        graph_pool = (graph_pool or 'add').lower()
+        if graph_pool not in ('add', 'mean'):
+            raise ValueError(f"graph_pool must be add|mean, got {graph_pool!r}")
+        self.graph_pool = graph_pool
         conv_normalize = (conv_normalize or 'none').lower()
-        if apply_layer_norm:
+        if conv_normalize == 'l2':
+            conv_normalize = 'l2'
+        elif conv_normalize == 'layernorm':
             conv_normalize = 'layernorm'
+        elif conv_normalize == 'none':
+            if apply_layer_norm:
+                conv_normalize = 'layernorm'
+            else:
+                conv_normalize = 'none'
+        else:
+            raise ValueError(f"conv_normalize must be l2|layernorm|none, "
+                             f"got {conv_normalize!r}")
         self.conv_normalize = conv_normalize
 
         # Per-class conv stacks + MLP heads
@@ -443,7 +466,8 @@ class MultiChannelGNN(nn.Module):
 
             # w_readout: scale before pooling
             h_pool = h_c * att_c if (self.w_readout and att_c is not None) else h_c
-            g_c = global_add_pool(h_pool, batch)
+            _pool = global_mean_pool if self.graph_pool == 'mean' else global_add_pool
+            g_c = _pool(h_pool, batch)
 
             outputs.append(self._classify(g_c, c))
 

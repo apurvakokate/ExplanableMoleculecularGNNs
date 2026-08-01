@@ -1025,9 +1025,33 @@ def get_loaders(
     guard_excessive_all_unk_motifs(
         test_ds, apply_threshold=_apply_thr, label=f'{_tag} test')
 
+    import os as _os
+    _bal = ('group' if _os.environ.get('BALANCED_GROUP') == '1'
+            else 'class' if _os.environ.get('BALANCED_SAMPLER') == '1' else None)
+    _train_sampler = None
+    if _bal is not None and task_type == 'BinaryClass':
+        import torch as _t
+        from collections import Counter as _Counter
+        from torch.utils.data import WeightedRandomSampler as _WRS
+        _ys = [int(g.y.view(-1)[0].item()) for g in train_ds]
+        if _bal == 'group':
+            _dm = int(_os.environ.get('DOMINANT_MOTIF', '-1'))
+            def _has_dm(g):
+                n2m = getattr(g, 'nodes_to_motifs', None)
+                return (_dm in set(n2m.view(-1).tolist())) if (n2m is not None and _dm >= 0) else False
+            _keys = [(y, _has_dm(g)) for y, g in zip(_ys, train_ds)]
+        else:
+            _keys = [(y,) for y in _ys]
+        _cnt = _Counter(_keys)
+        _w = _t.tensor([1.0 / _cnt[k] for k in _keys], dtype=_t.double)
+        _nsamp = int(_os.environ.get('BALANCED_NSAMPLES', str(len(train_ds))))
+        _train_sampler = _WRS(_w, num_samples=_nsamp, replacement=True)
+        print(f'  [balanced sampler] mode={_bal} groups={dict(_cnt)} num_samples={_nsamp}')
+
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size,
-                            shuffle=True, num_workers=num_workers),
+                            shuffle=(_train_sampler is None), sampler=_train_sampler,
+                            num_workers=num_workers),
         'valid': DataLoader(val_ds, batch_size=batch_size,
                             shuffle=False, num_workers=num_workers),
         'test':  DataLoader(test_ds, batch_size=batch_size,

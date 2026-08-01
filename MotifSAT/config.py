@@ -25,6 +25,7 @@ class MotifSATConfig:
     num_layers: int = 3
     apply_layer_norm: bool = False
     conv_normalize: str = 'none'      # l2 | layernorm | none (per-conv norm)
+    graph_pool: str = 'add'           # add | mean — graph readout pooling
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
     dropout: float = 0.3
@@ -132,7 +133,12 @@ class MotifSATConfig:
     def variant_tag(self) -> str:
         """Unique tag encoding all axes of variation — no two different configs can collide."""
         enc  = self.node_encoder
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
+        # conv_normalize-FIRST (matches the model): explicit conv_normalize wins;
+        # apply_layer_norm honored only when conv_normalize is 'none'. Keeps the
+        # folder name equal to what the model actually does.
+        _norm = self.conv_normalize.lower()   # field default guarantees a str
+        if _norm == 'none' and self.apply_layer_norm:
+            _norm = 'layernorm'
         ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',
@@ -151,7 +157,8 @@ class MotifSATConfig:
             hp = hp_suffix(self)
         except Exception:
             hp = ''
-        base = f'{self.backbone}_{self.motif_method}_{enc}_{ln}_{inj}_{noise_str}_{il_str}_{gt}_{ep}_{frag}'
+        pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
+        base = f'{self.backbone}_{self.motif_method}_{enc}_{ln}{pool}_{inj}_{noise_str}_{il_str}_{gt}_{ep}_{frag}'
         if getattr(self, 'deterministic_att', False):
             base = f'{base}_det'
         return f'{base}_{hp}' if hp else base

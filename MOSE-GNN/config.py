@@ -25,6 +25,7 @@ class MOSEConfig:
     num_layers: int = 3
     apply_layer_norm: bool = False
     conv_normalize: str = 'none'    # l2 | layernorm | none (per-conv norm; MOSE default none)
+    graph_pool: str = 'add'         # add | mean — graph readout pooling
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
     dropout: float = 0.5
@@ -120,11 +121,9 @@ class MOSEConfig:
             frag      - vocab_variant (fragmentation algorithm)
         """
         enc  = self.node_encoder            # onehot | linear
-        # Inter-layer norm type (none|l2|layernorm). apply_layer_norm=True is a
-        # back-compat alias that forces layernorm, so derive the effective value
-        # the model will actually use, and put it in the tag so none/l2/layernorm
-        # runs never collide.
-        _norm = 'layernorm' if self.apply_layer_norm else getattr(self, 'conv_normalize', 'none')
+        _norm = self.conv_normalize.lower()   # field default guarantees a str
+        if _norm == 'none' and self.apply_layer_norm:
+            _norm = 'layernorm'
         ln   = f'norm-{_norm}'
         inj  = '+'.join(filter(None, [
             'wf' if self.w_feat    else '',
@@ -140,5 +139,8 @@ class MOSEConfig:
             hp = hp_suffix(self)
         except Exception:
             hp = ''
-        base = f'{self.backbone}_{enc}_{ln}_{inj}_{unk}_{gt}_{ep}_{frag}'
+        # readout pooling in the tag so add/mean runs never collide (only when
+        # non-default 'mean', to keep 'add' paths backward-compatible).
+        pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
+        base = f'{self.backbone}_{enc}_{ln}{pool}_{inj}_{unk}_{gt}_{ep}_{frag}'
         return f'{base}_{hp}' if hp else base

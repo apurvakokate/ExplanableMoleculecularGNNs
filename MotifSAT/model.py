@@ -166,6 +166,7 @@ class GSAT(nn.Module):
         edge_dim: Optional[int] = None,
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
+        graph_pool: str = 'add',
         # ── Motif method ──
         motif_method: str = 'none',
         pool_mode: str = 'max_mean',
@@ -272,7 +273,7 @@ class GSAT(nn.Module):
             apply_layer_norm=apply_layer_norm, dropout=dropout,
             deg=deg, edge_dim=edge_dim,
             conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
-            self_gate=self_gate,
+            self_gate=self_gate, graph_pool=graph_pool,
         )
         self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
 

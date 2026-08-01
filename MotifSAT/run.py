@@ -72,6 +72,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         deterministic_att=getattr(cfg, 'deterministic_att', False),
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
         conv_normalize=getattr(cfg, 'conv_normalize', 'none'),
+        graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
         self_gate=getattr(cfg, 'self_gate', False),
     )
@@ -730,6 +731,12 @@ def main():
     parser.add_argument("--run_multi_explanation", action="store_true",
                         help="Run H0/H1/H2 multi-explanation inline after eval "
                              "(default: post-hoc via analysis/run_multi_explanation.py).")
+    parser.add_argument("--graph_pool", default="add", choices=["add", "mean"],
+                        help="Graph readout pooling: add (sum, default) | mean.")
+    parser.add_argument("--patience", type=int, default=None,
+                        help="Early-stop patience; overrides MotifSATConfig default "
+                             "(20) only when set. Ablation raises it to 100 for M1 "
+                             "(balanced-sampler) runs; normal runs leave it unset.")
     parser.add_argument("--conv_normalize", default="none",
                         choices=["l2", "layernorm", "none"],
                         help="Per-conv normalization (default l2).")
@@ -794,10 +801,15 @@ def main():
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
             conv_normalize=args.conv_normalize,
+            graph_pool=args.graph_pool,
             gin_inner_bn=args.gin_inner_bn,
             self_gate=args.self_gate,
             run_multi_explanation=args.run_multi_explanation,
         )
+    # Override early-stop patience only when explicitly passed (config default
+    # otherwise). Applies to both the --config and constructor branches.
+    if args.patience is not None:
+        cfg.patience = args.patience
     run(cfg)
 
 
