@@ -27,7 +27,11 @@ OGB_DATASET_NAMES = frozenset({
 
 SOURCE_GT_DATASETS = frozenset({MUTAG_TUDATASET})
 
-SINGLE_FOLD_DATASETS = OGB_DATASET_NAMES | SOURCE_GT_DATASETS
+# OGB stays fold-0-only (single scaffold split). mutag now has 5 real CV folds
+# (mutag_{0..4}, seeds 42-46), so it is NOT single-fold — despite being source-GT.
+# NOTE: keep SOURCE_GT_DATASETS unchanged (mutag is still source-GT for GT-tier
+# routing); only the single-fold classification is decoupled from it here.
+SINGLE_FOLD_DATASETS = OGB_DATASET_NAMES
 
 REGRESSION_DATASETS = frozenset(
     ds for ds, task in TASK_TYPE.items() if task == 'Regression'

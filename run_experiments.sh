@@ -334,9 +334,10 @@ _dataset_node_encoder() {
     esac
 }
 
-# Skip fold>0 for OGB/mutag (artifacts are fold-0 only).
+# Skip fold>0 for OGB (single scaffold split — fold-0 only). mutag now has 5
+# real CV folds (mutag_{0..4}, seeds 42-46), so it is NOT skipped here.
 _skip_redundant_fold() {
-    case "$1" in mutag|ogbg-*) [ "$2" != "0" ] && return 0 ;; esac
+    case "$1" in ogbg-*) [ "$2" != "0" ] && return 0 ;; esac
     return 1
 }
 
@@ -657,7 +658,7 @@ run_vanilla() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone")"
                 if _should_skip_existing && _run_dir_complete "$out_dir"; then
                     echo "  [skip existing] $ds fold$eff_fold $backbone → $out_dir"
@@ -709,7 +710,7 @@ run_vanilla_gt() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local out_dir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
                 if _should_skip_existing && _run_dir_complete "$out_dir"; then
                     echo "  [skip existing] Vanilla+GT $ds fold$eff_fold $backbone ${GT_TIER:+tier=$GT_TIER} → $out_dir"
@@ -753,7 +754,7 @@ run_mose() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local mose_base="$OUT_ROOT/mose/${variant}"
                 if _should_skip_existing && _nested_trainer_run_complete "$mose_base" "$ds" "$eff_fold" "$backbone"; then
                     echo "  [skip existing] MOSE $ds fold$eff_fold $backbone → $mose_base/$ds/fold$eff_fold/${backbone}_*"
@@ -795,7 +796,7 @@ run_gsat() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local gsat_base="$OUT_ROOT/base_gsat/${variant}"
                 if _should_skip_existing && _nested_trainer_run_complete "$gsat_base" "$ds" "$eff_fold" "$backbone"; then
                     echo "  [skip existing] GSAT $ds fold$eff_fold $backbone → $gsat_base/$ds/fold$eff_fold/${backbone}_*"
@@ -851,7 +852,7 @@ run_gsat_gt() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local gsat_gt_base="$OUT_ROOT/base_gsat/${gt_variant}"
                 if _should_skip_existing && _nested_trainer_run_complete "$gsat_gt_base" "$ds" "$eff_fold" "$backbone"; then
                     echo "  [skip existing] GSAT+GT $ds fold$eff_fold $backbone → $gsat_gt_base/$ds/fold$eff_fold/${backbone}_*"
@@ -896,7 +897,7 @@ run_motifsat() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local ms_base="$OUT_ROOT/motifsat/${variant}"
                 if _should_skip_existing && _nested_trainer_run_complete "$ms_base" "$ds" "$eff_fold" "$backbone"; then
                     echo "  [skip existing] MotifSAT $ds fold$eff_fold $backbone → $ms_base/$ds/fold$eff_fold/${backbone}_*"
@@ -946,7 +947,7 @@ run_baselines() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$weight_variant" "$backbone")"
                 local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$eval_variant" "$backbone")"
                 if [ ! -f "$wdir/best_model.pt" ]; then
@@ -1004,7 +1005,7 @@ run_baselines_gt() {
                 local ds_root="$(_dataset_data_root "$ds")"
                 local enc="$(_dataset_node_encoder "$ds")"
                 local eff_fold="$fold"
-                case "$ds" in mutag|ogbg-*) eff_fold=0 ;; esac
+                case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local wdir="$(_vanilla_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
                 local out_dir="$(_baseline_run_dir "$ds" "$eff_fold" "$variant" "$backbone" "$(_gt_syn_tag)")"
                 if [ ! -f "$wdir/best_model.pt" ]; then
