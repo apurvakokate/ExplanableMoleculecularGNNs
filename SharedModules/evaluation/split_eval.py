@@ -440,10 +440,12 @@ def evaluate_native_all_splits(
 
     write_grouped_pooled(out_dir, method_name, rows_by_split)
     write_instance(out_dir, method_name, inst_by_split)
-    summary = {method_name: summary_by_split}
-    write_summary_splits(out_dir, summary)
     write_global_pooled(out_dir, 'importance', {method_name: rows_by_split})
     write_global_pooled(out_dir, 'impact', {method_name: rows_by_split})
+    # summary_splits.json LAST + atomic — the completion marker (poll/skip_done key
+    # on it), matching the post-hoc path; a run killed before this is redone.
+    summary = {method_name: summary_by_split}
+    write_summary_splits(out_dir, summary)
     return summary
 
 
