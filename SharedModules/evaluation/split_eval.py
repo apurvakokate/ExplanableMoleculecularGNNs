@@ -361,7 +361,13 @@ def write_summary_splits(out_dir: Path, summary: Dict[str, Dict[str, dict]]):
             existing = {}
     for method, by_split in summary.items():
         existing.setdefault(method, {}).update(by_split)
-    path.write_text(json.dumps(existing, indent=2))
+    # ATOMIC write: a kill mid-write must never leave a partial summary_splits.json
+    # (which would read as non-empty → falsely "done"). Write to .tmp, then rename.
+    import os as _os
+    tmp = str(path) + '.tmp'
+    with open(tmp, 'w') as _fh:
+        _fh.write(json.dumps(existing, indent=2))
+    _os.replace(tmp, path)
 
 
 def write_global_pooled(out_dir: Path, kind: str,
@@ -604,7 +610,10 @@ def evaluate_posthoc_all_splits(
         write_instance(out_dir, ex, inst_by_ex[ex])
     write_global_pooled(out_dir, 'importance', rows_by_ex)
     write_global_pooled(out_dir, 'impact', rows_by_ex)
-    write_summary_splits(out_dir, summary)
     (out_dir / 'explainer_importances.json').write_text(
         json.dumps({'importances_by_split': importances_json}))
+    # summary_splits.json is written LAST + atomically — it is the completion
+    # marker (poll/skip_done key on it), so it must land only after every other
+    # artifact is on disk. A run killed anywhere before this has no summary → redone.
+    write_summary_splits(out_dir, summary)
     return summary
