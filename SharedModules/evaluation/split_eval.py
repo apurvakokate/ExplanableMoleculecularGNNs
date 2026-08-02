@@ -158,6 +158,68 @@ def gt_roc_block(model, gt_list, device, node_att_fn) -> Dict[str, float]:
 # UNK (motif id < 0) to 0.0. Imported lazily in evaluate_posthoc_all_splits.
 
 
+def precompute_agnostic_impact(model, vocab, split_list, device, task_type, cache_path=None):
+    """Compute (or LOAD) the AGNOSTIC per-(motif,graph) faithful-LOO impact cache
+    ONCE per split: ``{motif_id: {graph_idx: impact}}``.
+
+    This is the post-hoc y-axis. It is model-only (uniform weights, base=ones) →
+    IDENTICAL for all 4 explainers, so it is computed a single time and reused,
+    instead of the previous per-explainer recompute (4× the LOO forward passes,
+    the dominant cost). With ``max_motifs_eval=None`` (the config) this uncapped
+    cache is also exactly what the grouped metric needs, so grouped + instance
+    both derive from it — one LOO pass per split.
+
+    If ``cache_path`` exists it is LOADED (zero forward passes); otherwise it is
+    computed and WRITTEN, so any re-eval of this checkpoint is free. LOO is a model
+    masked-forward-pass and cannot be derived from the explainer attributions —
+    this caches the result so it is paid once, ever."""
+    if cache_path is not None and Path(cache_path).exists():
+        try:
+            raw = json.loads(Path(cache_path).read_text())
+            return {int(m): {int(g): float(v) for g, v in gm.items()}
+                    for m, gm in raw.items()}
+        except Exception as e:
+            print(f'  [warn] impact cache load failed ({e}); recomputing.')
+    from .embedding_viz import build_impact_cache_from_eval
+    cache = build_impact_cache_from_eval(
+        model, split_list, vocab, device, task_type,
+        base_att_fn=(lambda d: torch.ones(d.num_nodes)))
+    if cache_path is not None:
+        try:
+            Path(cache_path).write_text(json.dumps(
+                {str(m): {str(g): v for g, v in gm.items()} for m, gm in cache.items()}))
+        except Exception as e:
+            print(f'  [warn] impact cache save failed ({e}).')
+    return cache
+
+
+def _grouped_rows_from_cache(agn_cache, motif_scores, vocab):
+    """Per-motif grouped rows {motif_id, score, impact(mean), support} derived from
+    the shared agnostic cache — impact=mean over the motif's graphs, support=#graphs
+    (identical to compute_motif_impact's entry when uncapped)."""
+    motif_list = getattr(vocab, 'motif_list', [])
+    rows = []
+    for m, gm in agn_cache.items():
+        if m in motif_scores and gm:
+            vals = list(gm.values())
+            rows.append({'motif_id': int(m), 'score': float(motif_scores[m]),
+                         'impact': float(np.mean(vals)), 'support': len(vals),
+                         'motif_smarts': (str(motif_list[m]) if m < len(motif_list) else '')})
+    return rows
+
+
+def _instance_from_cache(agn_cache, per_graph_atts, split_list):
+    """Per-instance correlation using the shared agnostic impact cache as y. Score
+    cache x = explainer per-node atts reduced to per-(motif,graph) (GNN/PG/broadcast
+    MAGE/Occl); empty atts → no signal → NaN."""
+    if per_graph_atts:
+        mask_cache = build_graph_mask_cache(split_list)
+        score_cache = build_motif_score_cache_from_atts(per_graph_atts, mask_cache)
+    else:
+        score_cache = {}
+    return per_instance_correlation_from_caches(score_cache, agn_cache)
+
+
 def impact_and_corr_for_split(
     model, vocab, split_list, device, task_type, max_motifs_eval,
     motif_scores: Dict[int, float],
@@ -510,26 +572,30 @@ def evaluate_posthoc_all_splits(
         gl = gt_split_lists.get(split)
         pred_flat = _pred_scalars(
             evaluate_predictions(model, loaders[split], device, task_type, denorm=denorm))
+        # AGNOSTIC LOO impact ONCE per split (model-only → shared across all 4
+        # explainers; cached to disk so re-evals are free). Replaces the previous
+        # per-explainer recompute that was the throughput bottleneck.
+        agn_cache = precompute_agnostic_impact(
+            model, vocab, sl, device, task_type,
+            cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
         for ex in method_names:
             scores, atts = _score_explainer(ex, sl)
             if not scores.get('mean'):
                 summary[ex][split] = dict(pred_flat)   # no explainer signal here
                 continue
             sc = scores['mean']
-            # AGNOSTIC impact (uniform-weight LOO) as y; explainer atts give the
-            # per-instance score cache. base_att_fn=ones → the model-only common y.
-            res = impact_and_corr_for_split(
-                model, vocab, sl, device, task_type, max_motifs_eval, sc,
-                base_att_fn=_ones, per_graph_atts=(atts or None))
-            grouped_by_ex[ex][split] = res['grouped_rows']
-            inst_by_ex[ex][split] = res['instance']
-            rows_by_ex[ex][split] = res['grouped_rows']
+            # grouped + instance derived from the SHARED agnostic cache (no re-LOO).
+            grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
+            inst = _instance_from_cache(agn_cache, (atts or None), sl)
+            grouped_by_ex[ex][split] = grouped_rows
+            inst_by_ex[ex][split] = inst
+            rows_by_ex[ex][split] = grouped_rows
             # GT-ROC grades the explainer's OWN attribution (score broadcast), not
             # the uniform impact — different node_att_fn on purpose.
             gtroc = gt_roc_block(model, gl, device, _motif_score_node_att_fn(sc)) if gl else {}
             summary[ex][split] = {**pred_flat, **gtroc}
-            _write_importance(out_dir, ex, split, res['grouped_rows'])
-            _write_impact(out_dir, ex, split, res['grouped_rows'])
+            _write_importance(out_dir, ex, split, grouped_rows)
+            _write_impact(out_dir, ex, split, grouped_rows)
             if atts:
                 importances_json[split][ex] = _atts_to_jsonable(atts)
 
