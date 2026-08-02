@@ -66,6 +66,19 @@ def process(run_dir, meta, args, device):
     split_lists, gt = split_lists_and_gt(loaders, meta)
     model = load_vanilla_model(run_dir, meta, dmeta, device)
     out_dir = out_dir_for(run_dir, args.out_root, args.dest_root)
+    if args.predict_only:
+        # EVAL-ONLY predictive baseline (vanilla): per-split AUC/RMSE/MAE via plain
+        # forward passes — NO explainers, NO training. Writes summary_splits.json
+        # keyed by the run's family (e.g. 'vanilla').
+        from SharedModules.evaluation.split_eval import write_summary_splits, _pred_scalars
+        from SharedModules.evaluation.metrics import evaluate_predictions
+        from analysis.eval_driver_common import SPLITS
+        dn = denorm_of(dmeta, task_type)
+        summ = {s: _pred_scalars(
+                    evaluate_predictions(model, loaders[s], device, task_type, denorm=dn))
+                for s in SPLITS if split_lists.get(s)}
+        write_summary_splits(out_dir, {meta.get('family', 'vanilla'): summ})
+        return
     kw = {'method_names': tuple(args.methods)} if args.methods else {}
     evaluate_posthoc_all_splits(
         model, vocab, loaders, split_lists, gt, device, task_type,
@@ -96,6 +109,9 @@ def main():
                          "explicitly requested here.")
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--dry_run', action='store_true')
+    ap.add_argument('--predict_only', action='store_true',
+                    help='EVAL-ONLY: write per-split AUC/RMSE/MAE (no explainers, no '
+                         'training) — for the vanilla predictive baseline.')
     ap.add_argument('--skip_done', action='store_true', default=True,
                     help='skip runs whose dest summary_splits.json is already non-empty '
                          '(resumable; makes it safe to add workers for rebalancing)')
