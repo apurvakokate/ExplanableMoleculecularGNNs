@@ -54,17 +54,22 @@ def build_gt_loaders(meta, data_root, vocab_root, processed_root, batch_size=128
 
 
 def split_lists_and_gt(loaders, meta):
-    """{split: [Data]} + the GT-eval subset per split (full split for most datasets;
-    the mutagen subset for mutag; None when the run has no GT)."""
+    """{split: [Data]} + the GT-eval subset per split. GT is available for planted runs
+    (use_gt=True) AND source-GT datasets (mutag, *_Verified_GT): the source-GT ones train
+    on real labels (use_gt=False) yet still carry native ``node_label`` attached at load
+    time by SOURCE_GT_SMARTS (loader.get_loaders), so they ARE GT-annotated. mutag uses
+    its mutagen subset; gt is None only when the graphs carry no node_label at all (plain
+    original-label runs). NOTE: keying on use_gt alone would drop every *_Verified_GT
+    run's GT-ROC — the whole point of those datasets."""
     split_lists = {s: list(loaders[s].dataset) for s in SPLITS}
-    if not meta.get('use_gt'):
-        return split_lists, {s: None for s in SPLITS}
     if meta['dataset'] == 'mutag':
         from SharedModules.data.mutag_splits import mutag_gt_eval_graphs
-        gt = {s: mutag_gt_eval_graphs(split_lists[s]) for s in SPLITS}
-    else:
-        gt = {s: split_lists[s] for s in SPLITS}
-    return split_lists, gt
+        return split_lists, {s: mutag_gt_eval_graphs(split_lists[s]) for s in SPLITS}
+    def _has_node_label(graphs):
+        return any(getattr(g, 'node_label', None) is not None for g in graphs[:16])
+    if meta.get('use_gt') or _has_node_label(split_lists['test']):
+        return split_lists, {s: split_lists[s] for s in SPLITS}
+    return split_lists, {s: None for s in SPLITS}
 
 
 def denorm_of(dmeta, task_type):
@@ -73,7 +78,10 @@ def denorm_of(dmeta, task_type):
 
 def iter_runs(out_root, allowed_families, datasets, shard):
     """Yield (run_dir, meta, family) for finished checkpoints under out_root, filtered
-    by family + dataset + shard. Skips archives and summary-less / corrupt runs."""
+    by family + dataset, THEN sharded. Family is resolved (via summary.json) BEFORE
+    the shard split, so ``scoped[i::n]`` partitions EXACTLY the in-scope runs — every
+    worker gets an even slice and no run is ever emitted by two different shards.
+    Skips archives and summary-less / corrupt runs."""
     from analysis.aggregate_experiments import (
         family_of, dataset_allowed, ARCHIVE_PREFIXES)
     out_root = Path(out_root)
@@ -82,9 +90,9 @@ def iter_runs(out_root, allowed_families, datasets, shard):
         part.startswith(ARCHIVE_PREFIXES) for part in rd.relative_to(out_root).parts)]
     if datasets:
         runs = [rd for rd in runs if dataset_allowed(rd, set(datasets))]
-    if shard:
-        i, n = (int(x) for x in shard.split('/'))
-        runs = runs[i::n]
+    # Resolve family + read meta and keep only in-scope families BEFORE sharding,
+    # so the shard partitions the exact in-scope set (even split, provably disjoint).
+    scoped = []
     for rd in runs:
         sj = rd / 'summary.json'
         if not sj.exists():
@@ -95,7 +103,12 @@ def iter_runs(out_root, allowed_families, datasets, shard):
         except Exception:
             continue
         if fam in allowed_families:
-            yield rd, meta, fam
+            scoped.append((rd, meta, fam))
+    if shard:
+        i, n = (int(x) for x in shard.split('/'))
+        scoped = scoped[i::n]
+    for item in scoped:
+        yield item
 
 
 def out_dir_for(run_dir, out_root, dest_root):

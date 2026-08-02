@@ -90,22 +90,40 @@ def main():
                     help='post-hoc subset (default all 4). e.g. GPU group '
                          '"gnnexplainer mage_official" / CPU group "pgexplainer motif_occlusion".')
     ap.add_argument('--shard', default=None, help='i/N: process runs[i::N]')
+    ap.add_argument('--families', nargs='*', default=None,
+                    help="model families to include (default: baselines ONLY). This is "
+                         "the post-hoc/baselines re-eval; vanilla is excluded unless "
+                         "explicitly requested here.")
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--dry_run', action='store_true')
+    ap.add_argument('--skip_done', action='store_true', default=True,
+                    help='skip runs whose dest summary_splits.json is already non-empty '
+                         '(resumable; makes it safe to add workers for rebalancing)')
+    ap.add_argument('--no_skip_done', dest='skip_done', action='store_false')
     args = ap.parse_args()
 
     device = torch.device(
         'cuda' if (args.device == 'cuda'
                    or (args.device == 'auto' and torch.cuda.is_available()))
         else 'cpu')
-    print(f'device: {device}  (post-hoc driver, families={FAMILIES})')
+    fams = set(args.families) if args.families else {'baselines'}
+    if not fams <= set(FAMILIES):
+        raise SystemExit(f'--families must be subset of {FAMILIES}, got {sorted(fams)}')
+    print(f'device: {device}  (post-hoc driver, families={sorted(fams)})')
 
     ok = failed = 0
-    for run_dir, meta, fam in iter_runs(args.out_root, set(FAMILIES),
+    for run_dir, meta, fam in iter_runs(args.out_root, fams,
                                         args.dataset, args.shard):
         if args.limit and (ok + failed) >= args.limit:
             break
         tag = f"{meta.get('dataset')}/{fam}/{meta.get('backbone')}/{meta.get('vocab_variant')}/fold{meta.get('fold')}"
+        # skip runs already finished (non-empty summary_splits) — resumable + lets
+        # extra workers be added onto freed cores without redoing completed runs.
+        _dest = (Path(args.dest_root) / run_dir.relative_to(args.out_root)
+                 if args.dest_root else run_dir)
+        _ss = Path(_dest) / 'summary_splits.json'
+        if args.skip_done and _ss.exists() and _ss.stat().st_size > 2:
+            continue
         if args.dry_run:
             print(f'  [dry] {tag}')
             ok += 1
