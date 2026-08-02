@@ -29,6 +29,7 @@ from .motif_eval import (
     gt_vs_outside_gt_eval,
     gt_motif_ids_from_labels,
     compute_gt_roc,
+    compute_dnf_gt_roc,
     model_node_att_fn,
     motif_broadcast_att_fn,
     motif_class_discriminativeness,
@@ -318,6 +319,26 @@ class EvalPipeline:
                     node_att_fn=self.node_att_fn, level='node',
                     gt_attr='node_label_family')
 
+            # DNF clause-decomposed GT-ROC (ante-hoc parity with the post-hoc path).
+            #   Instance — did the model recover ANY one complete fired disjunct?
+            #   Global   — did it recover the UNION of all fired clauses?
+            # compute_dnf_gt_roc self-guards: graphs without ``node_label_clauses`` are
+            # skipped, so a non-DNF / source-GT list returns n_graphs=0 (it never
+            # raises) — called bare here, exactly as the post-hoc path does in
+            # run_vanilla.py. Source-GT is a SINGLE clause with no clause tensor, so its
+            # whole-rule node GT-ROC is aliased into Global/Instance. Original-label runs
+            # have no node_label at all → this whole GT block is skipped → both blank.
+            _dnf_fn = self.node_att_fn or model_node_att_fn(self.model, self.device)
+            _dnf = compute_dnf_gt_roc(self.model, gt_graphs, self.device, _dnf_fn)
+            if _dnf['n_graphs'] > 0:
+                block['instance_gt_roc_node'] = {
+                    'auc_mean': _dnf['instance_auc_mean'], 'n_graphs': _dnf['n_graphs']}
+                block['global_gt_roc_node'] = {
+                    'auc_mean': _dnf['global_auc_mean'], 'n_graphs': _dnf['n_graphs']}
+            elif 'gt_roc_node' in block:          # source-GT single-clause alias
+                block['instance_gt_roc_node'] = dict(block['gt_roc_node'])
+                block['global_gt_roc_node'] = dict(block['gt_roc_node'])
+
         # Motif-attention coherence (within/between-motif variance) — a property of the model's
         # attention, independent of GT. within ≈ 0 for MotifSAT (motif-coherent by construction),
         # > 0 for GSAT (per-node). Logged for every family so the MotifSAT-vs-GSAT table is automatic.
@@ -378,6 +399,13 @@ class EvalPipeline:
           'top_bottom'      -- top-K vs bottom-K impact comparison
           'gt_vs_outside'   -- GT vs non-GT motifs across three subsets
         """
+        # Thesis re-eval fast path: when only predictive metrics (train/val/test
+        # RMSE/MAE, computed by the caller BEFORE this) are needed, skip the
+        # expensive motif-impact pass. RMSE/MAE are unaffected; only the
+        # score-vs-impact correlation is dropped (NaN) — not read from these runs.
+        import os as _os
+        if _os.environ.get('THESIS_SKIP_MOTIF_IMPACT'):
+            run_motif_impact = False
         results: Dict = {}
 
         # 1. Prediction performance (normalised + original units when denorm set)
