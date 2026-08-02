@@ -31,7 +31,7 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 from torch_geometric.nn import global_mean_pool, global_add_pool
 
 # Return type shared with node-score baselines.
@@ -142,4 +142,95 @@ def run_motif_occlusion(
         'mean': motif_scores,
         'max':  motif_scores,
     }
+    return (scores, per_instance) if return_per_instance else scores
+
+
+@torch.no_grad()
+def run_motif_occlusion_batched(
+    model: torch.nn.Module,
+    test_list: List[Data],
+    vocab,
+    device: torch.device,
+    task_type: str = 'BinaryClass',
+    max_graphs_per_motif: Optional[int] = 300,
+    batch_size: int = 256,
+    return_per_instance: bool = False,
+) -> NodeScoreResult:
+    """GPU-batched Motif-Occlusion — bit-identical to ``run_motif_occlusion`` but
+    batches the encoder forwards (the GPU-underutilized part).
+
+    Two determinism-preserving optimizations over the per-graph loop, both exact:
+      * the FULL-graph embedding depends only on the graph (not the motif), so it is
+        computed ONCE per graph and cached — the sequential version recomputes it for
+        every (motif, graph) pair, wastefully but to the same value;
+      * the MASKED embeddings for a motif's graphs are computed in one batched forward.
+    Add-pool over a disconnected batch is a per-graph segment sum, so results match
+    the loop to float precision (verified by ab_occlusion_batched.py). The
+    ``max_graphs_per_motif`` cap and graph order are preserved so the SAME graphs are
+    scored as the sequential path."""
+    if not hasattr(model, 'get_emb'):
+        print('  [warn] Motif_Occlusion requires model.get_emb(...)')
+        return ({}, {}) if return_per_instance else {}
+    model.eval()
+    model.to(device)
+    pool_type = getattr(model, 'pool_type', 'mean')
+    pool_fn = global_add_pool if pool_type == 'add' else global_mean_pool
+
+    def _embed(datas: List[Data]) -> Optional[torch.Tensor]:
+        """Pooled embeddings [len(datas), D] via batched forwards."""
+        if not datas:
+            return None
+        out = []
+        for s in range(0, len(datas), batch_size):
+            b = Batch.from_data_list(datas[s:s + batch_size]).to(device)
+            ea = getattr(b, 'edge_attr', None)
+            try:
+                h = model.get_emb(b.x, b.edge_index, b.batch, ea)
+            except TypeError:
+                h = model.get_emb(b.x, b.edge_index, b.batch)
+            out.append(pool_fn(h, b.batch))
+        return torch.cat(out, dim=0)
+
+    # motif_id -> [(graph_idx, Data)] containing it (graph_idx indexes test_list)
+    motif_to_graphs: Dict[int, List] = {}
+    for gi, d in enumerate(test_list):
+        n2m = getattr(d, 'nodes_to_motifs', None)
+        if n2m is None:
+            continue
+        for mid in n2m[n2m >= 0].unique().tolist():
+            motif_to_graphs.setdefault(int(mid), []).append((gi, d))
+
+    # Apply the per-motif cap FIRST, then embed only the graphs actually scored
+    # (matches which graphs the sequential path embeds).
+    sel_by_mid = {mid: graphs[:(max_graphs_per_motif or len(graphs))]
+                  for mid, graphs in motif_to_graphs.items()}
+    needed = sorted({gi for sel in sel_by_mid.values() for gi, _ in sel})
+    g_full_mat = _embed([test_list[gi] for gi in needed])
+    g_full = {gi: g_full_mat[i] for i, gi in enumerate(needed)} if g_full_mat is not None else {}
+
+    motif_scores: Dict[int, float] = {}
+    per_instance: Dict[int, Dict[int, float]] = {}
+    for mid, sel in sel_by_mid.items():
+        masked = []
+        for _gi, d in sel:
+            n2m = d.nodes_to_motifs.view(-1)
+            xm = d.x.clone()
+            xm[n2m == mid] = 0.0
+            md = Data(x=xm, edge_index=d.edge_index)
+            ea = getattr(d, 'edge_attr', None)
+            if ea is not None:
+                md.edge_attr = ea
+            masked.append(md)
+        g_masked = _embed(masked)
+        dists = []
+        for i, (_gi, _d) in enumerate(sel):
+            cos = F.cosine_similarity(g_full[_gi].unsqueeze(0),
+                                      g_masked[i].unsqueeze(0), dim=-1)
+            dist = float((1.0 - cos).clamp(min=0).item())
+            dists.append(dist)
+            per_instance.setdefault(mid, {})[_gi] = dist
+        if dists:
+            motif_scores[mid] = float(sum(dists) / len(dists))
+
+    scores = {'mean': motif_scores, 'max': motif_scores}
     return (scores, per_instance) if return_per_instance else scores
