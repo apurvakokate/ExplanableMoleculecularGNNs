@@ -13,8 +13,13 @@ SOURCE_GT = {'Benzene_Verified_GT', 'Fluoride_Carbonyl_Verified_GT',
              'Alkane_Carbonyl_Verified_GT', 'mutag'}
 FRAG_MAP = {'rbrics': 'rbrics', 'rdkit_fg_first': 'FGFirst-RDKIT',
             'ertl_first': 'ertl', 'fg_first': 'custom-FG'}
+# MAGE for the paper = mage_v2 (attention-mean scoring; drops the label-leaking
+# class-prob P term). The legacy 'mage_official' key is kept under a distinct name
+# so it stays in the per-fold CSV for inspection but is NOT picked up by the table
+# builder (make_acm_tables uses model name 'MAGE' only).
 EXPL_MAP = {'gnnexplainer': 'GNNExplainer', 'pgexplainer': 'PGExplainer',
-            'mage_official': 'MAGE', 'motif_occlusion': 'MotifOcclusion'}
+            'mage_v2': 'MAGE', 'mage_official': 'MAGE_official',
+            'motif_occlusion': 'MotifOcclusion'}
 FAM_MODEL = {'mose': 'MoSE', 'motifsat': 'MotifSAT', 'gsat': 'GSAT',
              'vanilla': 'Vanilla'}
 BACKBONES = {'GIN', 'GCN', 'GAT', 'SAGE', 'PNA'}
