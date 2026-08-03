@@ -66,7 +66,7 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
     return SingleChannelGNN(**common)
 
 
-def run(cfg: MOSEConfig) -> dict:
+def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
     from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
 
     validate_use_gt(cfg.dataset, cfg.use_gt, cfg.gt_cache)
@@ -364,6 +364,16 @@ def run(cfg: MOSEConfig) -> dict:
         # classification tasks
         'rmse_orig': split_metrics.get('test', {}).get('rmse_orig', float('nan')),
         'mae_orig':  split_metrics.get('test', {}).get('mae_orig',  float('nan')),
+        # train/val predictive metrics (regression): already computed above in
+        # split_metrics but previously not persisted. NaN for classification.
+        'train_rmse': split_metrics.get('train', {}).get('rmse', float('nan')),
+        'val_rmse':   split_metrics.get('valid', {}).get('rmse', float('nan')),
+        'train_mae':  split_metrics.get('train', {}).get('mae',  float('nan')),
+        'val_mae':    split_metrics.get('valid', {}).get('mae',  float('nan')),
+        'train_rmse_orig': split_metrics.get('train', {}).get('rmse_orig', float('nan')),
+        'val_rmse_orig':   split_metrics.get('valid', {}).get('rmse_orig', float('nan')),
+        'train_mae_orig':  split_metrics.get('train', {}).get('mae_orig', float('nan')),
+        'val_mae_orig':    split_metrics.get('valid', {}).get('mae_orig', float('nan')),
         # explainability (test + pooled train+valid+test)
         **explainability_summary_fields(results, scope='test'),
         **explainability_summary_fields(results, scope='all'),
@@ -376,6 +386,25 @@ def run(cfg: MOSEConfig) -> dict:
     }
     with open(out_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
+
+    if per_split_eval:
+        from SharedModules.evaluation.split_eval import evaluate_native_all_splits
+        _SPL = ('train', 'valid', 'test')
+        _split_lists = {'train': train_list, 'valid': valid_list, 'test': test_list}
+        # per-split GT lists (inlined split-GT resolution — split_lists_and_gt logic):
+        # mutag uses its mutagen subset; source-GT/planted graphs already carry
+        # node_label; otherwise no node-GT (metrics that need it are skipped).
+        if cfg.dataset == 'mutag':
+            _gt_split = {s: mutag_gt_eval_graphs(_split_lists[s]) for s in _SPL}
+        elif cfg.use_gt or any(getattr(g, 'node_label', None) is not None
+                               for g in test_list[:16]):
+            _gt_split = {s: _split_lists[s] for s in _SPL}
+        else:
+            _gt_split = {s: None for s in _SPL}
+        evaluate_native_all_splits(
+            model, vocab, loaders, _split_lists, _gt_split, device, task_type,
+            _denorm, out_dir, cfg.max_motifs_eval,
+            motif_scores=flat_scores, method_name='mose')
 
     print('\n  Results:')
     for k, v in results.get('prediction', {}).items():
@@ -497,6 +526,10 @@ def main():
     parser.add_argument('--run_multi_explanation', action='store_true',
                         help='Run multiple-explanation / co-occurrence (H0/H1/H2) '
                              'analysis after training and save multi_explanation.*')
+    parser.add_argument('--per_split_eval', action='store_true',
+                        help='END-TO-END per-split metrics: after training, write '
+                             'summary_splits.json (train/valid/test evaluated separately, '
+                             'same format as eval_driver_antehoc) from the in-memory model.')
     parser.add_argument('--no_gin_inner_bn', dest='gin_inner_bn',
                         action='store_false',
                         help='Disable BatchNorm inside the GIN MLP (default on).')
@@ -567,7 +600,7 @@ def main():
             self_gate=args.self_gate,
             run_multi_explanation=args.run_multi_explanation,
         )
-    run(cfg)
+    run(cfg, per_split_eval=args.per_split_eval)
 
 
 if __name__ == '__main__':

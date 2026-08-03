@@ -203,7 +203,7 @@ def _aggregate_att_to_motif(
     }
 
 
-def run(cfg: MotifSATConfig) -> dict:
+def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
     from reg_config import resolve_gsat_r, resolve_info_loss_coef
 
@@ -588,6 +588,15 @@ def run(cfg: MotifSATConfig) -> dict:
         # classification tasks
         "rmse_orig": split_metrics.get("test", {}).get("rmse_orig", float("nan")),
         "mae_orig":  split_metrics.get("test", {}).get("mae_orig",  float("nan")),
+        # train/val predictive metrics (regression): computed above, now persisted.
+        "train_rmse": split_metrics.get("train", {}).get("rmse", float("nan")),
+        "val_rmse":   split_metrics.get("valid", {}).get("rmse", float("nan")),
+        "train_mae":  split_metrics.get("train", {}).get("mae",  float("nan")),
+        "val_mae":    split_metrics.get("valid", {}).get("mae",  float("nan")),
+        "train_rmse_orig": split_metrics.get("train", {}).get("rmse_orig", float("nan")),
+        "val_rmse_orig":   split_metrics.get("valid", {}).get("rmse_orig", float("nan")),
+        "train_mae_orig":  split_metrics.get("train", {}).get("mae_orig", float("nan")),
+        "val_mae_orig":    split_metrics.get("valid", {}).get("mae_orig", float("nan")),
         # explainability (test + pooled train+valid+test)
         **explainability_summary_fields(
             results, scope='test', corr_by_agg=corr_by_agg),
@@ -602,6 +611,33 @@ def run(cfg: MotifSATConfig) -> dict:
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
+
+    # Opt-in END-TO-END per-split metrics: write summary_splits.json (train/valid/test
+    # evaluated SEPARATELY) in the SAME format as eval_driver_antehoc, using the
+    # in-memory trained model — no checkpoint reload. Matches the antehoc_v1 baseline.
+    if per_split_eval:
+        from SharedModules.evaluation.split_eval import evaluate_native_all_splits
+        _SPL = ('train', 'valid', 'test')
+        _split_lists = {'train': train_list, 'valid': valid_list, 'test': test_list}
+        # motif scores: attention aggregated over ALL graphs (max_graphs=None) — matches
+        # eval_driver_antehoc's global aggregation, not the test-only summary_scores.
+        _agg = _aggregate_att_to_motif(
+            model, all_list, device,
+            learn_edge_att=getattr(cfg, 'learn_edge_att', False), max_graphs=None)
+        _scores = {int(m): float(s) for m, s in (_agg.get('mean') or {}).items()}
+        # per-split GT lists (inlined split_lists_and_gt logic)
+        if cfg.dataset == 'mutag':
+            _gt_split = {s: mutag_gt_eval_graphs(_split_lists[s]) for s in _SPL}
+        elif cfg.use_gt or any(getattr(g, 'node_label', None) is not None
+                               for g in test_list[:16]):
+            _gt_split = {s: _split_lists[s] for s in _SPL}
+        else:
+            _gt_split = {s: None for s in _SPL}
+        _method = 'motifsat' if cfg.motif_method in ('readout', 'loss') else 'gsat'
+        evaluate_native_all_splits(
+            model, vocab, loaders, _split_lists, _gt_split, device, task_type,
+            _denorm, out_dir, getattr(cfg, 'max_motifs_eval', None),
+            motif_scores=_scores, method_name=_method)
 
     # Log final results to W&B
     if wandb_logger is not None:
@@ -733,6 +769,10 @@ def main():
                              "(default: post-hoc via analysis/run_multi_explanation.py).")
     parser.add_argument("--graph_pool", default="add", choices=["add", "mean"],
                         help="Graph readout pooling: add (sum, default) | mean.")
+    parser.add_argument("--per_split_eval", action="store_true",
+                        help="END-TO-END per-split metrics: after training, write "
+                             "summary_splits.json (train/valid/test evaluated separately, "
+                             "same format as eval_driver_antehoc) from the in-memory model.")
     parser.add_argument("--patience", type=int, default=None,
                         help="Early-stop patience; overrides MotifSATConfig default "
                              "(20) only when set. Ablation raises it to 100 for M1 "
@@ -810,7 +850,7 @@ def main():
     # otherwise). Applies to both the --config and constructor branches.
     if args.patience is not None:
         cfg.patience = args.patience
-    run(cfg)
+    run(cfg, per_split_eval=args.per_split_eval)
 
 
 if __name__ == "__main__":
