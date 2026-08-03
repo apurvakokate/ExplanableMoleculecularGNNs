@@ -33,6 +33,9 @@ from analysis.eval_driver_common import (
 from SharedModules.evaluation.split_eval import evaluate_posthoc_all_splits
 
 FAMILIES = ('vanilla', 'baselines')
+# the 4 post-hoc explainers, passed EXPLICITLY to evaluate_posthoc_all_splits when
+# --methods is unset (kept in sync with that function's signature default).
+DEFAULT_POSTHOC_METHODS = ('gnnexplainer', 'motif_occlusion', 'mage_official', 'pgexplainer')
 
 
 def load_vanilla_model(run_dir, meta, dmeta, device):
@@ -79,11 +82,16 @@ def process(run_dir, meta, args, device):
                 for s in SPLITS if split_lists.get(s)}
         write_summary_splits(out_dir, {meta.get('family', 'vanilla'): summ})
         return
-    kw = {'method_names': tuple(args.methods)} if args.methods else {}
+    # Pass method_names EXPLICITLY (not via **kw) so a mismatched key can't be
+    # silently dropped. When --methods is unset, pass the full default set here
+    # rather than relying on the callee's signature default.
+    method_names = (tuple(args.methods) if args.methods
+                    else DEFAULT_POSTHOC_METHODS)
     evaluate_posthoc_all_splits(
         model, vocab, loaders, split_lists, gt, device, task_type,
         denorm_of(dmeta, task_type), out_dir, args.max_motifs_eval,
-        dataset=meta['dataset'], batch_size=args.batch_size, **kw)
+        dataset=meta['dataset'], batch_size=args.batch_size,
+        method_names=method_names)
 
 
 def main():
@@ -102,6 +110,12 @@ def main():
     ap.add_argument('--methods', nargs='*', default=None,
                     help='post-hoc subset (default all 4). e.g. GPU group '
                          '"gnnexplainer mage_official" / CPU group "pgexplainer motif_occlusion".')
+    ap.add_argument('--mage_only', action='store_true',
+                    help='run ONLY MAGE (fit + score mage_official; skip GNNExplainer / '
+                         'PGExplainer / Motif-Occlusion). Reuses the vanilla checkpoint; '
+                         'the per-split agnostic-impact cache still computes (it is the '
+                         'model-side y-axis for Pearson, not an explainer). Shorthand for '
+                         '--methods mage_official.')
     ap.add_argument('--shard', default=None, help='i/N: process runs[i::N]')
     ap.add_argument('--families', nargs='*', default=None,
                     help="model families to include (default: baselines ONLY). This is "
@@ -117,6 +131,8 @@ def main():
                          '(resumable; makes it safe to add workers for rebalancing)')
     ap.add_argument('--no_skip_done', dest='skip_done', action='store_false')
     args = ap.parse_args()
+    if args.mage_only:
+        args.methods = ['mage_official']   # fit + score MAGE only
 
     device = torch.device(
         'cuda' if (args.device == 'cuda'
