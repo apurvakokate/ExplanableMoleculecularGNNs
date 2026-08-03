@@ -311,19 +311,18 @@ def _fit_attention(model, T, task_type, attn_epochs=300, attn_lr=1e-2, verbose=T
 
 def _score_from_attn(model, attn, T, positive_class=1,
                      use_predicted_class=False, return_per_instance=False,
-                     score_mode='attention_sum'):
+                     score_mode='attention_mean'):
     """Per-motif model-level importance from the fitted attention.
 
     score_mode:
-      'attention_sum' (DEFAULT) — importance(m) = SUM over every (molecule) edge of
-          the learned attention alpha_{i,m}. This is CLASS-AGNOSTIC: it reflects how
-          much the model attends to the motif when reconstructing its prediction,
-          with NO weighting by the predicted class probability P[i,c]. It is the
-          quantity that actually reflects what MAGE's attention learned, and is the
-          right one to correlate against the (signed, LOO) motif impact. NOTE: it is
-          a SUM, so a motif's score scales with how many molecules it appears in
-          (frequency-coupled); switch the index_add target from `alpha` to
-          `alpha` then divide by `freq.clamp_min(1.0)` for a per-occurrence MEAN.
+      'attention_mean' (DEFAULT) — importance(m) = MEAN over the molecules containing
+          the motif of the learned attention: (1/freq[m]) * sum_i alpha_{i,m}. This is
+          the published S^cm scoring with ONLY the class-probability term removed
+          (S^cm = mean_i(alpha_{i,m} . P[i,c])  ->  mean_i(alpha_{i,m})): it keeps the
+          same 1/freq normalization, so it is CLASS-AGNOSTIC (no P[i,c]) AND
+          FREQUENCY-NEUTRAL (in [0,1]; a SUM would instead scale with how often the
+          motif appears — a frequency bias). It isolates what the attention learned
+          and is the right quantity to correlate against the (agnostic, LOO) impact.
       'class_prob' — the published S^cm = S^mm . P: importance(m) =
           mean_i alpha_{i,m} . P[i,c]. positive_class / use_predicted_class pick the
           class column. Kept only to reproduce the paper's scoring; NOT the default.
@@ -342,10 +341,12 @@ def _score_from_attn(model, attn, T, positive_class=1,
         freq = torch.zeros(len(motif_ids), device=device).index_add_(
             0, edge_motif_t, torch.ones_like(alpha))
         col = None
-        if score_mode == 'attention_sum':
-            # SUM of learned attention per motif — class-agnostic, no P[i,c] term.
-            score_vec = torch.zeros(len(motif_ids), device=device).index_add_(
-                0, edge_motif_t, alpha)
+        if score_mode == 'attention_mean':
+            # MEAN learned attention per motif = (1/freq) * sum_i alpha_{i,m}:
+            # class-agnostic (no P[i,c]) and frequency-neutral. Only the
+            # class-probability term is dropped from the paper's S^cm.
+            score_vec = (torch.zeros(len(motif_ids), device=device).index_add_(
+                0, edge_motif_t, alpha) / freq.clamp_min(1.0))
         else:  # 'class_prob' — paper's S^cm = S^mm . P
             S_cm = torch.zeros(len(motif_ids), n_classes, device=device)
             contrib = alpha.unsqueeze(1) * P[edge_mol_t]
@@ -371,10 +372,10 @@ def _score_from_attn(model, attn, T, positive_class=1,
     if not return_per_instance:
         return result
 
-    # per-instance signal: the raw attention alpha (attention_sum) or alpha.P[c].
+    # per-instance signal: the raw attention alpha (attention_mean) or alpha.P[c].
     per_instance: Dict[int, Dict[int, float]] = {}
     with torch.no_grad():
-        if score_mode == 'attention_sum':
+        if score_mode == 'attention_mean':
             pcol = None
         elif is_reg:
             pcol = P[:, 0]
@@ -421,7 +422,7 @@ def fit_mage(model, train_list, vocab, device, task_type='BinaryClass',
 def score_mage(model, attn, score_list, vocab, device, task_type='BinaryClass',
                positive_class=1, use_predicted_class=False, max_graphs=None,
                return_per_instance=False, verbose=True, embed_batch_size=None,
-               score_mode='attention_sum'):
+               score_mode='attention_mean'):
     empty = {'mean': {}, 'max': {}}
     if attn is None or not hasattr(model, 'get_emb'):
         return (empty, {}) if return_per_instance else empty
@@ -454,7 +455,7 @@ def run_mage(
     return_per_instance: bool = False,
     verbose: bool = True,
     fit_list: Optional[List[Data]] = None,
-    score_mode: str = 'attention_sum',
+    score_mode: str = 'attention_mean',
 ):
     empty = {'mean': {}, 'max': {}}
     attn = fit_mage(model, fit_list if fit_list is not None else test_list,
