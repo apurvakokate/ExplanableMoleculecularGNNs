@@ -185,7 +185,7 @@ FOLDS_ROOT=/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/; MUT
 DISPATCH=$OUT/_dispatch; CLAIMS=$DISPATCH/claims; FAILURES=$DISPATCH/failures.tsv
 mkdir -p "$CLAIMS"; [ -s "$FAILURES" ] || printf 'ts\thost_job\tcell_id\trc\n' > "$FAILURES"
 WHO="$(hostname -s):${SLURM_JOB_ID:-$$}"
-TIER="${TIER:-real}"; DONE_FILE="${DONE_FILE:-summary.json}"
+TIER="${TIER:-real}"; DONE_FILE="${DONE_FILE:-summary_splits.json}"
 BACKBONES="${BACKBONES:-GIN GCN SAGE GAT PNA}"
 : "${POOL_DATASETS:?set POOL_DATASETS to the space-separated datasets for this pool}"
 _data_root(){ [ "$1" = mutag ] && echo "$MUTAG_ROOT" || echo "$FOLDS_ROOT"; }
