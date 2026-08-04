@@ -23,10 +23,13 @@ TIME="${TIME:-8:00:00}"
 W="$REPO/hpc_deploy_worker.sh"
 SLOG="$DEST/_slurmlogs"; mkdir -p "$SLOG" "$DEST/_failures"
 
+# Submit the worker AS the batch script (+ --export), NOT via --wrap: this cluster's
+# sbatch rejects script args with --wrap. The worker derives SHARD from
+# SLURM_ARRAY_TASK_ID + SHARD_N at runtime.
 sbatch --array=0-$((N-1)) --requeue -p "$PART" --gres="$GRES" -c 2 --mem=16G -t "$TIME" \
   -J gtroc -o "$SLOG/%A_%a.out" \
   --export=ALL,REPO="$REPO",DEST="$DEST",DEVICE="$DEVICE",SCRIPT="$SCRIPT",SHARD_N="$N" \
-  --wrap='export SHARD=$SLURM_ARRAY_TASK_ID/$SHARD_N; bash '"$W"
+  "$W"
 
 echo "submitted SLURM array 0-$((N-1))  (N=$N, device=$DEVICE, script=$SCRIPT)  -> $DEST"
 echo "watch:    squeue -u \$USER -h -o '%t' | sort | uniq -c"

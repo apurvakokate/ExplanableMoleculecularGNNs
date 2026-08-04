@@ -42,10 +42,11 @@ cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 # if exported, is inherited by the driver's env for the mutag loader.
 DSARG=(); [ -n "${DATASET:-}" ] && DSARG=(--dataset $DATASET)
 FLTARG=(); [ -n "${FILTERED:-}" ] && FLTARG=(--filtered)   # FILTERED=1 -> all-filtered vocab pass
-echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
+UNKARG=(); [ -n "${UNK_MODE:-}" ] && UNKARG=(--unk_mode "$UNK_MODE")   # zero|half
+echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} unk=${UNK_MODE:-zero} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
 python3 -u "$SCRIPT" \
   --out_root "$OUT" --posthoc_root "$POSTHOC" --dest_root "$DEST" \
-  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}" "${FLTARG[@]}"
+  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}" "${FLTARG[@]}" "${UNKARG[@]}"
 rc=$?
 echo "[worker] END $(date +%s) shard=$SHARD rc=$rc"
 exit $rc

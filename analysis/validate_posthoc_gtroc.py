@@ -81,10 +81,11 @@ def _to_filter_variant(v):
     return base + '_filter' + suf
 
 
-def _mask_unk(att_by_i, gl):
-    """FILTERED mode: zero each graph's per-node att on atoms whose (filtered) motif is
-    UNK (nodes_to_motifs < 0), so a baseline is scored only on the kept-motif atom set
-    (apples-to-apples with MoSE, which has no UNK representation)."""
+def _fill_unk(att_by_i, gl, fill):
+    """FILTERED mode: set each graph's per-node att to ``fill`` on atoms whose (filtered)
+    motif is UNK (nodes_to_motifs < 0), applied to EVERY method so the UNK-atom treatment
+    is identical across methods. fill=0.0 -> zero; fill=0.5 -> neutral (matches MoSE).
+    Handles both list atts (baselines) and tensor atts (MAGE)."""
     out = {}
     for i, a in att_by_i.items():
         n2m = getattr(gl[i], 'nodes_to_motifs', None)
@@ -92,7 +93,14 @@ def _mask_unk(att_by_i, gl):
             out[i] = a
             continue
         n2m = n2m.view(-1).tolist()
-        out[i] = [0.0 if (j < len(n2m) and n2m[j] < 0) else v for j, v in enumerate(a)]
+        if torch.is_tensor(a):
+            a = a.clone().float()
+            for j, m in enumerate(n2m):
+                if m < 0 and j < a.numel():
+                    a[j] = fill
+            out[i] = a
+        else:
+            out[i] = [fill if (j < len(n2m) and n2m[j] < 0) else v for j, v in enumerate(a)]
     return out
 
 
@@ -169,8 +177,8 @@ def process(run_dir, meta, args, device):
                     att_by_i = {int(k): v for k, v in _pi_to_node_atts(pi, gl).items()} or None
                 if not att_by_i:
                     continue
-                if args.filtered and method in SAVED_ATT:   # zero atts on UNK-motif atoms
-                    att_by_i = _mask_unk(att_by_i, gl)       # (MAGE atts are already 0 on UNK)
+                if args.filtered:                            # UNK-atom treatment, ALL methods
+                    att_by_i = _fill_unk(att_by_i, gl, 0.5 if args.unk_mode == 'half' else 0.0)
                 got_att = True
                 if method == 'mage_v2':
                     mage_atts[split] = {str(i): t.detach().cpu().view(-1).tolist()
@@ -211,9 +219,11 @@ def main():
     ap.add_argument('--dataset', nargs='*', default=None)
     ap.add_argument('--shard', default=None, help='i/N — this worker processes runs[i::N]')
     ap.add_argument('--filtered', action='store_true',
-                    help='FILTERED vocab: build loaders on the _filter variant and zero baseline '
-                         'atts on UNK-motif atoms (MAGE scored on the filter graph) — '
-                         'apples-to-apples with MoSE on the kept-motif atom set.')
+                    help='FILTERED vocab: build loaders on the _filter variant; UNK-motif atoms '
+                         'get the --unk_mode treatment for every method (apples-to-apples).')
+    ap.add_argument('--unk_mode', default='zero', choices=['zero', 'half'],
+                    help="UNK-atom score under --filtered: 'zero' (0.0) or 'half' (0.5, matches "
+                         "MoSE). (exclude-UNK is a separate driver path.)")
     ap.add_argument('--limit', type=int, default=None)
     args = ap.parse_args()
     device = torch.device(args.device)

@@ -39,8 +39,8 @@ def _to_filter_variant(v):
     return base + '_filter' + suf
 
 
-def _unk_zeroed_fn(model, device):
-    """GSAT per-node att with UNK-motif atoms zeroed (kept-atom scope)."""
+def _unk_fill_fn(model, device, fill):
+    """GSAT per-node att with UNK-motif atoms set to ``fill`` (0.0 or 0.5)."""
     base = model_node_att_fn(model, device)
     def fn(data):
         a = base(data)
@@ -49,7 +49,7 @@ def _unk_zeroed_fn(model, device):
         a = a.view(-1).clone()
         n2m = getattr(data, 'nodes_to_motifs', None)
         if n2m is not None:
-            a[n2m.view(-1).to(a.device) < 0] = 0.0
+            a[n2m.view(-1).to(a.device) < 0] = fill
         return a
     return fn
 
@@ -66,7 +66,7 @@ def process(run_dir, meta, args, device):
         return None
     model, _ = load_native_model_and_scores(
         run_dir, fmeta, 'gsat', loaders, vocab, dmeta, device, tt)
-    fn = _unk_zeroed_fn(model, device)
+    fn = _unk_fill_fn(model, device, 0.5 if getattr(args, 'unk_mode', 'zero') == 'half' else 0.0)
     per_split = {}
     for split in SPLITS:
         gl = gt.get(split)
@@ -100,6 +100,7 @@ def main():
     ap.add_argument('--posthoc_root', default=None)
     ap.add_argument('--batch_size', type=int, default=256)
     ap.add_argument('--filtered', action='store_true')
+    ap.add_argument('--unk_mode', default='zero', choices=['zero', 'half'])
     args = ap.parse_args()
     device = torch.device(args.device)
     dest_root = Path(args.dest_root)
