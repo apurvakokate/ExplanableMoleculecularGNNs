@@ -41,10 +41,11 @@ cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 # optional: restrict to specific dataset(s) via DATASET env (e.g. DATASET=mutag). MUTAG_DATA_ROOT,
 # if exported, is inherited by the driver's env for the mutag loader.
 DSARG=(); [ -n "${DATASET:-}" ] && DSARG=(--dataset $DATASET)
-echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
+FLTARG=(); [ -n "${FILTERED:-}" ] && FLTARG=(--filtered)   # FILTERED=1 -> all-filtered vocab pass
+echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
 python3 -u "$SCRIPT" \
   --out_root "$OUT" --posthoc_root "$POSTHOC" --dest_root "$DEST" \
-  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}"
+  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}" "${FLTARG[@]}"
 rc=$?
 echo "[worker] END $(date +%s) shard=$SHARD rc=$rc"
 exit $rc

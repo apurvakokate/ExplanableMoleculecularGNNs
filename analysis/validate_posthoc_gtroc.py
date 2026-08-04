@@ -29,6 +29,7 @@ log ``<dest>/_failures/<shard>.log`` (relpath<TAB>error).
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -72,6 +73,29 @@ def _node_att_fn(gl, att_by_i):
     return (fn if n else None)
 
 
+def _to_filter_variant(v):
+    """Insert `_filter` (before any planted `_relabelled_dnf` suffix). For baselines the
+    vocab_variant is the base fragmentation, so this just appends `_filter`."""
+    m = re.search(r'(_relabelled_dnf_k\d+_r\d+)$', v)
+    base, suf = (v[:m.start()], m.group(1)) if m else (v, '')
+    return base + '_filter' + suf
+
+
+def _mask_unk(att_by_i, gl):
+    """FILTERED mode: zero each graph's per-node att on atoms whose (filtered) motif is
+    UNK (nodes_to_motifs < 0), so a baseline is scored only on the kept-motif atom set
+    (apples-to-apples with MoSE, which has no UNK representation)."""
+    out = {}
+    for i, a in att_by_i.items():
+        n2m = getattr(gl[i], 'nodes_to_motifs', None)
+        if n2m is None:
+            out[i] = a
+            continue
+        n2m = n2m.view(-1).tolist()
+        out[i] = [0.0 if (j < len(n2m) and n2m[j] < 0) else v for j, v in enumerate(a)]
+    return out
+
+
 def _load_mage(posthoc_dir, device):
     p = Path(posthoc_dir) / 'mage_attention.pt'
     if not p.exists():
@@ -91,9 +115,16 @@ def process(run_dir, meta, args, device):
     posthoc_dir = Path(args.posthoc_root) / relpath
     if not (posthoc_dir / 'summary_splits.json').exists():
         return None, None, None
+    lmeta, proc_arg = meta, None            # FULL: use each run's stored processed_root
+    if args.filtered:                       # FILTERED: build on the _filter vocab/processed tree
+        lmeta = dict(meta)
+        lmeta['vocab_variant'] = _to_filter_variant(meta['vocab_variant'])
+        # base processed tree (parent of the stored full-variant dir); _proc_root appends _filter
+        proc_arg = str(Path(meta['processed_root']).parent) if meta.get('processed_root') else None
+        lmeta.pop('processed_root', None)
     loaders, vocab, dmeta, tt = build_gt_loaders(
-        meta, args.data_root, args.vocab_root, None, args.loader_batch_size)
-    sl_all, gt = split_lists_and_gt(loaders, meta)
+        lmeta, args.data_root, args.vocab_root, proc_arg, args.loader_batch_size)
+    sl_all, gt = split_lists_and_gt(loaders, lmeta)
     if all(gt.get(s) is None for s in SPLITS):
         return None, None, None
     model = load_vanilla_model(run_dir, meta, dmeta, device)
@@ -138,6 +169,8 @@ def process(run_dir, meta, args, device):
                     att_by_i = {int(k): v for k, v in _pi_to_node_atts(pi, gl).items()} or None
                 if not att_by_i:
                     continue
+                if args.filtered and method in SAVED_ATT:   # zero atts on UNK-motif atoms
+                    att_by_i = _mask_unk(att_by_i, gl)       # (MAGE atts are already 0 on UNK)
                 got_att = True
                 if method == 'mage_v2':
                     mage_atts[split] = {str(i): t.detach().cpu().view(-1).tolist()
@@ -177,6 +210,10 @@ def main():
     ap.add_argument('--loader_batch_size', type=int, default=128)
     ap.add_argument('--dataset', nargs='*', default=None)
     ap.add_argument('--shard', default=None, help='i/N — this worker processes runs[i::N]')
+    ap.add_argument('--filtered', action='store_true',
+                    help='FILTERED vocab: build loaders on the _filter variant and zero baseline '
+                         'atts on UNK-motif atoms (MAGE scored on the filter graph) — '
+                         'apples-to-apples with MoSE on the kept-motif atom set.')
     ap.add_argument('--limit', type=int, default=None)
     args = ap.parse_args()
     device = torch.device(args.device)
