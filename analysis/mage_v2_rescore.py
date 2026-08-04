@@ -126,6 +126,15 @@ def rescore_run(run_dir, meta, args, device):
     denorm = denorm_of(dmeta, task_type)
     pc = 0 if meta['dataset'] == 'mutag' else 1     # mutag property-positive is y==0
 
+    def _pi_node_att_fn(data):
+        """PER-INSTANCE GT-ROC attribution: that graph's OWN raw alpha (attached as
+        'mage_pi_att'), read off exactly like nodes_to_motifs — NOT the frequency-
+        averaged global attention_mean. Zeros when a graph carries no per-instance att."""
+        a = getattr(data, 'mage_pi_att', None)
+        if a is None:
+            return torch.zeros(data.x.size(0), device=data.x.device)
+        return a.to(data.x.device)
+
     grouped_by_split = {}
     inst_by_split = {}
     summary_by_split = {}
@@ -147,29 +156,34 @@ def rescore_run(run_dir, meta, args, device):
         if not scores.get('mean'):
             summary_by_split[split] = dict(pred_flat)     # no MAGE signal on this split
             continue
-        sc = scores['mean']
         atts = _pi_to_node_atts(pi, sl)
-        # AGNOSTIC LOO impact (the y-axis for grouped + instance correlation). REUSE
-        # the existing cache: it is model-only (base_att_fn=ones) and the LOO is
-        # deterministic, so with the SAME best_model.pt it is bit-identical to a
-        # recompute — and it is the dominant cost. mage_official already wrote it to
-        # this run dir (impact_cache_agnostic_{split}.json); load it (zero LOO passes).
-        # Absent/corrupt → precompute_agnostic_impact recomputes + writes (self-heal).
-        agn_cache = precompute_agnostic_impact(
-            model, vocab, sl, device, task_type,
-            cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
-        grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
-        inst = _instance_from_cache(agn_cache, (atts or None), sl)
-        grouped_by_split[split] = grouped_rows
-        inst_by_split[split] = inst
-        # GT-ROC grades mage_v2's OWN attribution (attention_mean score broadcast).
-        gtroc = gt_roc_block(model, gl, device, _motif_score_node_att_fn(sc)) if gl else {}
+        # GT-ROC now grades mage_v2's PER-INSTANCE attribution — the raw per-(motif,
+        # graph) alpha — NOT the frequency-averaged global attention_mean (which is a
+        # single constant per motif, identical across graphs, and dilutes ubiquitous
+        # causal motifs). atts[gi] is that graph's per-node alpha; attach it so
+        # _pi_node_att_fn reads it off each graph exactly like nodes_to_motifs.
+        # gl == sl (same objects) for GT datasets (planted / *_Verified_GT); mutag's
+        # gt subset shares the same object refs, so the attached tensor still travels.
+        for gi in range(len(sl)):
+            setattr(sl[gi], 'mage_pi_att', atts.get(gi))
+        gtroc = gt_roc_block(model, gl, device, _pi_node_att_fn) if gl else {}
         summary_by_split[split] = {**pred_flat, **gtroc}
-        _write_importance(out_dir, METHOD, split, grouped_rows)
-        _write_impact(out_dir, METHOD, split, grouped_rows)
+        # --- grouped/instance correlation + importance are the GLOBAL attention_mean
+        # quantity (the correct per-MOTIF score for those metrics, already written) and
+        # are NOT re-run in this GT-ROC-only pass: ---
+        # sc = scores['mean']
+        # agn_cache = precompute_agnostic_impact(
+        #     model, vocab, sl, device, task_type,
+        #     cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
+        # grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
+        # inst = _instance_from_cache(agn_cache, (atts or None), sl)
+        # grouped_by_split[split] = grouped_rows
+        # inst_by_split[split] = inst
+        # _write_importance(out_dir, METHOD, split, grouped_rows)
+        # _write_impact(out_dir, METHOD, split, grouped_rows)
 
-    write_grouped_pooled(out_dir, METHOD, grouped_by_split)
-    write_instance(out_dir, METHOD, inst_by_split)
+    # write_grouped_pooled(out_dir, METHOD, grouped_by_split)
+    # write_instance(out_dir, METHOD, inst_by_split)
     # MERGE mage_v2 into the shared summary_splits.json (never overwrites the
     # existing mage_official / other method keys). Written LAST = completion marker.
     write_summary_splits(out_dir, {METHOD: summary_by_split})
