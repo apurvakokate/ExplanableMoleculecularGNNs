@@ -28,15 +28,23 @@ POSTHOC="${POSTHOC:-$REPO/posthoc_v1}"
 DEST="${DEST:-$REPO/gtroc_nodedirect_v1}"
 DATA="${DATA:-/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/}"
 VOCAB="${VOCAB:-$REPO/vocab_final_v2}"
-: "${SHARD:?set SHARD=i/N (the launcher sets this from SLURM_ARRAY_TASK_ID)}"
+# SHARD: use an explicit SHARD=i/N (interactive), else derive it from the SLURM array
+# task index + SHARD_N (the launcher submits THIS file as the batch script with those set).
+if [ -z "${SHARD:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+  SHARD="${SLURM_ARRAY_TASK_ID}/${SHARD_N:?set SHARD_N when submitting as a SLURM array}"
+fi
+: "${SHARD:?set SHARD=i/N, or submit as a SLURM array with SHARD_N set}"
 
 source "$CONDA_SH"; conda activate "$ENV_NAME"
 cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 [ "$DEVICE" = cpu ] && export CUDA_VISIBLE_DEVICES=""
-echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
+# optional: restrict to specific dataset(s) via DATASET env (e.g. DATASET=mutag). MUTAG_DATA_ROOT,
+# if exported, is inherited by the driver's env for the mutag loader.
+DSARG=(); [ -n "${DATASET:-}" ] && DSARG=(--dataset $DATASET)
+echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
 python3 -u "$SCRIPT" \
   --out_root "$OUT" --posthoc_root "$POSTHOC" --dest_root "$DEST" \
-  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD"
+  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}"
 rc=$?
 echo "[worker] END $(date +%s) shard=$SHARD rc=$rc"
 exit $rc
