@@ -42,6 +42,7 @@ from analysis.eval_driver_common import (
 from analysis.eval_driver_posthoc import load_vanilla_model
 from SharedModules.baselines.mage import _MotifAttention, score_mage
 from SharedModules.evaluation.split_eval import gt_roc_block, _pi_to_node_atts
+from analysis.gtroc_unk import gtroc_masked
 
 SAVED_ATT = ('gnnexplainer', 'pgexplainer', 'motif_occlusion')   # per-node atts on disk
 ALL_METHODS = SAVED_ATT + ('mage_v2',)
@@ -177,13 +178,18 @@ def process(run_dir, meta, args, device):
                     att_by_i = {int(k): v for k, v in _pi_to_node_atts(pi, gl).items()} or None
                 if not att_by_i:
                     continue
-                if args.filtered:                            # UNK-atom treatment, ALL methods
-                    att_by_i = _fill_unk(att_by_i, gl, 0.5 if args.unk_mode == 'half' else 0.0)
                 got_att = True
-                if method == 'mage_v2':
-                    mage_atts[split] = {str(i): t.detach().cpu().view(-1).tolist()
+                if method == 'mage_v2':          # save RAW per-node atts (pre fill/mask)
+                    mage_atts[split] = {str(i): (t.detach().cpu().view(-1).tolist()
+                                        if torch.is_tensor(t) else list(t))
                                         for i, t in att_by_i.items()}
-                fn = _node_att_fn(gl, att_by_i)
+                if args.filtered and args.unk_mode == 'exclude':   # drop UNK atoms from the AUC
+                    inst, glob, _ = gtroc_masked(att_by_i, gl)
+                    per_split[split] = {'gtroc_instance': inst, 'gtroc_global': glob}
+                    continue
+                atts = (_fill_unk(att_by_i, gl, 0.5 if args.unk_mode == 'half' else 0.0)
+                        if args.filtered else att_by_i)          # zero|half fill UNK for all methods
+                fn = _node_att_fn(gl, atts)
                 if fn is None:
                     continue
                 b = gt_roc_block(model, gl, device, fn)
@@ -221,9 +227,9 @@ def main():
     ap.add_argument('--filtered', action='store_true',
                     help='FILTERED vocab: build loaders on the _filter variant; UNK-motif atoms '
                          'get the --unk_mode treatment for every method (apples-to-apples).')
-    ap.add_argument('--unk_mode', default='zero', choices=['zero', 'half'],
-                    help="UNK-atom score under --filtered: 'zero' (0.0) or 'half' (0.5, matches "
-                         "MoSE). (exclude-UNK is a separate driver path.)")
+    ap.add_argument('--unk_mode', default='zero', choices=['zero', 'half', 'exclude'],
+                    help="UNK-atom treatment under --filtered: 'zero' (0.0), 'half' (0.5, matches "
+                         "MoSE), or 'exclude' (drop UNK atoms from the AUC entirely).")
     ap.add_argument('--limit', type=int, default=None)
     args = ap.parse_args()
     device = torch.device(args.device)
