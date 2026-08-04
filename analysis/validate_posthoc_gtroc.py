@@ -112,14 +112,19 @@ def process(run_dir, meta, args, device):
                 if not gl or not sl:
                     continue
                 if method in SAVED_ATT:
-                    # saved atts are keyed to the FULL split (split_lists[split]); gt[split]
-                    # IS that same list for every dataset EXCEPT mutag (a subset). Guard so
-                    # a subset can never silently misalign the atts.
-                    if gl is not sl:
-                        raise RuntimeError('GT list != split list (e.g. mutag subset): saved '
-                                           'atts are keyed to the full split, remap needed')
+                    # saved atts are keyed to the FULL split (split_lists[split]). gt[split]
+                    # IS that same list for every dataset EXCEPT mutag, where it is a subset
+                    # (mutag_gt_eval_graphs, which returns the SAME graph objects, filtered).
                     a = (imp.get(split, {}) or {}).get(method)
-                    att_by_i = {int(k): v for k, v in a.items()} if a else None
+                    if not a:
+                        att_by_i = None
+                    elif gl is sl:
+                        att_by_i = {int(k): v for k, v in a.items()}      # keyed by split pos
+                    else:                                                 # subset: remap by identity
+                        ja = {int(k): v for k, v in a.items()}
+                        pos = {id(g): i for i, g in enumerate(sl)}
+                        att_by_i = {j: ja[pos[id(g)]] for j, g in enumerate(gl)
+                                    if id(g) in pos and pos[id(g)] in ja} or None
                 elif attn is None:                        # mage_v2 needs the saved attention
                     att_by_i = None
                 else:
