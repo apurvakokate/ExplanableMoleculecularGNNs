@@ -29,12 +29,53 @@ def _motif_feature_scheme(model, sample) -> str:
     return 'onehot'
 
 
+# Structural-key prefixes emitted by the FG-first / ring-canonical vocabs, e.g.
+# 'ring:c1ccccc1', 'chain:CCC', 'frag:...', 'fg:carbonyl'. RDKit cannot parse these
+# keys verbatim, so a naive MolFromSmiles(key) returns None and the motif is dropped
+# from MAGE's motif graph. That silently removed EVERY ring motif (incl. the benzene
+# cause) on FG-first vocabs, zeroing MAGE's attribution on ring causes. Normalise the
+# key to a parseable SMILES/SMARTS first.
+_STRUCT_STRIP_PREFIXES = ('ring:', 'chain:', 'frag:', 'linker:', 'group:')
+_FG_NAME_TO_SMARTS: Optional[dict] = None
+
+
+def _fg_name_to_smarts() -> dict:
+    """fg NAME -> SMARTS from the FG-first vocab's own pattern tables (lazy). Empty
+    dict if the frag module is unavailable — then unknown fg:<name> keys still drop,
+    no worse than before."""
+    global _FG_NAME_TO_SMARTS
+    if _FG_NAME_TO_SMARTS is None:
+        try:
+            from MotifBreakdown.fg_first_frag import MINIMAL_FG, COMPOSITE_FG
+            _FG_NAME_TO_SMARTS = {n: s for n, s in list(MINIMAL_FG) + list(COMPOSITE_FG)}
+        except Exception:
+            _FG_NAME_TO_SMARTS = {}
+    return _FG_NAME_TO_SMARTS
+
+
+def _normalise_motif_key(key: str) -> Optional[str]:
+    """Turn a vocab motif KEY into a parseable SMILES/SMARTS. Strips a leading
+    ring:/chain:/frag:/... prefix (the tail is canonical SMILES); maps fg:<name> to
+    its SMARTS; passes a bare SMILES/SMARTS through unchanged. None if an fg:<name>
+    is unknown (nothing to parse)."""
+    s = str(key)
+    for p in _STRUCT_STRIP_PREFIXES:
+        if s.startswith(p):
+            return s[len(p):]
+    if s.startswith('fg:'):
+        return _fg_name_to_smarts().get(s[len('fg:'):])
+    return s
+
+
 def _motif_graph_from_smarts(smarts: str, scheme: str = 'onehot') -> Optional[Data]:
     from rdkit import Chem
     from rdkit.Chem import RWMol, GetAdjacencyMatrix
     import numpy as np
     from ..data.dataset import _atom_features
 
+    smarts = _normalise_motif_key(smarts)
+    if smarts is None:
+        return None
     mol = Chem.MolFromSmiles(smarts)
     if mol is None:
         mol = Chem.MolFromSmarts(smarts)

@@ -43,10 +43,12 @@ cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 DSARG=(); [ -n "${DATASET:-}" ] && DSARG=(--dataset $DATASET)
 FLTARG=(); [ -n "${FILTERED:-}" ] && FLTARG=(--filtered)   # FILTERED=1 -> all-filtered vocab pass
 UNKARG=(); [ -n "${UNK_MODE:-}" ] && UNKARG=(--unk_mode "$UNK_MODE")   # zero|half
-echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} unk=${UNK_MODE:-zero} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
+REFITARG=(); [ -n "${MAGE_REFIT:-}" ] && REFITARG=(--mage_refit)       # MAGE_REFIT=1 -> re-fit MAGE (FG-first only)
+[ -n "${ATTN_EPOCHS:-}" ] && REFITARG+=(--attn_epochs "$ATTN_EPOCHS")
+echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} unk=${UNK_MODE:-zero} refit=${MAGE_REFIT:-0} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
 python3 -u "$SCRIPT" \
   --out_root "$OUT" --posthoc_root "$POSTHOC" --dest_root "$DEST" \
-  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}" "${FLTARG[@]}" "${UNKARG[@]}"
+  --data_root "$DATA" --vocab_root "$VOCAB" --device "$DEVICE" --shard "$SHARD" "${DSARG[@]}" "${FLTARG[@]}" "${UNKARG[@]}" "${REFITARG[@]}"
 rc=$?
 echo "[worker] END $(date +%s) shard=$SHARD rc=$rc"
 exit $rc

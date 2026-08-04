@@ -17,6 +17,13 @@ Per-node attribution source per method:
   mage_v2                                        ->  score_mage(attention_mean) from
                                                      saved mage_attention.pt
 
+--mage_refit: mage_v2 is RE-FIT from scratch (fit_mage; the patched _motif_graph_from_smarts
+restores the `ring:`-keyed motifs the saved attention was fit without) and is the ONLY method
+scored, over FG-first setups only. Runs IN-PLACE — point --dest_root at the EXISTING gtroc tree:
+the corrected mage_v2 is MERGED into each gtroc.json (other methods' cells kept) and the buggy
+posthoc mage_attention.pt is OVERWRITTEN with the corrected full-vocab fit. A `_mage_refit.done`
+sentinel per setup makes it resumable. Run the FULL pass only (no --filtered).
+
 NEVER overwrites: skips a setup whose gtroc.json already exists (resumable, safe to add
 workers). Any setup that fails to process OR write is appended to the worker's failure
 log ``<dest>/_failures/<shard>.log`` (relpath<TAB>error).
@@ -40,7 +47,7 @@ sys.path.insert(0, os.environ.get('REPO', str(Path(__file__).resolve().parent.pa
 from analysis.eval_driver_common import (
     build_gt_loaders, split_lists_and_gt, iter_runs, SPLITS)
 from analysis.eval_driver_posthoc import load_vanilla_model
-from SharedModules.baselines.mage import _MotifAttention, score_mage
+from SharedModules.baselines.mage import _MotifAttention, score_mage, fit_mage
 from SharedModules.evaluation.split_eval import gt_roc_block, _pi_to_node_atts
 from analysis.gtroc_unk import gtroc_masked
 
@@ -50,6 +57,14 @@ INST, GLOB = 'instance_gt_roc_node_auc_mean', 'global_gt_roc_node_auc_mean'
 # source-GT datasets (planted are selected by meta use_gt); together = the in-scope set
 SOURCE_GT = {'Benzene_Verified_GT', 'Alkane_Carbonyl_Verified_GT',
              'Fluoride_Carbonyl_Verified_GT', 'mutag'}
+# FG-first fragmentations key ring motifs as `ring:<smiles>`; the pre-fix MAGE parser
+# dropped them, so --mage_refit re-fits MAGE (only these are affected — see mage.py).
+FG_FIRST = {'fg_first', 'rdkit_fg_first', 'ertl_first'}
+
+
+def _base_frag(v):
+    """Base fragmentation: drop a planted `_relabelled_dnf...` suffix and `_filter`."""
+    return re.sub(r'_relabelled_dnf.*$', '', v).replace('_filter', '')
 
 
 def _node_att_fn(gl, att_by_i):
@@ -140,11 +155,25 @@ def process(run_dir, meta, args, device):
     imp_p = posthoc_dir / 'explainer_importances.json'
     imp = (json.loads(imp_p.read_text()).get('importances_by_split', {})
            if imp_p.exists() else {})
-    attn = _load_mage(posthoc_dir, device)
+    # --mage_refit: RE-FIT MAGE from scratch (patched parser restores the `ring:` motifs
+    # the saved attention was fit without) and score ONLY mage_v2. Fits on whatever vocab
+    # this invocation uses — full vocab (FULL pass) or _filter vocab (--filtered pass).
+    if args.mage_refit:
+        tr = sl_all.get('train')
+        attn = (fit_mage(model, tr, vocab, device, tt, attn_epochs=args.attn_epochs,
+                         verbose=False, embed_batch_size=args.batch_size) if tr else None)
+        methods = ('mage_v2',)
+        # OVERWRITE the buggy (ring-less) saved model in posthoc with the corrected full-vocab
+        # fit (FULL pass only; the --filtered pass fits a different, filter-vocab attention).
+        if attn is not None and not args.filtered:
+            torch.save(attn.state_dict(), posthoc_dir / 'mage_attention.pt')
+    else:
+        attn = _load_mage(posthoc_dir, device)
+        methods = ALL_METHODS
     pc = 0 if meta['dataset'] == 'mutag' else 1
 
     gtroc, mage_atts, issues = {}, {}, []
-    for method in ALL_METHODS:
+    for method in methods:
         try:
             per_split, got_att = {}, False
             for split in SPLITS:
@@ -231,6 +260,11 @@ def main():
                     help="UNK-atom treatment under --filtered: 'zero' (0.0), 'half' (0.5, matches "
                          "MoSE), or 'exclude' (drop UNK atoms from the AUC entirely).")
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--mage_refit', action='store_true',
+                    help='RE-FIT MAGE (patched parser restores ring motifs) instead of loading '
+                         'the saved ring-less attention; scores ONLY mage_v2, FG-first setups only.')
+    ap.add_argument('--attn_epochs', type=int, default=300,
+                    help='MAGE re-fit epochs when --mage_refit (matches fit_mage default)')
     args = ap.parse_args()
     device = torch.device(args.device)
     dest_root = Path(args.dest_root)
@@ -246,10 +280,18 @@ def main():
         # scope: source-GT datasets + planted (use_gt) runs only
         if not (meta.get('use_gt') or meta['dataset'] in SOURCE_GT):
             continue
+        # --mage_refit only affects FG-first vocabs (the `ring:`-keyed ones); skip the rest
+        if args.mage_refit and _base_frag(meta.get('vocab_variant', '')) not in FG_FIRST:
+            continue
         relpath = run_dir.relative_to(args.out_root)
         out_dir = dest_root / relpath
         gtroc_path = out_dir / 'gtroc.json'
-        if gtroc_path.exists() and gtroc_path.stat().st_size > 2:     # never overwrite
+        refit_done = out_dir / '_mage_refit.done'
+        if args.mage_refit:
+            if refit_done.exists():               # resumable: this setup was already re-fit
+                skipped += 1
+                continue
+        elif gtroc_path.exists() and gtroc_path.stat().st_size > 2:   # normal mode: never overwrite
             skipped += 1
             continue
         tag = f"{meta.get('dataset')}/{meta.get('backbone')}/{meta.get('vocab_variant')}/fold{meta.get('fold')}/{meta.get('gt_tier')}"
@@ -265,9 +307,16 @@ def main():
                 print(f'  [FAIL] {tag}: all methods missing/errored (logged)')
                 continue
             out_dir.mkdir(parents=True, exist_ok=True)
-            gtroc_path.write_text(json.dumps(gtroc, indent=2))
+            if args.mage_refit and gtroc_path.exists() and gtroc_path.stat().st_size > 2:
+                merged = json.loads(gtroc_path.read_text())   # OVERWRITE mage_v2 in place,
+                merged.update(gtroc)                          # keep the other methods' cells
+                gtroc_path.write_text(json.dumps(merged, indent=2))
+            else:
+                gtroc_path.write_text(json.dumps(gtroc, indent=2))
             if mage_atts:
                 (out_dir / 'mage_v2_node_atts.json').write_text(json.dumps(mage_atts))
+            if args.mage_refit:
+                refit_done.write_text('')                     # sentinel -> resumable skip
             ok += 1
             print(f'  [ok] {tag}' + (f'  ({len(issues)} method issue(s) logged)' if issues else ''))
         except Exception as e:                             # setup-level (loaders/model/write)
