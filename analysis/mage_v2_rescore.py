@@ -67,6 +67,7 @@ there is NO re-fit fallback (a fresh fit would re-randomise alpha and break the
 apples-to-apples with mage_official).
 """
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -91,6 +92,12 @@ from SharedModules.baselines.run_vanilla import _motif_score_node_att_fn
 FAMILIES = ('vanilla', 'baselines')
 METHOD = 'mage_v2'                 # co-located method name + summary key
 SCORE_MODE = 'attention_mean'      # raw-alpha aggregation (drop P[i,c])
+FG_FIRST = {'fg_first', 'rdkit_fg_first', 'ertl_first'}   # the `ring:`-keyed vocabs (bug scope)
+
+
+def _base_frag(v):
+    """Base fragmentation: drop a planted `_relabelled_dnf...` suffix and `_filter`."""
+    return re.sub(r'_relabelled_dnf.*$', '', v).replace('_filter', '')
 
 
 def load_saved_attention(out_dir: Path, device):
@@ -168,22 +175,23 @@ def rescore_run(run_dir, meta, args, device):
             setattr(sl[gi], 'mage_pi_att', atts.get(gi))
         gtroc = gt_roc_block(model, gl, device, _pi_node_att_fn) if gl else {}
         summary_by_split[split] = {**pred_flat, **gtroc}
-        # --- grouped/instance correlation + importance are the GLOBAL attention_mean
-        # quantity (the correct per-MOTIF score for those metrics, already written) and
-        # are NOT re-run in this GT-ROC-only pass: ---
-        # sc = scores['mean']
-        # agn_cache = precompute_agnostic_impact(
-        #     model, vocab, sl, device, task_type,
-        #     cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
-        # grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
-        # inst = _instance_from_cache(agn_cache, (atts or None), sl)
-        # grouped_by_split[split] = grouped_rows
-        # inst_by_split[split] = inst
-        # _write_importance(out_dir, METHOD, split, grouped_rows)
-        # _write_impact(out_dir, METHOD, split, grouped_rows)
+        # Grouped + instance PEARSON rebuilt from the CORRECTED attention (this run reads
+        # the overwritten, ring-fixed mage_attention.pt). x-axis = attention_mean per-motif
+        # importance (sc); y-axis = agnostic LOO impact (model-only, so its cache is reused
+        # bit-identically). Written per-split, co-located with mage_official.
+        sc = scores['mean']
+        agn_cache = precompute_agnostic_impact(
+            model, vocab, sl, device, task_type,
+            cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
+        grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
+        inst = _instance_from_cache(agn_cache, (atts or None), sl)
+        grouped_by_split[split] = grouped_rows
+        inst_by_split[split] = inst
+        _write_importance(out_dir, METHOD, split, grouped_rows)
+        _write_impact(out_dir, METHOD, split, grouped_rows)
 
-    # write_grouped_pooled(out_dir, METHOD, grouped_by_split)
-    # write_instance(out_dir, METHOD, inst_by_split)
+    write_grouped_pooled(out_dir, METHOD, grouped_by_split)
+    write_instance(out_dir, METHOD, inst_by_split)
     # MERGE mage_v2 into the shared summary_splits.json (never overwrites the
     # existing mage_official / other method keys). Written LAST = completion marker.
     write_summary_splits(out_dir, {METHOD: summary_by_split})
@@ -216,6 +224,10 @@ def main():
                          'mage_v2 READS the saved attention from here and CO-LOCATES '
                          'its outputs here. Omit only if --out_root already holds the '
                          'mage artifacts (then out_dir == run_dir).')
+    ap.add_argument('--posthoc_root', default=None,
+                    help='accept-but-unused (lets the generic hpc_deploy_worker.sh, which '
+                         'always passes --posthoc_root, drive this script). mage_v2 co-locates '
+                         'via --dest_root; it reads no separate posthoc tree.')
     ap.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'])
     ap.add_argument('--batch_size', type=int, default=256,
                     help='GPU batch for MAGE motif/molecule embedding')
@@ -230,6 +242,11 @@ def main():
     ap.add_argument('--skip_done', action='store_true', default=True,
                     help='skip runs whose summary_splits.json already has a mage_v2 key')
     ap.add_argument('--no_skip_done', dest='skip_done', action='store_false')
+    ap.add_argument('--fg_first_only', action='store_true',
+                    help='restrict to FG-first vocabs (fg_first/rdkit_fg_first/ertl_first) — '
+                         'the ring:-keyed setups whose attention the parser fix changed. Use with '
+                         '--no_skip_done for the post-refit pearson recompute (overwrites the '
+                         'stale mage_v2 grouped/instance/importance CSVs in place).')
     args = ap.parse_args()
 
     device = torch.device(
@@ -246,6 +263,9 @@ def main():
     for run_dir, meta, fam in iter_runs(args.out_root, fams, args.dataset, args.shard):
         if args.limit and (ok + failed) >= args.limit:
             break
+        # post-refit pearson recompute: only the FG-first vocabs whose attention changed
+        if args.fg_first_only and _base_frag(meta.get('vocab_variant', '')) not in FG_FIRST:
+            continue
         tag = (f"{meta.get('dataset')}/{fam}/{meta.get('backbone')}/"
                f"{meta.get('vocab_variant')}/fold{meta.get('fold')}")
         out_dir = out_dir_for(run_dir, args.out_root, args.dest_root)
