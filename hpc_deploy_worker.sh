@@ -45,6 +45,9 @@ FLTARG=(); [ -n "${FILTERED:-}" ] && FLTARG=(--filtered)   # FILTERED=1 -> all-f
 UNKARG=(); [ -n "${UNK_MODE:-}" ] && UNKARG=(--unk_mode "$UNK_MODE")   # zero|half
 REFITARG=(); [ -n "${MAGE_REFIT:-}" ] && REFITARG=(--mage_refit)       # MAGE_REFIT=1 -> re-fit MAGE (FG-first only)
 [ -n "${ATTN_EPOCHS:-}" ] && REFITARG+=(--attn_epochs "$ATTN_EPOCHS")
+# pearson recompute (mage_v2_rescore.py): FG_FIRST_ONLY=1 -> --fg_first_only, NO_SKIP_DONE=1 -> --no_skip_done
+[ -n "${FG_FIRST_ONLY:-}" ] && REFITARG+=(--fg_first_only)
+[ -n "${NO_SKIP_DONE:-}" ] && REFITARG+=(--no_skip_done)
 echo "[worker] START $(date +%s) shard=$SHARD device=$DEVICE script=$SCRIPT dataset=${DATASET:-all} filtered=${FILTERED:-0} unk=${UNK_MODE:-zero} refit=${MAGE_REFIT:-0} host=$(hostname -s) job=${SLURM_JOB_ID:-$$}"
 python3 -u "$SCRIPT" \
   --out_root "$OUT" --posthoc_root "$POSTHOC" --dest_root "$DEST" \

@@ -13,13 +13,12 @@ SOURCE_GT = {'Benzene_Verified_GT', 'Fluoride_Carbonyl_Verified_GT',
              'Alkane_Carbonyl_Verified_GT', 'mutag'}
 FRAG_MAP = {'rbrics': 'rbrics', 'rdkit_fg_first': 'FGFirst-RDKIT',
             'ertl_first': 'ertl', 'fg_first': 'custom-FG'}
-# MAGE for the paper = mage_v2 (attention-mean scoring; drops the label-leaking
-# class-prob P term). The legacy 'mage_official' key is kept under a distinct name
-# so it stays in the per-fold CSV for inspection but is NOT picked up by the table
-# builder (make_acm_tables uses model name 'MAGE' only).
+# MAGE = mage_v2 (attention-mean scoring; drops the label-leaking class-prob P term).
+# mage_official (the published S^cm = S·P) is DROPPED from the harvest entirely: its
+# scores are label-leaking AND, on FG-first, computed from the buggy ring-less
+# attention. Not mapped here => never read into any per-fold CSV or table.
 EXPL_MAP = {'gnnexplainer': 'GNNExplainer', 'pgexplainer': 'PGExplainer',
-            'mage_v2': 'MAGE', 'mage_official': 'MAGE_official',
-            'motif_occlusion': 'MotifOcclusion'}
+            'mage_v2': 'MAGE', 'motif_occlusion': 'MotifOcclusion'}
 FAM_MODEL = {'mose': 'MoSE', 'motifsat': 'MotifSAT', 'gsat': 'GSAT',
              'vanilla': 'Vanilla'}
 BACKBONES = {'GIN', 'GCN', 'GAT', 'SAGE', 'PNA'}
@@ -177,7 +176,9 @@ def harvest_root(root: Path) -> list:
         for method, method_split in summ.items():
             # model + impact basis + whether explanation metrics apply
             if ident['family'] == 'baselines':          # post-hoc
-                model = EXPL_MAP.get(method, method)
+                if method not in EXPL_MAP:               # DROP mage_official (+ any legacy key)
+                    continue                             # — EXPL_MAP is the strict paper-method gate
+                model = EXPL_MAP[method]
                 model_type, impact_basis, has_expl = 'posthoc', 'agnostic', True
             elif ident['family'] == 'vanilla':
                 model, model_type, impact_basis, has_expl = 'Vanilla', 'vanilla', 'own', False
