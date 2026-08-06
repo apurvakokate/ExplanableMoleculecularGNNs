@@ -73,13 +73,15 @@ def _parse(root, ss):
         dataset, fold_s, vocab, runid = rel[2], rel[3], rel[4], rel[5]
         mbb = re.match(r'bb-([A-Za-z]+)_', runid)
         backbone = mbb.group(1) if mbb else ''
-        me = re.search(r'enc-([a-z]+)', runid); enc = me.group(1) if me else ''
     elif family in LAYOUT_B:
         vocab, dataset, fold_s, runid = rel[2], rel[3], rel[4], rel[5]
-        toks = runid.split('_')
-        backbone, enc = toks[0], (toks[1] if len(toks) > 1 else '')
+        backbone = runid.split('_', 1)[0]
     else:
         return None
+    # encoder by KEYWORD (positional is unsafe: MotifSAT/GSAT run-ids insert a
+    # readout/none token before the encoder, e.g. GIN_readout_onehot_..., GAT_none_onehot_...)
+    me = re.search(r'(?:^|_|enc-)(atom_encoder|onehot|linear)(?:_|$)', runid)
+    enc = me.group(1) if me else ''
     if backbone not in BACKBONES:
         return None
     mn = re.search(r'norm-([a-z0-9]+)', runid); norm = mn.group(1) if mn else 'none'
