@@ -26,54 +26,30 @@ from rdkit import Chem
 import fg_first_frag as _fgf
 import chemfrag as _cf
 
-# ── canonical EFGs (RDKit Contrib) with a faithful-reimplementation fallback ──────
-_get_fgs_canonical = None
+# ── canonical EFGs (RDKit Contrib, Lu & Ertl 2024) — REQUIRED, no fallback ────────
+# The canonical implementation is mandatory. If it is not importable we FAIL LOUDLY at
+# import rather than silently substitute an approximation — a silent fallback would let an
+# `ertl_first` run be built from a non-canonical detector while the paper cites EFGs. To
+# enable, install an RDKit build that ships `Contrib/efgs` (dir at <rdkit>/Contrib/efgs).
+FG_SOURCE = 'efgs'
 try:
     _efgs_dir = os.path.join(os.path.dirname(rdkit.__file__), 'Contrib', 'efgs')
     if os.path.isdir(_efgs_dir) and _efgs_dir not in sys.path:
         sys.path.insert(0, _efgs_dir)
     from efgs import get_fgs as _get_fgs_canonical   # RDKit Contrib EFGs (Lu & Ertl 2024)
-    FG_SOURCE = 'efgs'                                # canonical implementation in use
-except Exception:
-    FG_SOURCE = 'reimpl'                             # fell back to the reimplementation below
-
-# reference ifg.py marking rules (fallback only)
-_PATTS = [Chem.MolFromSmarts(s) for s in
-          ['[!#6;!#1]=,#[*]', 'C=,#C', '[CX4](-[O,N,S])-[O,N,S]', '[O,N,S]1CC1']]
-
-
-def _merge(mol, marked, aset):
-    grown = set()
-    for idx in aset:
-        for nbr in mol.GetAtomWithIdx(idx).GetNeighbors():
-            j = nbr.GetIdx()
-            if j in marked:
-                marked.remove(j)
-                grown.add(j)
-    if grown:
-        _merge(mol, marked, grown)
-        aset.update(grown)
-
-
-def _reimpl_fgs(mol) -> List[Set[int]]:
-    """Faithful reimplementation of Ertl's ifg.py (fallback when Contrib/efgs is absent)."""
-    marked = set(a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() not in (1, 6))
-    for patt in _PATTS:
-        for m in mol.GetSubstructMatches(patt):
-            marked.update(m)
-    groups = []
-    while marked:
-        core = {marked.pop()}
-        _merge(mol, marked, core)
-        groups.append(core)
-    return groups
+except Exception as _e:
+    raise ImportError(
+        "ertl_frag requires the canonical EFGs implementation (RDKit Contrib/efgs, "
+        "Lu & Ertl, J. Chem. Inf. Model. 2024) and will NOT fall back to an "
+        f"approximation. It is not importable in this environment ({_e!r}). Install an "
+        "RDKit build that ships Contrib/efgs (expected at <rdkit>/Contrib/efgs), or use "
+        "--method rdkit_fg_first instead."
+    ) from _e
 
 
 def ertl_fgs(mol) -> List[Set[int]]:
-    """Ertl functional-group cores (canonical EFGs if available, else reimplementation)."""
-    if _get_fgs_canonical is not None:
-        return [set(g) for g in _get_fgs_canonical(mol)]
-    return _reimpl_fgs(mol)
+    """Ertl functional-group cores via the canonical EFGs implementation (no fallback)."""
+    return [set(g) for g in _get_fgs_canonical(mol)]
 
 
 def _fg_key(mol, atoms):
