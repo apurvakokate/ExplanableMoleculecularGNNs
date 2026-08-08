@@ -10,7 +10,7 @@ train/valid/test GT loaders, and calls evaluate_posthoc_all_splits:
 
 Device is chosen with --device (auto|cpu|cuda) so a scheduler can route these
 (slow) runs to GPU jobs; --methods can split a run into a GPU group
-(gnnexplainer mage_official) and a CPU group (pgexplainer motif_occlusion).
+(gnnexplainer mage_v2) and a CPU group (pgexplainer motif_occlusion).
 Writes into --dest_root (mirrors the run tree; source stays read-only).
 
   python analysis/eval_driver_posthoc.py --out_root final_v2 --dest_root final_v3 \
@@ -35,7 +35,7 @@ from SharedModules.evaluation.split_eval import evaluate_posthoc_all_splits
 FAMILIES = ('vanilla', 'baselines')
 # the 4 post-hoc explainers, passed EXPLICITLY to evaluate_posthoc_all_splits when
 # --methods is unset (kept in sync with that function's signature default).
-DEFAULT_POSTHOC_METHODS = ('gnnexplainer', 'motif_occlusion', 'mage_official', 'pgexplainer')
+DEFAULT_POSTHOC_METHODS = ('gnnexplainer', 'motif_occlusion', 'mage_v2', 'pgexplainer')
 
 
 def load_vanilla_model(run_dir, meta, dmeta, device):
@@ -69,19 +69,6 @@ def process(run_dir, meta, args, device):
     split_lists, gt = split_lists_and_gt(loaders, meta)
     model = load_vanilla_model(run_dir, meta, dmeta, device)
     out_dir = out_dir_for(run_dir, args.out_root, args.dest_root)
-    if args.predict_only:
-        # EVAL-ONLY predictive baseline (vanilla): per-split AUC/RMSE/MAE via plain
-        # forward passes — NO explainers, NO training. Writes summary_splits.json
-        # keyed by the run's family (e.g. 'vanilla').
-        from SharedModules.evaluation.split_eval import write_summary_splits, _pred_scalars
-        from SharedModules.evaluation.metrics import evaluate_predictions
-        from analysis.eval_driver_common import SPLITS
-        dn = denorm_of(dmeta, task_type)
-        summ = {s: _pred_scalars(
-                    evaluate_predictions(model, loaders[s], device, task_type, denorm=dn))
-                for s in SPLITS if split_lists.get(s)}
-        write_summary_splits(out_dir, {meta.get('family', 'vanilla'): summ})
-        return
     # Pass method_names EXPLICITLY (not via **kw) so a mismatched key can't be
     # silently dropped. When --methods is unset, pass the full default set here
     # rather than relying on the callee's signature default.
@@ -91,7 +78,7 @@ def process(run_dir, meta, args, device):
         model, vocab, loaders, split_lists, gt, device, task_type,
         denorm_of(dmeta, task_type), out_dir, args.max_motifs_eval,
         dataset=meta['dataset'], batch_size=args.batch_size,
-        method_names=method_names)
+        method_names=method_names, unk_mode=args.unk_mode)
 
 
 def main():
@@ -106,16 +93,22 @@ def main():
                     help='GPU batch for GNNExplainer / Motif-Occlusion / MAGE embedding')
     ap.add_argument('--loader_batch_size', type=int, default=128)
     ap.add_argument('--max_motifs_eval', type=int, default=None)
+    ap.add_argument('--unk_mode', default=None, choices=['zero', 'half', 'exclude'],
+                    help='Filtered-vocab UNK-atom handling for the node-direct GT-ROC '
+                         '(default None = full/unfiltered). zero/half fill UNK atoms; '
+                         'exclude drops them (instance/global only). Folds in the old '
+                         'gtroc_filtered_{v1,unk05,exclunk} trees — use a distinct '
+                         '--dest_root per mode.')
     ap.add_argument('--dataset', nargs='*', default=None)
     ap.add_argument('--methods', nargs='*', default=None,
                     help='post-hoc subset (default all 4). e.g. GPU group '
-                         '"gnnexplainer mage_official" / CPU group "pgexplainer motif_occlusion".')
+                         '"gnnexplainer mage_v2" / CPU group "pgexplainer motif_occlusion".')
     ap.add_argument('--mage_only', action='store_true',
-                    help='run ONLY MAGE (fit + score mage_official; skip GNNExplainer / '
+                    help='run ONLY MAGE (fit + score mage_v2; skip GNNExplainer / '
                          'PGExplainer / Motif-Occlusion). Reuses the vanilla checkpoint; '
                          'the per-split agnostic-impact cache still computes (it is the '
                          'model-side y-axis for Pearson, not an explainer). Shorthand for '
-                         '--methods mage_official.')
+                         '--methods mage_v2.')
     ap.add_argument('--shard', default=None, help='i/N: process runs[i::N]')
     ap.add_argument('--families', nargs='*', default=None,
                     help="model families to include (default: baselines ONLY). This is "
@@ -123,16 +116,13 @@ def main():
                          "explicitly requested here.")
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--dry_run', action='store_true')
-    ap.add_argument('--predict_only', action='store_true',
-                    help='EVAL-ONLY: write per-split AUC/RMSE/MAE (no explainers, no '
-                         'training) — for the vanilla predictive baseline.')
     ap.add_argument('--skip_done', action='store_true', default=True,
                     help='skip runs whose dest summary_splits.json is already non-empty '
                          '(resumable; makes it safe to add workers for rebalancing)')
     ap.add_argument('--no_skip_done', dest='skip_done', action='store_false')
     args = ap.parse_args()
     if args.mage_only:
-        args.methods = ['mage_official']   # fit + score MAGE only
+        args.methods = ['mage_v2']   # fit + score MAGE only
 
     device = torch.device(
         'cuda' if (args.device == 'cuda'

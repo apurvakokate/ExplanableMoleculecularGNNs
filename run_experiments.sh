@@ -442,17 +442,6 @@ _mutag_train_flags() {
          "--mutag_seed 42"
 }
 
-# MAGE score-column flags. Property-positive polarity differs by dataset:
-#   * mutag (TUDataset, per-node GT): class 0 = property-positive ("mutagens").
-#   * Mutagenicity (CSV) and every other CSV dataset: class 1 = property-positive.
-# So only the mutag TUDataset overrides the default positive class (1).
-_mage_score_flags() {
-    local ds=$1
-    case "$ds" in
-        mutag) echo "--mage_official_positive_class 0" ;;
-    esac
-}
-
 # Config slug matching run_experiments.py _cfg_slug (vanilla/baselines omit inj/ep).
 _vanilla_cfg_slug() {
     local syn="${1:-real}" bb="${2:?backbone required}" enc="${3:-$NODE_ENCODER}"
@@ -606,50 +595,19 @@ run_frag_thresh() {
     done
 }
 
-# Post-hoc explainer caps (phase5_baselines). GNNExplainer optimizes per graph.
-_baseline_explainer_flags() {
-    local ds="${1:-}"
-    local flags=""
-    flags="$flags $(_mage_score_flags "$ds")"
-    # MAGE_ONLY=1 → run ONLY the official MAGE scorer, skipping the expensive
-    # GNNExplainer/PGExplainer mask optimization and the Motif-Occlusion baseline.
-    [ "${MAGE_ONLY:-0}" = "1" ] && \
-        flags="$flags --no_gnnexplainer --no_pgexplainer --no_motif_occlusion"
-    # MAGE_PREDICTED_CLASS=1 → collapse S_cm with each graph's own predicted class
-    # instead of the fixed positive-class column.
-    [ "${MAGE_PREDICTED_CLASS:-0}" = "1" ] && \
-        flags="$flags --mage_official_predicted_class"
-    [ -n "${GNNEX_MAX_GRAPHS:-}" ] && flags="$flags --gnnex_max_graphs $GNNEX_MAX_GRAPHS"
-    [ -n "${GNNEX_EPOCHS:-}" ] && flags="$flags --gnnex_epochs $GNNEX_EPOCHS"
-    [ -n "${PGEX_MAX_GRAPHS:-}" ] && flags="$flags --pgex_max_graphs $PGEX_MAX_GRAPHS"
-    [ -n "${EXPLAINER_MAX_GRAPHS:-}" ] && flags="$flags --explainer_max_graphs $EXPLAINER_MAX_GRAPHS"
-    # REUSE_EXPLAINER_SCORES=1 → load prior saved scores, skip mask optimization
-    # (augments completed baseline runs with top_bottom/gt_vs_outside cheaply).
-    [ "${REUSE_EXPLAINER_SCORES:-0}" = "1" ] && flags="$flags --reuse_explainer_scores"
-    echo "$flags"
-}
-
-# In reuse mode we AUGMENT already-completed baseline runs (load their saved
-# scores) rather than skipping them — so process a run iff it is complete, and
-# skip incomplete ones (nothing to reuse). Outside reuse mode, fall back to the
-# normal SKIP_EXISTING behaviour. Returns 0 = SKIP this run, 1 = process it.
+# Skip a baselines scaffold run iff SKIP_EXISTING and the dir is already complete.
 _baseline_skip() {
     local out_dir=$1
-    if [ "${REUSE_EXPLAINER_SCORES:-0}" = "1" ]; then
-        _run_dir_complete "$out_dir" && return 1   # complete → process (reuse)
-        return 0                                    # incomplete → skip
-    fi
     _should_skip_existing && _run_dir_complete "$out_dir"
 }
 
 # ── Helper: training runners ───────────────────────────────────────────────────
 run_vanilla() {
+    # Train the Vanilla backbone ONLY. run_vanilla.py no longer runs explainers; post-hoc
+    # explanation is scored by the clean path (analysis/eval_driver_posthoc.py ->
+    # evaluate_posthoc_all_splits), deployed as its own sharded pass.
     local variant=$1
-    local skip_explainers=${2:-0}
-    local expl_flags=""
     local n_skip=0 n_run=0
-    [ "$skip_explainers" = "1" ] && \
-        expl_flags="--no_gnnexplainer --no_pgexplainer --no_motif_occlusion --no_mage_official"
     for backbone in $BACKBONES; do
         echo "  [Vanilla] backbone=$backbone encoder=$NODE_ENCODER vocab=$variant"
         for ds in $DATASETS; do
@@ -679,7 +637,6 @@ run_vanilla() {
                     --out_dir      "$out_dir" \
                     --final_out_dir \
                     $(_patience_flag) \
-                    $expl_flags \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -731,7 +688,6 @@ run_vanilla_gt() {
                     --use_gt --gt_cache "$OUT_ROOT/gt_cache" $(_gt_tier_flag) \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    --no_gnnexplainer --no_pgexplainer --no_motif_occlusion --no_mage_official \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -930,8 +886,11 @@ run_motifsat() {
 }
 
 run_baselines() {
-    # Re-run vanilla with epochs=0 (load weights) to apply post-hoc explainers
-    # under a specific vocabulary for motif-level evaluation.
+    # SCAFFOLD the baselines/ eval dir: re-run vanilla at epochs=0 (load weights) to mirror
+    # the checkpoint + write summary.json (meta) + summary_splits.json (predictive) under a
+    # specific eval vocabulary. Post-hoc EXPLAINERS are NOT run here — they are scored by the
+    # clean path (analysis/eval_driver_posthoc.py -> evaluate_posthoc_all_splits), deployed as
+    # its own sharded pass over these baselines/ dirs.
     # For filtered variants (*_filter), load the weights trained on the
     # corresponding unfiltered variant (model weights are independent of
     # the vocabulary threshold — only the motif eval vocab changes).
@@ -974,7 +933,6 @@ run_baselines() {
                     --weight_vocab_variant "$weight_variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    $(_baseline_explainer_flags "$ds") \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -985,7 +943,8 @@ run_baselines() {
 }
 
 run_baselines_gt() {
-    # Post-hoc explainers on GT-trained vanilla weights, eval loaders from gt_cache.
+    # SCAFFOLD the GT baselines/ eval dir on GT-trained vanilla weights (eval loaders from
+    # gt_cache). Explainers are scored separately by eval_driver_posthoc (see run_baselines).
     local variant=$1
     local n_skip=0 n_run=0
     local gt_ds
@@ -1033,7 +992,6 @@ run_baselines_gt() {
                     --weight_vocab_variant "$variant" \
                     --out_dir      "$out_dir" \
                     --final_out_dir \
-                    $(_baseline_explainer_flags "$ds") \
                     $( [ "$ENCODER_NORM" = "on" ] && echo "--apply_layer_norm" ) \
                     $(_mutag_train_flags "$ds" "$eff_fold") \
                     $WANDB_FLAGS
@@ -1506,7 +1464,7 @@ phase5_vanilla() {
 
     local variant
     for variant in $(_vocab_focus_base_variants); do
-        run_vanilla "$variant" 1
+        run_vanilla "$variant"
     done
 
     echo "Vanilla training complete."
