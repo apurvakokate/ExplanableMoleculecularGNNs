@@ -15,7 +15,7 @@ Writes (does NOT overwrite the whole-rule gt_roc_node_auc_mean = Grouped GTROC):
 Only touches ante-hoc runs with use_gt=True and gt_tier starting 'dnf' (source_gt has no
 clauses; its whole-rule GT-ROC already flows through). Re-run harvest_v2 + build_workbook after.
 
-Reuses: analysis.probe_masked_nodes._load_model_and_data (model reload) and the trainers'
+Reuses: analysis.probe_vs_vanilla._load_model_and_data (model reload) and the trainers'
 apply_gt_loaders call (MOSE-GNN/run.py:124, MotifSAT/run.py:279) for the clause-GT test set.
 
   python analysis/eval_antehoc_dnf_gtroc.py --out_root final_v2 \
@@ -28,7 +28,7 @@ import torch
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
-from analysis.probe_masked_nodes import _load_model_and_data          # model reloader (traced)
+from analysis.probe_vs_vanilla import _load_model_and_data            # model reloader (traced)
 from SharedModules.evaluation.motif_eval import compute_dnf_gt_roc, model_node_att_fn
 
 ARCHIVE = ("_archive", "_trash", "_old")
