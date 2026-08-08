@@ -8,9 +8,8 @@ two DETERMINISTIC metrics, and asserts they match the recorded CSV values:
   - predictive AUC   : model forward -> roc_auc_score(y, sigmoid(logit))   [all families]
   - GT-ROC node AUC  : native node-attention vs planted DNF GT             [ante-hoc GT cells]
 
-Reuses analysis/probe_masked_nodes.py's model loaders and SharedModules' own metric
-functions, so a mismatch means a real recording bug or non-determinism — not a
-re-implementation difference.
+Reuses SharedModules' own metric functions, so a mismatch means a real recording
+bug or non-determinism — not a re-implementation difference.
 
 NOTE: stochastic post-hoc explainers (GNNExplainer/PGExplainer) re-optimize their
 masks and are NOT bit-reproducible, so their motif metrics are excluded from the
@@ -29,8 +28,9 @@ from sklearn.metrics import roc_auc_score
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
-from analysis.probe_masked_nodes import (          # proven checkpoint + data loaders
-    _load_vanilla_and_data, _load_model_and_data, _resolve_probe_family)
+# [DISABLED] probe_masked_nodes usage commented out (dependency retired).
+# from analysis.probe_masked_nodes import (          # proven checkpoint + data loaders
+#     _load_vanilla_and_data, _load_model_and_data, _resolve_probe_family)
 
 
 @torch.no_grad()
@@ -121,14 +121,15 @@ def main():
         tag = f"{row['family']:9} {str(row['backbone']):5} {str(row['vocab_variant'])[:22]:22} {str(row.get('gt_tier','') or 'real'):10}"
         if rd is None:
             print(f"{tag} {'—':10} {'(run dir not found — skip)':>32}"); nskip += 1; continue
-        # reload the right family
-        fam = _resolve_probe_family(json.load(open(rd / "summary.json")), rd)
-        if row["family"] in ("vanilla", "baselines"):
-            model, test_list, status = _load_vanilla_and_data(rd, a.data_root, a.vocab_root, device)
-        else:
-            model, test_list, status = _load_model_and_data(rd, a.data_root, a.vocab_root, device)
-        if status != "ok":
-            print(f"{tag} {'—':10} {('(reload failed: '+status+')'):>32}"); nskip += 1; continue
+        # [DISABLED] reload-the-right-family usage commented out (probe_masked_nodes retired).
+        # fam = _resolve_probe_family(json.load(open(rd / "summary.json")), rd)
+        # if row["family"] in ("vanilla", "baselines"):
+        #     model, test_list, status = _load_vanilla_and_data(rd, a.data_root, a.vocab_root, device)
+        # else:
+        #     model, test_list, status = _load_model_and_data(rd, a.data_root, a.vocab_root, device)
+        # if status != "ok":
+        #     print(f"{tag} {'—':10} {('(reload failed: '+status+')'):>32}"); nskip += 1; continue
+        print(f"{tag} {'—':10} {'(probe verification disabled)':>32}"); nskip += 1; continue
 
         checks = [("auc", _forward_auc(model, test_list, device))]
         # ante-hoc GT cells: also recompute native GT-ROC node AUC

@@ -29,7 +29,7 @@ if str(REPO) not in sys.path:
 
 from analysis.aggregate_experiments import (
     family_of, dataset_allowed, iter_summaries)
-from analysis.probe_masked_nodes import _load_model_and_data, _is_probeable_run
+from analysis.probe_vs_vanilla import _load_model_and_data, _is_probeable_run
 from SharedModules.evaluation.multi_explanation_posthoc import run_multi_explanation_posthoc
 
 

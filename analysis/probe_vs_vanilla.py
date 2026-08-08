@@ -1,71 +1,43 @@
 #!/usr/bin/env python3
-"""probe_masked_nodes.py — do masked nodes hide their input features?
+"""Does the mask make the (already weak) self-identity signal WEAKER than no mask?
+Paired MoSE-vs-Vanilla. For the SAME atoms (grouped LOW/HIGH by MoSE's gate
+quartiles), probe self-identity in each model's OWN L2-normalized embedding
+(decoder trained on middle atoms). Difference-in-differences:
+  DiD = (MoSE_high - MoSE_low) - (Van_high - Van_low)  > 0  => mask suppresses LOW.
+Eval only.
 
-Post-hoc probing experiment. Motif-aware models (MOSE / MotifSAT) down-weight
-unimportant nodes via a soft attention gate (node_att). If that gating is doing
-its job, the *embedding* of a heavily-masked node should retain little
-recoverable information about that node's input features — a probe trained to
-predict node features from embeddings should do markedly WORSE on masked nodes
-than on unmasked ones.
-
-Method
-------
-1. Load a trained model + its dataset (same loaders as training).
-2. Run the model's get_embedding to obtain, for every node:
-     - node_emb   [N, H]   the post-conv node embedding (what a readout sees)
-     - node_att   [N]      the soft attention/gate weight in (0,1)
-     - x          [N, F]   the input node features (one-hot atom type here)
-3. Split nodes into MASKED (low att) vs UNMASKED (high att) by the att median
-   (or a fixed threshold via --att_threshold).
-4. Train a linear probe (logistic regression over atom-type classes) to predict
-   the node's input feature/class from node_emb, fit on a train split of nodes
-   and evaluated on a held-out split — separately for masked vs unmasked nodes.
-5. Report probe accuracy on masked vs unmasked. A large gap
-   (unmasked >> masked) is evidence the mask removes recoverable feature info.
-
-Two embedding sources are compared:
-   - 'gated'   : node_emb with the model's attention injection applied
-                 (w_feat/w_readout as the model was trained) — the realistic case.
-   - 'raw'     : node_emb with NO attention injection — control; both groups
-                 should then be similarly recoverable (gap ~ 0). The contrast
-                 between 'gated' and 'raw' isolates the masking effect.
-
-Usage
------
-    python analysis/probe_masked_nodes.py \
-        --run_dir results/mose/all_fallback_bpe/Mutagenicity/fold0/<tag> \
-        --data_root $DATA_ROOT --vocab_root $VOCAB_ROOT \
-        [--att_threshold 0.5] [--max_graphs 500]
-
-Or point --out_root at a tree and it probes MOSE / MotifSAT readout runs:
-    python analysis/probe_masked_nodes.py --out_root results --data_root ... --vocab_root ...
-
-Writes a CSV summary (one row per run) to --save (default: masked_node_probe.csv).
+SELF-CONTAINED: the model/data-loading helpers (``_load_model_and_data``,
+``_load_vanilla_and_data``, ``_node_emb_and_att``, ``_atom_class`` and their transitive
+closure) are inlined below, so this is the single file for the probe work. This file
+must live in ``<repo>/analysis/``
+because ``_REPO`` is resolved as ``__file__.parent.parent`` (the repo root), which the
+trainer-path juggling and ``SharedModules`` imports depend on.
 """
 from __future__ import annotations
 
-import argparse
+import os, glob, argparse
 import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import torch
+import numpy as np, pandas as pd, torch
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import balanced_accuracy_score
 
 # Make the repo root importable when run from elsewhere. We deliberately do NOT
 # add MOSE-GNN/ and MotifSAT/ to sys.path here: both define a top-level
-# `model.py`, so adding both would shadow each other. The caller (notebook or
-# run script) imports the right model module.
+# `model.py`, so adding both would shadow each other; the loader below prepends
+# the right trainer dir per run.
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+BASE = Path("/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers inlined VERBATIM from analysis/probe_masked_nodes.py (self-contained).
+# ─────────────────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def _node_emb_and_att(model, data, device, gated: bool):
     """Return (node_emb [N,H], node_att [N], x [N,F]) for one graph.
@@ -126,50 +98,14 @@ def _atom_class(x_rows: np.ndarray) -> np.ndarray:
     return x_rows.argmax(axis=1)
 
 
-def _probe_accuracy(emb: np.ndarray, y: np.ndarray, seed: int = 0):
-    """Fit a linear probe emb->y with a train/test node split; return test acc."""
-    if len(np.unique(y)) < 2 or len(y) < 20:
-        return float('nan'), len(y)
-    Xtr, Xte, ytr, yte = train_test_split(
-        emb, y, test_size=0.3, random_state=seed, stratify=None)
-    if len(np.unique(ytr)) < 2:
-        return float('nan'), len(y)
-    clf = LogisticRegression(max_iter=200)
-    try:
-        clf.fit(Xtr, ytr)
-        return float(accuracy_score(yte, clf.predict(Xte))), len(y)
-    except Exception:
-        return float('nan'), len(y)
+# Run-discovery helper (used by run_multi_explanation.py; inlined here so that file
+# can import it from this single probe module instead of probe_masked_nodes).
+_PROBE_PATH_MARKERS = ('mose', 'motifsat', 'gsat', 'base_gsat')
 
 
-def probe_run(model, data_list, device, att_threshold=None, max_graphs=500,
-              seed=0):
-    """Collect node embeddings/atts over graphs and probe masked vs unmasked."""
-    results = {}
-    for gated in (True, False):
-        embs, atts, ys = [], [], []
-        for d in data_list[:max_graphs]:
-            ne, na, x = _node_emb_and_att(model, d, device, gated=gated)
-            if ne is None:
-                continue
-            embs.append(ne); atts.append(na); ys.append(_atom_class(x))
-        if not embs:
-            continue
-        E = np.concatenate(embs); A = np.concatenate(atts); Y = np.concatenate(ys)
-        thr = att_threshold if att_threshold is not None else float(np.median(A))
-        masked = A <= thr
-        unmasked = ~masked
-        acc_m, n_m = _probe_accuracy(E[masked], Y[masked], seed)
-        acc_u, n_u = _probe_accuracy(E[unmasked], Y[unmasked], seed)
-        tag = 'gated' if gated else 'raw'
-        results[f'{tag}_acc_masked'] = acc_m
-        results[f'{tag}_acc_unmasked'] = acc_u
-        results[f'{tag}_gap_unmasked_minus_masked'] = (
-            acc_u - acc_m if (acc_u == acc_u and acc_m == acc_m) else float('nan'))
-        results[f'{tag}_n_masked'] = n_m
-        results[f'{tag}_n_unmasked'] = n_u
-        results[f'{tag}_att_threshold'] = thr
-    return results
+def _is_probeable_run(summary_path) -> bool:
+    s = str(summary_path).lower()
+    return any(m in s for m in _PROBE_PATH_MARKERS)
 
 
 def _purge_trainer_modules() -> None:
@@ -376,44 +312,6 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
         return None, None, f'load/data failed: {e}'
 
 
-_PROBE_PATH_MARKERS = ('mose', 'motifsat', 'gsat', 'base_gsat')
-
-# Post-hoc explainers whose saved per-motif attributions we can broadcast to
-# nodes for a node-mask probe (the 4 that run on the Vanilla backbone).
-_POSTHOC_METHODS = ('gnnexplainer', 'pgexplainer', 'motif_occlusion', 'mage_official')
-
-
-def _is_probeable_run(summary_path: Path) -> bool:
-    s = str(summary_path).lower()
-    return any(m in s for m in _PROBE_PATH_MARKERS)
-
-
-def _load_motif_scores(run_dir: Path, method: str, agg: str = 'max'):
-    """Load a post-hoc explainer's saved per-motif attribution ({motif_id: score}).
-
-    These are the global (dataset-level) attributions written by
-    baselines/run_vanilla.py::_save_explainer_scores. Returns None if absent.
-    """
-    import pandas as pd
-    p = Path(run_dir) / f'{method}_motif_scores_{agg}.csv'
-    if not p.exists():
-        return None
-    try:
-        df = pd.read_csv(p)
-    except Exception:
-        return None
-    col = f'score_{agg}'
-    if 'motif_id' not in df.columns or col not in df.columns:
-        return None
-    return {int(r['motif_id']): float(r[col]) for _, r in df.iterrows()
-            if pd.notna(r['motif_id']) and pd.notna(r[col])}
-
-
-def _available_posthoc_methods(run_dir: Path) -> list:
-    return [m for m in _POSTHOC_METHODS
-            if (Path(run_dir) / f'{m}_motif_scores_max.csv').exists()]
-
-
 def _load_vanilla_and_data(run_dir: Path, data_root: str, vocab_root: str, device):
     """Build a VanillaGNN from summary.json, load its checkpoint + test data.
 
@@ -473,157 +371,99 @@ def _load_vanilla_and_data(run_dir: Path, data_root: str, vocab_root: str, devic
     return model, test_list, 'ok'
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# probe_vs_vanilla logic
+# ─────────────────────────────────────────────────────────────────────────────
+def run_dirs(ds):
+    return sorted(Path(r) for r in glob.glob(str(BASE / "final_v2/mose/rbrics_filter" / ds / "fold*" / "*"))
+                  if "_real" in os.path.basename(r) and (Path(r) / "summary.json").exists())
+
+
+def l2(X):
+    n = np.linalg.norm(X, axis=1, keepdims=True); n[n == 0] = 1.0
+    return X / n
+
+
 @torch.no_grad()
-def _probe_posthoc(model, data_list, motif_scores, device,
-                   att_threshold=None, max_graphs=500, seed=0):
-    """Node-mask probe for a post-hoc explainer.
+def vanilla_emb(van, d, device):
+    dd = d.to(device)
+    batch = torch.zeros(dd.x.size(0), dtype=torch.long, device=device)
+    return van.get_emb(dd.x, dd.edge_index, batch=batch,
+                       edge_attr=getattr(dd, "edge_attr", None)).cpu().numpy()
 
-    There is no attention gate to toggle here, so the contrast is the SPLIT, not
-    the embedding: split the (raw) vanilla node embeddings into low- vs
-    high-attribution nodes using the explainer's per-motif score broadcast to
-    nodes, then probe feature-recoverability of each group. A random split of the
-    same size is the control — its gap should be ~0. expl_gap >> rand_gap means
-    the nodes the explainer calls unimportant genuinely carry less recoverable
-    input-feature information in the embedding.
-    """
-    embs, imps, ys = [], [], []
-    default = min(motif_scores.values()) if motif_scores else 0.0
-    for d in data_list[:max_graphs]:
-        dd = d.to(device)
-        n2m = getattr(dd, 'nodes_to_motifs', None)
-        if n2m is None:
+
+def probe_hilo(E, Y, low, high, mid):
+    EN = l2(E)
+    clf = LogisticRegression(max_iter=300).fit(EN[mid], Y[mid])
+    tc = set(np.unique(Y[mid]).tolist())
+    def ev(msk):
+        m = msk & np.isin(Y, list(tc))
+        return balanced_accuracy_score(Y[m], clf.predict(EN[m])) if m.sum() >= 30 else np.nan
+    return ev(high), ev(low)
+
+
+def process(mose_dir, data_root, vocab_root, device, max_graphs=800):
+    ds = mose_dir.parts[mose_dir.parts.index("rbrics_filter") + 1]
+    fold = mose_dir.parent.name
+    bb = mose_dir.name.split("_")[0]
+    mose, tl, st = _load_model_and_data(mose_dir, data_root, vocab_root, device)
+    if st != "ok":
+        return None, "mose " + st
+    vdir = BASE / "final_v2/vanilla" / ds / fold / "rbrics" / f"bb-{bb}_enc-onehot_norm-none_real"
+    van, _tl2, st2 = _load_vanilla_and_data(vdir, data_root, vocab_root, device)
+    if st2 != "ok":
+        return None, "vanilla " + st2
+    Emo, Eva, GA, Y = [], [], [], []
+    for d in tl[:max_graphs]:
+        ne, na, x = _node_emb_and_att(mose, d, device, gated=True)
+        if ne is None:
             continue
-        batch = torch.zeros(dd.x.size(0), dtype=torch.long, device=device)
-        node_emb = model.get_emb(dd.x, dd.edge_index, batch=batch,
-                                 edge_attr=getattr(dd, 'edge_attr', None))
-        n2m = n2m.view(-1).cpu().numpy()
-        imp = np.array([motif_scores.get(int(m), default) for m in n2m])
-        embs.append(node_emb.cpu().numpy()); imps.append(imp)
-        ys.append(_atom_class(dd.x.cpu().numpy()))
-    if not embs:
-        return {}
-    E = np.concatenate(embs); I = np.concatenate(imps); Y = np.concatenate(ys)
-    out = {}
-    thr = att_threshold if att_threshold is not None else float(np.median(I))
-    masked = I <= thr; unmasked = ~masked
-    am, nm = _probe_accuracy(E[masked], Y[masked], seed)
-    au, nu = _probe_accuracy(E[unmasked], Y[unmasked], seed)
-    out.update(expl_acc_masked=am, expl_acc_unmasked=au,
-               expl_gap_unmasked_minus_masked=(au - am if am == am and au == au else float('nan')),
-               expl_n_masked=nm, expl_n_unmasked=nu, expl_att_threshold=thr)
-    # random split control (same masked fraction, embeddings unchanged)
-    frac = float(masked.mean()) if len(I) else 0.5
-    rmask = np.random.default_rng(seed).random(len(I)) <= frac
-    am2, _ = _probe_accuracy(E[rmask], Y[rmask], seed)
-    au2, _ = _probe_accuracy(E[~rmask], Y[~rmask], seed)
-    out.update(rand_acc_masked=am2, rand_acc_unmasked=au2,
-               rand_gap_unmasked_minus_masked=(au2 - am2 if am2 == am2 and au2 == au2 else float('nan')))
-    return out
+        try:
+            ve = vanilla_emb(van, d, device)
+        except Exception:
+            continue
+        if len(ve) != len(ne):
+            continue
+        Emo.append(ne * na[:, None]); Eva.append(ve); GA.append(na); Y.append(_atom_class(x))
+    if not Emo:
+        return None, "no aligned reps"
+    Emo = np.concatenate(Emo); Eva = np.concatenate(Eva); GA = np.concatenate(GA); Y = np.concatenate(Y)
+    # ABSOLUTE gate thresholds: LOW = genuinely masked (<0.1), HIGH = genuinely
+    # important (>0.9). Skip a run if either extreme is (near-)empty -- i.e. the
+    # backbone never gates that far (PNA/GIN). That skip is itself informative.
+    low = GA < 0.1; high = GA > 0.9; mid = (~low) & (~high)
+    if low.sum() < 30 or high.sum() < 30 or mid.sum() < 100 or len(np.unique(Y[mid])) < 2:
+        return None, f"no extremes (n_low={int(low.sum())} n_high={int(high.sum())})"
+    mo_h, mo_l = probe_hilo(Emo, Y, low, high, mid)
+    va_h, va_l = probe_hilo(Eva, Y, low, high, mid)
+    n = len(GA)
+    return dict(mose_high=mo_h, mose_low=mo_l, van_high=va_h, van_low=va_l,
+                mose_gap=mo_h - mo_l, van_gap=va_h - va_l,
+                did=(mo_h - mo_l) - (va_h - va_l),
+                n_atoms=int(n), n_low=int(low.sum()), n_high=int(high.sum()),
+                frac_low=float(low.mean()), frac_high=float(high.mean()),
+                gate_min=float(GA.min()), gate_med=float(np.median(GA))), "ok"
 
 
-def main():
-    import torch
+if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument('--run_dir', default=None,
-                    help='A single run directory (with summary.json + .pt).')
-    ap.add_argument('--out_root', default=None,
-                    help='Probe MOSE / MotifSAT readout runs under this tree.')
-    ap.add_argument('--data_root', required=True)
-    ap.add_argument('--vocab_root', required=True)
-    ap.add_argument('--att_threshold', type=float, default=None,
-                    help='Fixed att cutoff for masked vs unmasked (default: per-run median).')
-    ap.add_argument('--max_graphs', type=int, default=500)
-    ap.add_argument('--save', default='masked_node_probe.csv')
-    ap.add_argument('--seed', type=int, default=0)
-    ap.add_argument('--dataset', nargs='*', default=None,
-                    help='only probe runs for these dataset(s), e.g. --dataset mutag')
-    ap.add_argument('--include_posthoc', type=int, default=1,
-                    help='also probe the 4 post-hoc explainers on Vanilla runs (default: on).')
-    ap.add_argument('--posthoc_agg', default='max', choices=('max', 'mean'),
-                    help='which saved per-motif aggregation to broadcast to nodes.')
-    args = ap.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    datasets = set(args.dataset) if args.dataset else None
-
-    if args.run_dir:
-        run_dirs = [Path(args.run_dir)]
-        posthoc_dirs = [Path(args.run_dir)] if args.include_posthoc else []
-    elif args.out_root:
-        # iter_summaries skips _archive/_trash/_old and applies the dataset filter.
-        from analysis.aggregate_experiments import iter_summaries
-        summaries = list(iter_summaries(Path(args.out_root), datasets=datasets))
-        run_dirs = [p.parent for p in summaries if _is_probeable_run(p)]
-        # post-hoc targets: any run that saved per-motif attributions (Vanilla runs)
-        posthoc_dirs = ([p.parent for p in summaries
-                         if _available_posthoc_methods(p.parent)]
-                        if args.include_posthoc else [])
-    else:
-        raise SystemExit('provide --run_dir or --out_root')
-
+    ap.add_argument("--dataset", required=True); ap.add_argument("--data_root", required=True)
+    ap.add_argument("--vocab_root", required=True); ap.add_argument("--max_graphs", type=int, default=800)
+    ap.add_argument("--save", default=None)
+    a = ap.parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows = []
-    # ── post-hoc explainer probes (Vanilla backbone + saved per-motif scores) ──
-    for rd in posthoc_dirs:
-        methods = _available_posthoc_methods(rd)
-        if not methods:
-            continue
-        model, test_list, status = _load_vanilla_and_data(
-            rd, args.data_root, args.vocab_root, device)
-        if status != 'ok':
-            print(f'  [skip posthoc] {rd}: {status}')
-            continue
-        for m in methods:
-            ms = _load_motif_scores(rd, m, agg=args.posthoc_agg)
-            if not ms:
-                continue
-            res = _probe_posthoc(model, test_list, ms, device,
-                                 att_threshold=args.att_threshold,
-                                 max_graphs=args.max_graphs, seed=args.seed)
-            if not res:
-                print(f'  [posthoc] {rd.name}/{m}: no probe data (skipped)')
-                continue
-            res['run_dir'] = str(rd); res['family'] = 'vanilla'; res['method'] = m
-            rows.append(res)
-            _f = lambda v: f'{v:.4f}' if isinstance(v, (int, float)) else 'n/a'
-            print(f'  [posthoc] {rd.name}/{m}: '
-                  f'expl_gap={_f(res.get("expl_gap_unmasked_minus_masked"))} '
-                  f'rand_gap={_f(res.get("rand_gap_unmasked_minus_masked"))}')
-
-    # ── ante-hoc (MOSE / MotifSAT / GSAT native node-attention) probes ──
-    for rd in run_dirs:
-        model, test_list, status = _load_model_and_data(
-            rd, args.data_root, args.vocab_root, device)
-        if status != 'ok':
-            print(f'  [skip] {rd}: {status}')
-            continue
-        res = probe_run(model, test_list, device,
-                        att_threshold=args.att_threshold,
-                        max_graphs=args.max_graphs, seed=args.seed)
-        res['run_dir'] = str(rd); res['family'] = 'antehoc'
-        gated_gap = res.get('gated_gap_unmasked_minus_masked')
-        raw_gap = res.get('raw_gap_unmasked_minus_masked')
-        if gated_gap is None and raw_gap is None:
-            # No probe data extracted (e.g. no node embeddings for this model /
-            # split). Report honestly instead of crashing on a None format.
-            print(f'  [probe] {rd.name}: no probe data extracted (skipped)')
-            continue
-        rows.append(res)
-        _fmt = lambda v: f'{v:.4f}' if isinstance(v, (int, float)) else 'n/a'
-        print(f'  [probe] {rd.name}: '
-              f'gated_gap={_fmt(gated_gap)} raw_gap={_fmt(raw_gap)}')
-
+    for rd in run_dirs(a.dataset):
+        row, st = process(rd, a.data_root, a.vocab_root, device, a.max_graphs)
+        bb = rd.name.split("_")[0]; fold = rd.parent.name
+        if row is None:
+            print(f"  [skip] {bb} {fold}: {st}"); continue
+        row.update(dataset=a.dataset, backbone=bb, fold=fold)
+        rows.append(row)
+        print(f"  [{bb} {fold}] MoSE h/l={row['mose_high']:.2f}/{row['mose_low']:.2f} "
+              f"Van h/l={row['van_high']:.2f}/{row['van_low']:.2f} | DiD={row['did']:+.2f}")
     if rows:
-        import pandas as pd
-        out = (Path(args.out_root) / args.save if args.out_root
-               else Path(args.run_dir) / args.save)
-        pd.DataFrame(rows).to_csv(out, index=False)
-        print(f'wrote {out} ({len(rows)} runs)')
-        print('Interpretation: gated_gap > raw_gap means the attention gate '
-              'removes recoverable input-feature info from masked nodes — '
-              'i.e. masking genuinely makes node features harder to recover.')
+        out = Path(a.save) if a.save else BASE / "final_v2" / f"probe_vsvanilla_{a.dataset}.csv"
+        pd.DataFrame(rows).to_csv(out, index=False); print("wrote", out, len(rows))
     else:
-        print('No MOSE/MotifSAT runs successfully probed.')
-
-
-if __name__ == '__main__':
-    main()
+        print("no runs")

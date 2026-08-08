@@ -570,14 +570,17 @@ def step_probe(args) -> int:
     if not (args.data_root and args.vocab_root):
         print('[probe] needs --data_root and --vocab_root; skipping.')
         return 1
-    cmd = [sys.executable, str(ANALYSIS / 'probe_masked_nodes.py'),
-           '--out_root', args.out_root,
-           '--data_root', args.data_root, '--vocab_root', args.vocab_root,
-           '--save', 'masked_node_probe.csv']
-    if _datasets_arg(args):
-        cmd += ['--dataset', *_datasets_arg(args)]
-    print('\n=== masked-node feature probe ===')
-    return subprocess.run(cmd).returncode
+    # [DISABLED] probe_masked_nodes.py usage commented out (dependency retired).
+    # cmd = [sys.executable, str(ANALYSIS / 'probe_masked_nodes.py'),
+    #        '--out_root', args.out_root,
+    #        '--data_root', args.data_root, '--vocab_root', args.vocab_root,
+    #        '--save', 'masked_node_probe.csv']
+    # if _datasets_arg(args):
+    #     cmd += ['--dataset', *_datasets_arg(args)]
+    # print('\n=== masked-node feature probe ===')
+    # return subprocess.run(cmd).returncode
+    print('[probe] masked-node feature probe disabled (probe_masked_nodes retired).')
+    return 1
 
 
 def step_plots(args) -> int:
