@@ -844,6 +844,15 @@ def run(cfg: VanillaConfig) -> dict:
         # classification tasks
         'rmse_orig':        pred.get('rmse_orig', float('nan')),
         'mae_orig':         pred.get('mae_orig', float('nan')),
+        # train/val predictive metrics (regression): computed above, now persisted.
+        'train_rmse':       all_preds.get('train', {}).get('rmse', float('nan')),
+        'val_rmse':         all_preds.get('valid', {}).get('rmse', float('nan')),
+        'train_mae':        all_preds.get('train', {}).get('mae',  float('nan')),
+        'val_mae':          all_preds.get('valid', {}).get('mae',  float('nan')),
+        'train_rmse_orig':  all_preds.get('train', {}).get('rmse_orig', float('nan')),
+        'val_rmse_orig':    all_preds.get('valid', {}).get('rmse_orig', float('nan')),
+        'train_mae_orig':   all_preds.get('train', {}).get('mae_orig', float('nan')),
+        'val_mae_orig':     all_preds.get('valid', {}).get('mae_orig', float('nan')),
         'train_auc':        all_preds.get('train', {}).get('auc', float('nan')),
         'val_auc':          all_preds.get('valid', {}).get('auc', float('nan')),
         **explainability_summary_fields(eval_results, scope='test'),
