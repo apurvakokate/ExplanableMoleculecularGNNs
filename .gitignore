@@ -53,3 +53,18 @@ analysis/vocab_report.html
 sweep/
 # Agent instruction file — local only, not part of the repository
 CLAUDE.md
+
+# Generated result artifacts (LaTeX tables + CSVs) — kept ON DISK, never tracked.
+# These are outputs of build_metric_set.py / make_acm_tables.py /
+# build_ablation_set.py / make_ablation_tables.py; they declutter code review and
+# are never committed. (A second copy lives OUTSIDE the repo at
+# ../results_offline as a safety backup — see note.)
+results_offline/
+ablation_results/
+results_v1/
+thesis_results/
+tables_main/
+tables_v*/
+offline_results/
+
+*.md
