@@ -1363,10 +1363,6 @@ class TestExplainabilitySummaryFields(unittest.TestCase):
             'gt_roc_node_all': {'auc_mean': 0.73},
             'gt_roc_edge': {'auc_mean': 0.69},
             'gt_roc_edge_all': {'auc_mean': 0.70},
-            'gt_roc_node_mean': {'auc_mean': 0.68},
-            'gt_roc_node_mean_all': {'auc_mean': 0.71},
-            'gt_roc_node_max': {'auc_mean': 0.72},
-            'gt_roc_node_max_all': {'auc_mean': 0.74},
         }
         test = explainability_summary_fields(results, scope='test')
         all_ = explainability_summary_fields(results, scope='all')

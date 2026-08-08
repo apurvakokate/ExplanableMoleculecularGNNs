@@ -301,8 +301,8 @@ def compute_motif_impact(
         attention (resolved via ``model_node_att_fn`` when ``base_att_fn`` is
         None);
       * post-hoc (Vanilla + GNNExplainer / PGExplainer / Motif-Occlusion / MAGE): pass
-        ``base_att_fn`` = the explainer's per-motif scores broadcast to nodes
-        (``_motif_score_node_att_fn(scores)``), one call per explainer.
+        ``base_att_fn`` = the explainer's per-node atts (GNNExplainer / PGExplainer raw
+        per-node; MAGE / Motif-Occlusion via ``_pi_to_node_atts``), one call per explainer.
     Requires the model's ``forward`` to accept ``node_weights``; skipped
     otherwise.
 
@@ -1131,45 +1131,6 @@ def model_node_att_fn(model: torch.nn.Module, device: torch.device):
         if node_att is None:
             return None
         return node_att.view(-1)
-    return _fn
-
-
-def motif_broadcast_att_fn(base_fn, agg: str = 'mean'):
-    """Wrap a per-node attribution fn so node scores are aggregated to motif
-    level (``mean`` or ``max``) over each motif's atoms and broadcast back.
-
-    This is the node→motif reduction used everywhere else in the evaluation
-    (score-vs-impact, plots): every atom of a motif instance receives that
-    motif's aggregated attribution.  Because ``node_label`` is uniform within a
-    motif, scoring the broadcast attribution at node level is a motif-granular
-    GT-ROC in the requested aggregation flavour.
-
-    Atoms with ``nodes_to_motifs < 0`` (no motif assignment) keep their raw
-    per-node score.  Returns ``None`` when ``base_fn`` returns ``None`` so
-    ``compute_gt_roc`` can skip.
-    """
-    if agg not in ('mean', 'max'):
-        raise ValueError(f"agg must be 'mean' or 'max', got {agg!r}")
-
-    def _fn(data: Data):
-        att = base_fn(data)
-        if att is None:
-            return None
-        att = att.view(-1)
-        n2m = getattr(data, 'nodes_to_motifs', None)
-        if n2m is None:
-            return att
-        n2m = n2m.view(-1).to(att.device)
-        out = att.clone()
-        for mid in torch.unique(n2m).tolist():
-            if mid < 0:
-                continue
-            sel = n2m == mid
-            vals = att[sel]
-            if vals.numel() == 0:
-                continue
-            out[sel] = vals.mean() if agg == 'mean' else vals.max()
-        return out
     return _fn
 
 

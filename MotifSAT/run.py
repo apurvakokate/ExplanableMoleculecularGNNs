@@ -646,8 +646,6 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
             correlation=results.get('correlation'),
             gt_roc=results.get('gt_roc'),
             gt_roc_node=results.get('gt_roc_node'),
-            gt_roc_node_mean=results.get('gt_roc_node_mean'),
-            gt_roc_node_max=results.get('gt_roc_node_max'),
             gt_roc_edge=results.get('gt_roc_edge'),
             top_bottom=results.get('top_bottom'),
         )

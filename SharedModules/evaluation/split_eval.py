@@ -44,7 +44,6 @@ from .motif_eval import (
     build_graph_mask_cache,
     build_motif_score_cache_from_atts,
     model_node_att_fn,
-    motif_broadcast_att_fn,
 )
 from .pipeline import _has_node_attr
 
@@ -151,11 +150,12 @@ def gt_roc_block(model, gt_list, device, node_att_fn) -> Dict[str, float]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-split impact + correlation from a per-motif score map + per-graph atts
 # ─────────────────────────────────────────────────────────────────────────────
-# NOTE: the per-motif-score → per-node broadcast used for GT-ROC is the TRUSTED
-# ``run_vanilla._motif_score_node_att_fn`` (built the final_v2 post-hoc GT-ROC),
-# reused directly rather than reimplemented — it puts the tensor on data.x.device
-# (GPU-safe), returns zeros (not None) when nodes_to_motifs is missing, and forces
-# UNK (motif id < 0) to 0.0. Imported lazily in evaluate_posthoc_all_splits.
+# NOTE: post-hoc GT-ROC grades each explainer's OWN per-node atts node-direct. MAGE /
+# Motif-Occlusion produce per-motif scores that ``_pi_to_node_atts`` broadcasts onto atoms
+# (full-vocab → every atom in a scored motif, no UNK); GNNExplainer / PGExplainer are
+# already per-node. Filtered-vocab natives (MOSE/MotifSAT/GSAT) carry the model's UNK weight
+# (0.5 fixed / learnable) and are graded via ``motif_eval.model_node_att_fn`` in the native
+# pipeline. There is deliberately no per-motif-score broadcast fallback (it zeroed UNK).
 
 
 def precompute_agnostic_impact(model, vocab, split_list, device, task_type, cache_path=None):
@@ -531,8 +531,11 @@ def _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode=None):
       None      -> atts as-is (FULL / unfiltered)
       'zero'    -> UNK atoms set to 0.0      'half' -> UNK atoms set to 0.5
       'exclude' -> UNK atoms dropped from the AUC (instance/global only — no spurious/family)
-    Falls back to the per-motif-score broadcast only when no per-node atts exist."""
-    from SharedModules.baselines.run_vanilla import _motif_score_node_att_fn
+    ``sc`` (per-motif scores) is unused — kept only for call-site compatibility. It never
+    falls back to a per-motif-score broadcast (that silently zeroed UNK and is retired); if
+    the explainer produced NO per-node atts it RAISES ValueError (fail loud) rather than
+    returning a blank metric set. Callers where a method may legitimately have no node
+    attribution (e.g. GNNExplainer on OGB) already skip it upstream / catch around this."""
     att_by_i = {}
     if atts:
         if gl is sl:
@@ -549,8 +552,12 @@ def _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode=None):
     if unk_mode in ('zero', 'half') and att_by_i:   # fill UNK atoms, then full metric set
         att_by_i = _fill_unk(att_by_i, gl, 0.5 if unk_mode == 'half' else 0.0)
     fn = _node_att_fn(gl, att_by_i) if att_by_i else None
-    if fn is None:                                  # no per-node atts (shouldn't happen)
-        fn = _motif_score_node_att_fn(sc)
+    if fn is None:                                  # no per-node atts -> cannot grade node-direct
+        raise ValueError(
+            f'_gtroc_node_direct: no per-node attributions to grade against the GT '
+            f'({len(gl)} GT graphs, {len(sl)} split graphs, atts={len(atts) if atts else 0}). '
+            f"Node-direct GT-ROC needs the explainer's own per-node atts; an empty set means the "
+            f'explainer produced none — surface it, do not skip silently.')
     return gt_roc_block(model, gl, device, fn)
 
 
@@ -578,7 +585,6 @@ def evaluate_posthoc_all_splits(
     from ..baselines.motif_occlusion import run_motif_occlusion_batched     # GPU-batched
     from ..baselines.mage import fit_mage, score_mage
     from ..baselines.pg_explainer import fit_pgexplainer, score_pgexplainer
-    from ..baselines.run_vanilla import _motif_score_node_att_fn   # trusted score→node broadcast
 
     out_dir = Path(out_dir)
     train_list = split_lists['train']

@@ -31,7 +31,6 @@ from .motif_eval import (
     compute_gt_roc,
     compute_dnf_gt_roc,
     model_node_att_fn,
-    motif_broadcast_att_fn,
     motif_class_discriminativeness,
     top_motifs_discriminative_check,
     _impact_values,
@@ -122,8 +121,6 @@ def explainability_summary_fields(
     gt     = results.get(f'gt_roc_{tag}' if tag else 'gt_roc', {})
     gt_node = results.get(f'gt_roc_node_{tag}' if tag else 'gt_roc_node', {})
     gt_edge = results.get(f'gt_roc_edge_{tag}' if tag else 'gt_roc_edge', {})
-    gt_nm   = results.get(f'gt_roc_node_mean_{tag}' if tag else 'gt_roc_node_mean', {})
-    gt_nx   = results.get(f'gt_roc_node_max_{tag}' if tag else 'gt_roc_node_max', {})
     gt_fired = results.get(f'gt_roc_node_fired_{tag}' if tag else 'gt_roc_node_fired', {})
     spur    = results.get(f'spurious_roc_node_{tag}' if tag else 'spurious_roc_node', {})
     fam     = results.get(f'family_roc_node_{tag}' if tag else 'family_roc_node', {})
@@ -134,8 +131,6 @@ def explainability_summary_fields(
         f'gt_roc_n_graphs{suffix}':            gt.get('n_graphs', 0),
         # Mode 1 (whole-rule) node GT-ROC
         f'gt_roc_node_auc_mean{suffix}':       gt_node.get('auc_mean', nan),
-        f'gt_roc_node_mean_auc_mean{suffix}':  gt_nm.get('auc_mean', nan),
-        f'gt_roc_node_max_auc_mean{suffix}':   gt_nx.get('auc_mean', nan),
         f'gt_roc_edge_auc_mean{suffix}':       gt_edge.get('auc_mean', nan),
         # Mode 2 (fired-clause / OR-aware) node GT-ROC
         f'gt_roc_node_fired_auc_mean{suffix}': gt_fired.get('auc_mean', nan),
@@ -282,27 +277,11 @@ class EvalPipeline:
         block: Dict = {}
         gt_graphs = gt_eval_list if gt_eval_list is not None else data_list
         if self._has_ground_truth_on(gt_graphs):
-            block['gt_roc_node'] = compute_gt_roc(
-                self.model, gt_graphs, self.device,
-                node_att_fn=self.node_att_fn, level='node',
-            )
-            block['gt_roc_edge'] = compute_gt_roc(
-                self.model, gt_graphs, self.device,
-                node_att_fn=self.node_att_fn, level='edge',
-            )
-            block['gt_roc'] = (block['gt_roc_node']
-                               if self.gt_level == 'node'
-                               else block['gt_roc_edge'])
-            _base_att = self.node_att_fn or model_node_att_fn(self.model, self.device)
-            for _agg in ('mean', 'max'):
-                block[f'gt_roc_node_{_agg}'] = compute_gt_roc(
-                    self.model, gt_graphs, self.device,
-                    node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
-                    level='node',
-                )
-            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious-shortcut ROC. Both are
-            # guarded on the attr actually being present — otherwise compute_gt_roc would
-            # silently fall back to the edge_label-derived (rule) mask and mislabel them.
+            _is_planted = _has_node_attr(gt_graphs, 'node_label_clauses')
+            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious/family shortcut ROC —
+            # planted-only, guarded on the attr being present (else compute_gt_roc would
+            # silently fall back to the edge_label-derived rule mask and mislabel them).
+            # Independent of the whole-rule metric below.
             if _has_node_attr(gt_graphs, 'node_label_fired'):
                 block['gt_roc_node_fired'] = compute_gt_roc(
                     self.model, gt_graphs, self.device,
@@ -319,23 +298,34 @@ class EvalPipeline:
                     node_att_fn=self.node_att_fn, level='node',
                     gt_attr='node_label_family')
 
-            # DNF clause-decomposed GT-ROC (ante-hoc parity with the post-hoc path).
-            #   Instance — did the model recover ANY one complete fired disjunct?
-            #   Global   — did it recover the UNION of all fired clauses?
-            # compute_dnf_gt_roc self-guards: graphs without ``node_label_clauses`` are
-            # skipped, so a non-DNF / source-GT list returns n_graphs=0 (it never
-            # raises) — called bare here, exactly as the post-hoc path does in
-            # run_vanilla.py. Source-GT is a SINGLE clause with no clause tensor, so its
-            # whole-rule node GT-ROC is aliased into Global/Instance. Original-label runs
-            # have no node_label at all → this whole GT block is skipped → both blank.
-            _dnf_fn = self.node_att_fn or model_node_att_fn(self.model, self.device)
-            _dnf = compute_dnf_gt_roc(self.model, gt_graphs, self.device, _dnf_fn)
-            if _dnf['n_graphs'] > 0:
-                block['instance_gt_roc_node'] = {
-                    'auc_mean': _dnf['instance_auc_mean'], 'n_graphs': _dnf['n_graphs']}
-                block['global_gt_roc_node'] = {
-                    'auc_mean': _dnf['global_auc_mean'], 'n_graphs': _dnf['n_graphs']}
-            elif 'gt_roc_node' in block:          # source-GT single-clause alias
+            if _is_planted:
+                # PLANTED / DNF: the paper node metric is the DNF clause-decomposed AUC —
+                #   Instance — did the model recover ANY one complete FIRED disjunct (best clause)?
+                #   Global   — did it recover the UNION of all fired clauses?
+                # The whole-rule Mode-1 GT-ROC (gt_roc_node/edge/gt_roc: ALL clauses' atoms as
+                # positives, firing ignored) is DELIBERATELY NOT computed for planted — it is a
+                # different, easily-misused value. Whole-rule is SOURCE-GT-ONLY (else branch).
+                _dnf_fn = self.node_att_fn or model_node_att_fn(self.model, self.device)
+                _dnf = compute_dnf_gt_roc(self.model, gt_graphs, self.device, _dnf_fn)
+                if _dnf['n_graphs'] > 0:
+                    block['instance_gt_roc_node'] = {
+                        'auc_mean': _dnf['instance_auc_mean'], 'n_graphs': _dnf['n_graphs']}
+                    block['global_gt_roc_node'] = {
+                        'auc_mean': _dnf['global_auc_mean'], 'n_graphs': _dnf['n_graphs']}
+            else:
+                # SOURCE-GT: a SINGLE clause with no clause tensor, so the whole-rule Mode-1
+                # node GT-ROC IS the instance metric — computed here and aliased into
+                # instance/global. (Original-label runs never reach here: the whole GT block
+                # is guarded by _has_ground_truth_on above.)
+                block['gt_roc_node'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='node')
+                block['gt_roc_edge'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='edge')
+                block['gt_roc'] = (block['gt_roc_node']
+                                   if self.gt_level == 'node'
+                                   else block['gt_roc_edge'])
                 block['instance_gt_roc_node'] = dict(block['gt_roc_node'])
                 block['global_gt_roc_node'] = dict(block['gt_roc_node'])
 
@@ -422,31 +412,24 @@ class EvalPipeline:
         #    (self.gt_level) for backward compatibility with existing consumers.
         if self._has_ground_truth():
             _gt = self._gt_graphs()
-            results['gt_roc_node'] = compute_gt_roc(
-                self.model, _gt, self.device,
-                node_att_fn=self.node_att_fn, level='node',
-            )
-            results['gt_roc_edge'] = compute_gt_roc(
-                self.model, _gt, self.device,
-                node_att_fn=self.node_att_fn, level='edge',
-            )
-            results['gt_roc'] = (results['gt_roc_node']
-                                 if self.gt_level == 'node'
-                                 else results['gt_roc_edge'])
-
-            # Motif-aggregated node-level GT-ROC. The raw per-node AUC above is
-            # kept as-is; here we additionally reduce the model's per-node
-            # attention to motif level (mean / max over each motif's atoms) and
-            # broadcast it back, matching the mean/max motif framing used by
-            # score-vs-impact and the plots. For models whose node attention is
-            # already a motif-broadcast weight (e.g. MOSE), mean == max == raw.
-            _base_att = self.node_att_fn or model_node_att_fn(self.model, self.device)
-            for _agg in ('mean', 'max'):
-                results[f'gt_roc_node_{_agg}'] = compute_gt_roc(
+            # Whole-rule Mode-1 GT-ROC (gt_roc_node/edge/gt_roc) is SOURCE-GT ONLY — a single
+            # clause, where it IS the instance metric. For planted/DNF it is a different,
+            # easily-misused value and is NOT computed here; the correct planted metric is the
+            # DNF best-fired-clause instance in summary_splits (evaluate_native_all_splits /
+            # _compute_explainability). run() intentionally carries no test-level DNF instance.
+            if not _has_node_attr(_gt, 'node_label_clauses'):
+                results['gt_roc_node'] = compute_gt_roc(
                     self.model, _gt, self.device,
-                    node_att_fn=motif_broadcast_att_fn(_base_att, _agg),
-                    level='node',
+                    node_att_fn=self.node_att_fn, level='node',
                 )
+                results['gt_roc_edge'] = compute_gt_roc(
+                    self.model, _gt, self.device,
+                    node_att_fn=self.node_att_fn, level='edge',
+                )
+                results['gt_roc'] = (results['gt_roc_node']
+                                     if self.gt_level == 'node'
+                                     else results['gt_roc_edge'])
+
             # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious-shortcut ROC, guarded on
             # the attr being present (else compute_gt_roc falls back to the rule mask).
             if _has_node_attr(_gt, 'node_label_fired'):
@@ -571,10 +554,6 @@ class EvalPipeline:
             dfs['gt_roc'] = pd.DataFrame([results['gt_roc']])
         if 'gt_roc_node' in results:
             dfs['gt_roc_node'] = pd.DataFrame([results['gt_roc_node']])
-        if 'gt_roc_node_mean' in results:
-            dfs['gt_roc_node_mean'] = pd.DataFrame([results['gt_roc_node_mean']])
-        if 'gt_roc_node_max' in results:
-            dfs['gt_roc_node_max'] = pd.DataFrame([results['gt_roc_node_max']])
         if 'gt_roc_edge' in results:
             dfs['gt_roc_edge'] = pd.DataFrame([results['gt_roc_edge']])
 
@@ -702,11 +681,6 @@ class EvalPipeline:
                     print(f"  [{_lvl}] auc_mean={r['auc_mean']:.4f}  "
                           f"auc_std={r['auc_std']:.4f}  "
                           f"n_graphs={r['n_graphs']}  n_skipped={r['n_skipped']}")
-            for _agg in ("mean", "max"):
-                r = results.get(f"gt_roc_node_{_agg}")
-                if r and r.get("n_graphs", 0) > 0:
-                    print(f"  [node/{_agg}-motif] auc_mean={r['auc_mean']:.4f}  "
-                          f"auc_std={r['auc_std']:.4f}  n_graphs={r['n_graphs']}")
         elif "gt_roc" in results:
             r = results["gt_roc"]
             print("\nExplainer ROC vs ground truth:")

@@ -33,12 +33,6 @@ PREDICTION_METRICS = frozenset({
     'auc', 'val_auc', 'train_auc', 'rmse', 'mae', 'rmse_orig', 'mae_orig',
 })
 
-# Ante-hoc families that produce NODE-level scores: node GT-ROC differs under
-# mean- vs max-pooling, so report both (like the post-hoc baselines). MOSE and
-# MotifSAT produce MOTIF-level scores, so mean == max — they keep one value.
-NODE_SCORING_FAMILIES = frozenset({'gsat'})
-NODE_POOL_SRC = {'mean': 'gt_roc_node_mean_auc_mean', 'max': 'gt_roc_node_max_auc_mean'}
-
 # Correlation metrics carry BOTH node->motif poolings (mean/max) as explicit
 # summary columns, so they can be reported per-pooling like node GT-ROC. Every
 # ante-hoc trainer records these (motif-level MOSE writes mean == max).
@@ -55,20 +49,17 @@ POOLED_TABLE_METRICS = frozenset(CORR_POOL_SRC)
 def _expand_node_pooling(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     """Split ante-hoc rows into mean/max node->motif-pooled rows for *metric*.
 
-    * ``gt_roc_node_auc_mean`` — only genuinely node-scoring families (GSAT)
-      differ; motif-level MOSE/MotifSAT keep a single blank-agg row.
     * ``pearson`` / ``spearman`` — every ante-hoc family records both poolings
       (``*_node_mean`` / ``*_node_max``); split them all so each pooling has a
       row (MOSE's mean == max). Rows without the source columns stay blank-agg.
+    Node GT-ROC itself is graded node-direct (one value per family), so it is
+    not split here.
     """
     df = df.copy()
     if 'family' not in df.columns:
         df['explainer_agg'] = ''
         return df
-    if metric == 'gt_roc_node_auc_mean':
-        pool_src = NODE_POOL_SRC
-        eligible = df['family'].astype(str).isin(NODE_SCORING_FAMILIES)
-    elif metric in CORR_POOL_SRC:
+    if metric in CORR_POOL_SRC:
         pool_src = CORR_POOL_SRC[metric]
         eligible = pd.Series(True, index=df.index)
     else:
@@ -201,7 +192,6 @@ def main():
                     help='Any numeric column in the CSV. Common: auc, val_auc, '
                          'train_auc, rmse_orig, mae_orig, gt_roc_auc_mean, '
                          'gt_roc_node_auc_mean, gt_roc_edge_auc_mean, '
-                         'gt_roc_node_mean_auc_mean, gt_roc_node_max_auc_mean, '
                          'gt_roc_n_graphs, pearson, spearman, pearson_motif, '
                          'pearson_instance (TRUE per-instance, own LOO), '
                          'pearson_instance_agnostic (per-instance, uniform LOO — '

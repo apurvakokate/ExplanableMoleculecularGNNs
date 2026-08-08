@@ -362,26 +362,6 @@ def run(cfg: VanillaConfig) -> dict:
     return results
 
 
-def _motif_score_node_att_fn(motif_scores: Dict[int, float]):
-    """Build a node_att_fn for compute_gt_roc from per-motif scores.
-
-    Broadcasts the per-motif score onto each atom via nodes_to_motifs:
-    ``node_att[i] = motif_scores[nodes_to_motifs[i]]`` (0.0 for unassigned
-    atoms, motif id < 0). This turns a post-hoc explainer's motif-level
-    attribution into a per-node attribution comparable against the
-    (motif-granular) synthetic GT.
-    """
-    def fn(data):
-        n2m = getattr(data, 'nodes_to_motifs', None)
-        n = data.x.size(0)
-        if n2m is None:
-            return torch.zeros(n, device=data.x.device)
-        vals = [float(motif_scores.get(int(m), 0.0)) if int(m) >= 0 else 0.0
-                for m in n2m.tolist()]
-        return torch.tensor(vals, dtype=torch.float32, device=data.x.device)
-    return fn
-
-
 def main():
     parser = argparse.ArgumentParser(description='VanillaGNN backbone training (no explainers)')
     parser.add_argument('--dataset',         default='Mutagenicity')
