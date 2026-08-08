@@ -659,7 +659,7 @@ def evaluate_posthoc_all_splits(
         sl = split_lists.get(split)
         if not sl:
             continue
-        # gl = gt_split_lists.get(split)
+        gl = gt_split_lists.get(split)
         pred_flat = _pred_scalars(
             evaluate_predictions(model, loaders[split], device, task_type, denorm=denorm))
         # AGNOSTIC LOO impact ONCE per split (model-only → shared across all 4
