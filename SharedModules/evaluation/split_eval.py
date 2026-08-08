@@ -475,6 +475,85 @@ def _pi_to_node_atts(per_instance: Dict[int, Dict[int, float]], split_list) -> D
     return atts
 
 
+def _node_att_fn(gl, att_by_i):
+    """Attach each graph's per-node att (aligned by gl position) and return a
+    node_att_fn reading it — so post-hoc GT-ROC is NODE-DIRECT (per-node atts, not a
+    per-motif-mean broadcast). Ported from validate_posthoc_gtroc (now folded in here).
+    Length guard fails loud on misalignment; returns None when no atts were attached."""
+    for g in gl:
+        g._raw_att = None
+    n = 0
+    for i, g in enumerate(gl):
+        a = att_by_i.get(i)
+        if a is None:
+            continue
+        t = a.float() if torch.is_tensor(a) else torch.tensor(a, dtype=torch.float32)
+        if t.numel() != g.num_nodes:
+            raise RuntimeError(f'att/nodes mismatch graph {i}: {t.numel()} vs {g.num_nodes}')
+        g._raw_att = t
+        n += 1
+
+    def fn(d):
+        a = getattr(d, '_raw_att', None)
+        return a.to(d.x.device) if a is not None else None
+    return fn if n else None
+
+
+def _fill_unk(att_by_i, gl, fill):
+    """FILTERED mode: set each graph's per-node att to ``fill`` on atoms whose motif is
+    UNK (nodes_to_motifs < 0), so the UNK-atom treatment is identical across methods
+    (fill=0.0 zero; fill=0.5 neutral, matching MoSE). Ported from validate_posthoc_gtroc."""
+    out = {}
+    for i, a in att_by_i.items():
+        n2m = getattr(gl[i], 'nodes_to_motifs', None)
+        if n2m is None:
+            out[i] = a
+            continue
+        n2m = n2m.view(-1).tolist()
+        if torch.is_tensor(a):
+            a = a.clone().float()
+            for j, m in enumerate(n2m):
+                if m < 0 and j < a.numel():
+                    a[j] = fill
+            out[i] = a
+        else:
+            out[i] = [fill if (j < len(n2m) and n2m[j] < 0) else v for j, v in enumerate(a)]
+    return out
+
+
+def _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode=None):
+    """NODE-DIRECT GT-ROC for one explainer on one split: grade the explainer's own
+    per-node atts (aligned sl->gl; identity remap for a GT subset like mutag) against the
+    GT via gt_roc_block. Replaces validate_posthoc_gtroc so one path/one tree carries the
+    full per-node metric set (node/edge/fired/spurious/family/instance/global).
+    ``unk_mode`` = filtered-vocab UNK-atom handling (matches MoSE; folds in the old
+    gtroc_filtered_* trees):
+      None      -> atts as-is (FULL / unfiltered)
+      'zero'    -> UNK atoms set to 0.0      'half' -> UNK atoms set to 0.5
+      'exclude' -> UNK atoms dropped from the AUC (instance/global only — no spurious/family)
+    Falls back to the per-motif-score broadcast only when no per-node atts exist."""
+    from SharedModules.baselines.run_vanilla import _motif_score_node_att_fn
+    att_by_i = {}
+    if atts:
+        if gl is sl:
+            att_by_i = {int(i): a for i, a in atts.items()}
+        else:
+            pos = {id(g): i for i, g in enumerate(sl)}
+            att_by_i = {j: atts[pos[id(g)]] for j, g in enumerate(gl)
+                        if id(g) in pos and pos[id(g)] in atts}
+    if unk_mode == 'exclude' and att_by_i:          # UNK atoms out of the AUC
+        from analysis.gtroc_unk import gtroc_masked
+        inst, glob, _ = gtroc_masked(att_by_i, gl)
+        return {'instance_gt_roc_node_auc_mean': inst,
+                'global_gt_roc_node_auc_mean': glob}
+    if unk_mode in ('zero', 'half') and att_by_i:   # fill UNK atoms, then full metric set
+        att_by_i = _fill_unk(att_by_i, gl, 0.5 if unk_mode == 'half' else 0.0)
+    fn = _node_att_fn(gl, att_by_i) if att_by_i else None
+    if fn is None:                                  # no per-node atts (shouldn't happen)
+        fn = _motif_score_node_att_fn(sc)
+    return gt_roc_block(model, gl, device, fn)
+
+
 def _atts_to_jsonable(atts: Dict[int, torch.Tensor]) -> Dict[int, list]:
     return {int(g): a.detach().cpu().view(-1).tolist() for g, a in atts.items()}
 
@@ -483,9 +562,9 @@ def evaluate_posthoc_all_splits(
     model, vocab, loaders, split_lists: Dict[str, list],
     gt_split_lists: Dict[str, Optional[list]],
     device, task_type, denorm, out_dir, max_motifs_eval, dataset: str,
-    method_names=('gnnexplainer', 'motif_occlusion', 'mage_official', 'pgexplainer'),
+    method_names=('gnnexplainer', 'motif_occlusion', 'mage_v2', 'pgexplainer'),
     mage_positive_class: Optional[int] = None, save_artifacts: bool = True,
-    batch_size: int = 256,
+    batch_size: int = 256, unk_mode: Optional[str] = None,
 ) -> Dict[str, Dict[str, dict]]:
     """Per-split (train/valid/test) evaluation for the 4 post-hoc explainers on a
     Vanilla backbone. Trainable explainers are FIT ONCE on TRAIN (MAGE attention;
@@ -513,7 +592,7 @@ def evaluate_posthoc_all_splits(
     # method_names, PG genuinely goes last within each split.
     mage_attn = (fit_mage(model, train_list, vocab, device, task_type, verbose=False,
                           embed_batch_size=batch_size)
-                 if 'mage_official' in method_names else None)
+                 if 'mage_v2' in method_names else None)
     if save_artifacts and mage_attn is not None:
         torch.save(mage_attn.state_dict(), out_dir / 'mage_attention.pt')
 
@@ -553,12 +632,15 @@ def evaluate_posthoc_all_splits(
                                                      batch_size=batch_size,
                                                      return_per_instance=True)
                 return sc, _pi_to_node_atts(pi, sl)
-            if ex == 'mage_official':
+            if ex == 'mage_v2':
                 if mage_attn is None:
                     return {'mean': {}, 'max': {}}, {}
+                # mage_v2 = attention_mean (class-agnostic, freq-normalized); PIN it
+                # explicitly so it never silently rides the module default. positive_class
+                # is intentionally omitted — attention_mean ignores P[c].
                 sc, pi = score_mage(model, mage_attn, sl, vocab, device, task_type,
-                                    positive_class=pc, return_per_instance=True,
-                                    verbose=False, embed_batch_size=batch_size)
+                                    return_per_instance=True, verbose=False,
+                                    embed_batch_size=batch_size, score_mode='attention_mean')
                 return sc, _pi_to_node_atts(pi, sl)
         except Exception as e:
             print(f'  [warn] {ex} scoring failed on split ({e}).')
@@ -598,9 +680,12 @@ def evaluate_posthoc_all_splits(
             grouped_by_ex[ex][split] = grouped_rows
             inst_by_ex[ex][split] = inst
             rows_by_ex[ex][split] = grouped_rows
-            # GT-ROC grades the explainer's OWN attribution (score broadcast), not
-            # the uniform impact — different node_att_fn on purpose.
-            gtroc = gt_roc_block(model, gl, device, _motif_score_node_att_fn(sc)) if gl else {}
+            # GT-ROC grades the explainer's OWN attribution NODE-DIRECT: feed the
+            # per-node atts it produced (GNN/PG raw per-node; MAGE/occlusion motif-
+            # broadcast), NOT the per-motif-mean. Yields the full gt_roc_block set
+            # (node/edge/fired/spurious/family/instance/global) as the correct per-node
+            # metric — folds in validate_posthoc_gtroc so there's one path/one tree.
+            gtroc = _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode) if gl else {}
             summary[ex][split] = {**pred_flat, **gtroc}
             _write_importance(out_dir, ex, split, grouped_rows)
             _write_impact(out_dir, ex, split, grouped_rows)
