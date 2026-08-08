@@ -1766,11 +1766,13 @@ probe_masked_nodes() {
     echo "══════════════════════════════════════════════════════════"
     echo " Masked-node feature probe"
     echo "══════════════════════════════════════════════════════════"
-    python3 "$PROJECT/analysis/probe_masked_nodes.py" \
-        --out_root   "$OUT_ROOT" \
-        --data_root  "$DATA_ROOT" \
-        --vocab_root "$VOCAB_ROOT" \
-        --save       masked_node_probe.csv
+    # [RETIRED] probe_masked_nodes.py deleted — step is now a no-op.
+    echo "  (masked-node feature probe retired)"
+    # python3 "$PROJECT/analysis/probe_masked_nodes.py" \
+    #     --out_root   "$OUT_ROOT" \
+    #     --data_root  "$DATA_ROOT" \
+    #     --vocab_root "$VOCAB_ROOT" \
+    #     --save       masked_node_probe.csv
 }
 
 # =============================================================================

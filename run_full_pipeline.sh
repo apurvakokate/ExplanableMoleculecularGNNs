@@ -203,9 +203,9 @@ fi
 [ "${SKIP_SELF_EXPLAINING:-0}" = "1" ] && RUN_POSTHOC=0
 # Post-hoc analyses on the phase-5 checkpoints (no retraining). Default ON; set RUN_POSTHOC=0 to skip.
 #   multi_explanation  — H0/H1/H2 co-occurrence ratios on MOSE/MotifSAT/GSAT
-#   probe_masked_nodes — masked-node feature probe (gated vs raw)
+#   probe_masked_nodes — [RETIRED] masked-node feature probe removed
 if [ "${RUN_POSTHOC:-1}" = "1" ]; then
-    PHASES+=( multi_explanation probe_masked_nodes )
+    PHASES+=( multi_explanation )
 fi
 
 run_pipeline() {
