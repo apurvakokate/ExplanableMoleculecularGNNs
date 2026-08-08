@@ -577,7 +577,7 @@ def evaluate_posthoc_all_splits(
         sl = split_lists.get(split)
         if not sl:
             continue
-        gl = gt_split_lists.get(split)
+        # gl = gt_split_lists.get(split)
         pred_flat = _pred_scalars(
             evaluate_predictions(model, loaders[split], device, task_type, denorm=denorm))
         # AGNOSTIC LOO impact ONCE per split (model-only → shared across all 4
@@ -600,8 +600,11 @@ def evaluate_posthoc_all_splits(
             rows_by_ex[ex][split] = grouped_rows
             # GT-ROC grades the explainer's OWN attribution (score broadcast), not
             # the uniform impact — different node_att_fn on purpose.
-            gtroc = gt_roc_block(model, gl, device, _motif_score_node_att_fn(sc)) if gl else {}
-            summary[ex][split] = {**pred_flat, **gtroc}
+            # THIS IS INCORRECT BECAUSE IT USES MOTIF SCORE AND BROADCASTS TO NODE SCORES
+            # DO NOT USE
+            # gtroc = gt_roc_block(model, gl, device, _motif_score_node_att_fn(sc)) if gl else {}
+            # summary[ex][split] = {**pred_flat, **gtroc}
+            summary[ex][split] = {**pred_flat}
             _write_importance(out_dir, ex, split, grouped_rows)
             _write_impact(out_dir, ex, split, grouped_rows)
             if atts:
