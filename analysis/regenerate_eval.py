@@ -119,8 +119,10 @@ def _append_gt_flags(cmd: list[str], meta: dict) -> None:
 
 
 def _resolve_run_data_root(meta: dict, args) -> str:
-    """Prefer data_root recorded at training time; fall back to CLI/env routing."""
-    if meta.get('data_root'):
+    """Prefer data_root recorded at training time; fall back to CLI/env routing.
+    With --override-roots, always route via the CLI --data_root (for running on a
+    different machine where the recorded absolute paths do not exist)."""
+    if not getattr(args, 'override_roots', False) and meta.get('data_root'):
         return str(meta['data_root'])
     ds = str(meta.get('dataset', ''))
     return resolve_data_root(
@@ -132,8 +134,9 @@ def _resolve_run_data_root(meta: dict, args) -> str:
 
 
 def _processed_root(meta: dict, args) -> str | None:
-    """Base processed_root for trainer CLI (trainers append vocab variant)."""
-    if meta.get('processed_root'):
+    """Base processed_root for trainer CLI (trainers append vocab variant).
+    With --override-roots, always use the CLI --processed_root."""
+    if not getattr(args, 'override_roots', False) and meta.get('processed_root'):
         return base_from_stored_processed_root(
             str(meta['processed_root']), meta.get('vocab_variant'))
     if not args.processed_root:
@@ -157,13 +160,20 @@ def build_cmd(meta: dict, run_dir: Path, args) -> list[str] | None:
 
     data_root = _resolve_run_data_root(meta, args)
 
-    # Always write back into the checkpoint directory (canonical or shell-nested layout).
+    # --dest-root: write the regenerated summary/CSVs to a scratch MIRROR while the
+    # checkpoint is still loaded from run_dir (via --load_weights_from below), so the
+    # source tree (e.g. final_v2) is READ-ONLY and never overwritten. Default: in-place.
+    if getattr(args, 'dest_root', None):
+        out_dir_target = str(Path(args.dest_root) / run_dir.relative_to(Path(args.out_root)))
+    else:
+        out_dir_target = str(run_dir)
+
     common = [
         '--dataset', str(ds), '--fold', str(fold), '--backbone', str(bb),
         '--node_encoder', str(enc),
         '--data_root', data_root,
         '--vocab_root', args.vocab_root,
-        '--vocab_variant', str(var), '--out_dir', str(run_dir),
+        '--vocab_variant', str(var), '--out_dir', out_dir_target,
         '--final_out_dir',
     ]
     proc = _processed_root(meta, args)
@@ -237,6 +247,16 @@ def main():
                     help='only regenerate runs for these dataset(s), e.g. --dataset mutag')
     ap.add_argument('--dry_run', action='store_true',
                     help='Print the commands without running them.')
+    ap.add_argument('--dest-root', dest='dest_root', default=None,
+                    help='write regenerated summaries to <dest_root>/<relpath> instead of '
+                         'in-place; source tree stays READ-ONLY (no overwrite).')
+    ap.add_argument('--limit', type=int, default=None,
+                    help='only process the first N checkpoints (for validation/throttling).')
+    ap.add_argument('--shard', default=None,
+                    help='i/N: process only runs[i::N] — run N copies (i=0..N-1) in parallel.')
+    ap.add_argument('--override-roots', dest='override_roots', action='store_true',
+                    help='use CLI --data_root/--processed_root even if summary.json recorded '
+                         'different (e.g. remote) paths — for running on another machine.')
     args = ap.parse_args()
     import os
     if not args.mutag_data_root:
@@ -258,9 +278,16 @@ def main():
         print(f'Dataset filter {sorted(datasets)}: {len(runs)} checkpoint(s)\n')
     else:
         print(f'Found {len(runs)} checkpoint(s) under {out_root}\n')
+    if args.shard:
+        _si, _sn = (int(x) for x in args.shard.split('/'))
+        runs = runs[_si::_sn]
+        print(f'--shard {args.shard}: this worker handles {len(runs)} checkpoint(s)\n')
 
     ran = skipped = failed = 0
     for run_dir in runs:
+        if args.limit and ran >= args.limit:
+            print(f'--limit {args.limit} reached ({ran} dispatched); stopping.')
+            break
         sj = run_dir / 'summary.json'
         if not sj.exists():
             print(f'  [skip] no summary.json: {run_dir}')
