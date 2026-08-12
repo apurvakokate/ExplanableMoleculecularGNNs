@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""collect.py — directional (OFAT) analysis of the MoSE tuning sweep for one dataset.
+"""collect.py — fold-averaged OFAT analysis of the MoSE tuning sweep for one dataset.
 
-Groups the GAT runs by which knob was moved off the fixed center, prints each
-knob's sweep (metric vs knob value) so you can read the DIRECTION, and reports
-whether the move helps the model (auc / rmse) and the explainer (pearson_motif /
-gt_roc) together. Compares against the deployed GAT run when a prod root is given.
+Averages each config across all available folds (mean +/- std), groups by which
+knob was moved off the fixed center, and reports the direction with variance
+visible. Compares against the fold-averaged DEPLOYED GAT run. Flags configs whose
+auc collapses (high pearson on a broken model is not a win).
 
-Usage (on HPC, after an array finishes):
+Usage (on HPC):
     python3 fragmentation_tuning_experiment/collect.py \
         fragmentation_tuning_experiment/runs/conservative_ertl_ring_mdl_filter \
         Benzene_Verified_GT \
         [final_ertlmdl/mose/conservative_ertl_ring_mdl_filter]   # deployed baseline (optional)
 """
 import sys, os, json, glob, math
+from collections import defaultdict
 
 BACKBONE = 'GAT'
 CENTER = dict(ent=0.2, size=5e-5, xlr=0.01, glr=1e-3, L=3, h=64, pat=30, wd=0.01, es='loss')
 KNOBS = ['ent', 'size', 'xlr', 'glr', 'L', 'h', 'pat', 'wd', 'es']
+AUC_GUARD = 0.05   # flag configs whose mean auc is >this below the deployed/center baseline
 
 def num(x):
     try:
@@ -31,112 +33,117 @@ def approx(a, b):
         return False
     return abs(a - b) <= 1e-12 + 1e-6 * abs(b)
 
-def getcfg(d):
-    return dict(ent=num(d.get('ent_reg')), size=num(d.get('size_reg')),
-                xlr=num(d.get('explainer_lr')), glr=num(d.get('gnn_lr')),
-                L=d.get('num_layers'), h=d.get('hidden_dim'),
-                pat=d.get('patience'), wd=num(d.get('weight_decay')),
-                es=(d.get('early_stop_metric') or 'loss'))
+def cfgkey(d):
+    return (round(num(d.get('ent_reg')) or -1, 6), round(num(d.get('size_reg')) or -1, 9),
+            round(num(d.get('explainer_lr')) or -1, 6), d.get('num_layers'), d.get('hidden_dim'),
+            round(num(d.get('gnn_lr')) or -1, 6), d.get('patience'),
+            round(num(d.get('weight_decay')) or -1, 6), d.get('early_stop_metric') or 'loss')
 
-def getmet(d):
-    return dict(auc=num(d.get('auc')), rmse=num(d.get('rmse_orig')),
-                pearson=num(d.get('pearson_motif_all')),
-                gtroc=num(d.get('gt_roc_node_auc_mean_all')))
+def cfgdict(d):
+    return dict(ent=num(d.get('ent_reg')), size=num(d.get('size_reg')), xlr=num(d.get('explainer_lr')),
+                L=d.get('num_layers'), h=d.get('hidden_dim'), glr=num(d.get('gnn_lr')),
+                pat=d.get('patience'), wd=num(d.get('weight_decay')), es=d.get('early_stop_metric') or 'loss')
 
-def read_runs(root, ds, bb):
-    out = []
-    for sm in glob.glob(os.path.join(root, ds, 'fold0', f'{bb}_*unk-fixed*', 'summary.json')):
-        d = json.load(open(sm)); out.append((getcfg(d), getmet(d)))
-    return out
+def mean_std(xs):
+    xs = [x for x in xs if x is not None]
+    if not xs:
+        return None, None, 0
+    m = sum(xs) / len(xs)
+    sd = (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5 if len(xs) > 1 else 0.0
+    return m, sd, len(xs)
+
+def gather(root, ds, bb):
+    """Return {cfgkey: {'cfg':dict, 'pearson':[...], 'auc':[...], 'rmse':[...], 'gtroc':[...]}} across folds."""
+    g = defaultdict(lambda: dict(cfg=None, pearson=[], auc=[], rmse=[], gtroc=[]))
+    for sm in glob.glob(os.path.join(root, ds, 'fold*', f'{bb}_*unk-fixed*', 'summary.json')):
+        d = json.load(open(sm)); k = cfgkey(d); e = g[k]
+        e['cfg'] = cfgdict(d)
+        e['pearson'].append(num(d.get('pearson_motif_all')))
+        e['auc'].append(num(d.get('auc')))
+        e['rmse'].append(num(d.get('rmse_orig')))
+        e['gtroc'].append(num(d.get('gt_roc_node_auc_mean_all')))
+    return g
 
 def which_knobs(cfg):
     return [k for k in KNOBS if not approx(cfg[k], CENTER[k])]
 
-def metstr(m):
-    a = f"{m['auc']:.3f}" if m['auc'] is not None else '  -  '
-    r = f"{m['rmse']:.3f}" if m['rmse'] is not None else '  -  '
-    p = f"{m['pearson']:.3f}" if m['pearson'] is not None else '  -  '
-    g = f"{m['gtroc']:.3f}" if m['gtroc'] is not None else '  -  '
-    return a, r, p, g
-
 def main():
     tune_root, ds = sys.argv[1], sys.argv[2]
     prod_root = sys.argv[3] if len(sys.argv) > 3 else None
-    runs = read_runs(tune_root, ds, BACKBONE)
-    if not runs:
-        print(f"no {BACKBONE} runs under {tune_root}/{ds}/fold0"); return
 
-    center = None; sweeps = {k: [] for k in KNOBS}
-    for cfg, met in runs:
-        dk = which_knobs(cfg)
-        if not dk:
-            center = (cfg, met)
-        elif len(dk) == 1:
-            sweeps[dk[0]].append((cfg, met))
+    g = gather(tune_root, ds, BACKBONE)
+    if not g:
+        print(f"no {BACKBONE} runs under {tune_root}/{ds}/fold*"); return
 
-    dep = None
+    # deployed baseline (fold-averaged)
+    base_p = base_a = None
     if prod_root:
-        pr = read_runs(prod_root, ds, BACKBONE)
-        if pr:
-            dep = pr[0][1]
+        pg = gather(prod_root, ds, BACKBONE)
+        # deployed = the single production config; if several, take the one with most folds
+        if pg:
+            best = max(pg.values(), key=lambda e: len(e['pearson']))
+            base_p = mean_std(best['pearson'])[0]
+            base_a = mean_std(best['auc'])[0]
 
-    print(f"\n################  {ds} — {BACKBONE} — OFAT sweep  ################")
-    hdr = f"{'value':>8} | {'auc':>6} {'rmse':>6} {'pearson':>8} {'gtroc':>6}"
-    if dep is not None:
-        a, r, p, g = metstr(dep)
-        print(f"DEPLOYED GAT baseline:            auc={a} rmse={r} pearson={p} gtroc={g}")
-    if center is not None:
-        a, r, p, g = metstr(center[1])
-        print(f"CENTER (ent0.2,size5e-5,xlr0.01,L3,h64,pat30,wd0.01,es-loss): "
-              f"auc={a} rmse={r} pearson={p} gtroc={g}")
-    cp = center[1]['pearson'] if center else None
+    # classify configs
+    center = None
+    sweeps = {k: [] for k in KNOBS}
+    for k, e in g.items():
+        dk = which_knobs(e['cfg'])
+        rec = dict(cfg=e['cfg'],
+                   pear=mean_std(e['pearson']), auc=mean_std(e['auc']),
+                   rmse=mean_std(e['rmse']), gt=mean_std(e['gtroc']))
+        if not dk:
+            center = rec
+        elif len(dk) == 1:
+            sweeps[dk[0]].append(rec)
+
+    guard_a = base_a if base_a is not None else (center['auc'][0] if center else None)
+
+    def fmt(rec, knob=None):
+        c = rec['cfg']; val = c[knob] if knob else 'center'
+        pm, ps, pn = rec['pear']; am = rec['auc'][0]; rm = rec['rmse'][0]; gm = rec['gt'][0]
+        pear = f"{pm:.3f}±{ps:.3f}" if pm is not None else '   -   '
+        auc = f"{am:.3f}" if am is not None else '  -  '
+        rmse = f"{rm:.3f}" if rm is not None else '  -  '
+        gt = f"{gm:.3f}" if gm is not None else '  -  '
+        flag = ''
+        if guard_a is not None and am is not None and am < guard_a - AUC_GUARD:
+            flag = ' AUC-COLLAPSE'
+        return f"{str(val):>8} | {pear:>12} {auc:>6} {rmse:>6} {gt:>6}  n={pn}{flag}"
+
+    print(f"\n################  {ds} — {BACKBONE} — OFAT sweep (fold-averaged, mean±std)  ################")
+    if base_p is not None:
+        print(f"DEPLOYED GAT baseline (fold-avg): pearson={base_p:.3f}  auc={base_a:.3f}")
+    if center:
+        cm = center['pear']; print(f"CENTER: pearson={cm[0]:.3f}±{cm[1]:.3f} (n={cm[2]})  auc={center['auc'][0]:.3f}")
+    cp = center['pear'][0] if center else None
 
     summary = []
     for k in KNOBS:
-        rows = sweeps[k]
-        if not rows:
+        recs = sweeps[k]
+        if not recs:
             continue
-        # sort by the knob value (numeric if possible)
-        def keyf(cm):
-            v = cm[0][k]
-            return (0, v) if isinstance(v, (int, float)) else (1, str(v))
-        rows = sorted(rows, key=keyf)
-        # include center as the baseline point for this knob
-        allpts = rows + ([('CENTER', center[1])] if center else [])
+        recs = sorted(recs, key=lambda r: (r['cfg'][k] if isinstance(r['cfg'][k], (int, float)) else 9e9))
         print(f"\n--- {k}  (center={CENTER[k]}) ---")
-        print(hdr)
-        best = None
-        for cfg, met in rows:
-            a, r, p, g = metstr(met)
-            print(f"{str(cfg[k]):>8} | {a:>6} {r:>6} {p:>8} {g:>6}")
-            if met['pearson'] is not None and (best is None or met['pearson'] > best[1]):
-                best = (cfg[k], met['pearson'], met)
-        if center is not None:
-            a, r, p, g = metstr(center[1])
-            print(f"{str(CENTER[k]):>8} | {a:>6} {r:>6} {p:>8} {g:>6}  <- center")
-        # direction verdict for this knob
-        if best is not None and cp is not None:
-            dp = best[1] - cp
-            arrow = 'toward ' + ('higher' if (isinstance(best[0], (int, float)) and best[0] > CENTER[k])
-                                 else 'lower' if isinstance(best[0], (int, float)) else str(best[0]))
-            # did predictive move the right way vs center too?
-            m = best[2]
-            pred = ''
-            if m['auc'] is not None and center[1]['auc'] is not None:
-                pred = f"auc {m['auc'] - center[1]['auc']:+.3f}"
-            elif m['rmse'] is not None and center[1]['rmse'] is not None:
-                pred = f"rmse {m['rmse'] - center[1]['rmse']:+.3f}"
-            gt = ''
-            if m['gtroc'] is not None and center[1]['gtroc'] is not None:
-                gt = f"gtroc {m['gtroc'] - center[1]['gtroc']:+.3f}"
-            print(f"  best pearson at {k}={best[0]} ({dp:+.3f} vs center; move {arrow}) [{pred} {gt}]")
-            summary.append((k, best[0], dp, pred, gt))
+        print(f"{'value':>8} | {'pearson':>12} {'auc':>6} {'rmse':>6} {'gtroc':>6}")
+        for r in recs:
+            print(fmt(r, k))
+        if center:
+            print(fmt(center) + '  <- center')
+        # best AUC-SAFE config for this knob
+        safe = [r for r in recs if r['auc'][0] is None or guard_a is None or r['auc'][0] >= guard_a - AUC_GUARD]
+        cand = [r for r in safe if r['pear'][0] is not None]
+        if cand and cp is not None:
+            best = max(cand, key=lambda r: r['pear'][0])
+            bv = best['cfg'][k]; dp = best['pear'][0] - cp
+            summary.append((k, bv, dp, best['pear'][1], best['auc'][0]))
 
     if summary:
-        print(f"\n================ {ds}: knob directions (by pearson_motif) ================")
-        print(f"{'knob':>12} {'best@':>10} {'Δpearson':>9}  predictive/gtroc@best")
-        for k, bv, dp, pred, gt in sorted(summary, key=lambda x: -x[2]):
-            print(f"{k:>12} {str(bv):>10} {dp:>+9.3f}  {pred} {gt}")
+        print(f"\n============ {ds}: AUC-safe knob directions (fold-avg pearson) ============")
+        print(f"{'knob':>6} {'best@':>10} {'Δpearson':>9} {'±std':>6} {'auc@best':>9}")
+        for k, bv, dp, sd, au in sorted(summary, key=lambda x: -x[2]):
+            print(f"{k:>6} {str(bv):>10} {dp:>+9.3f} {sd:>6.3f} {au if au is None else round(au,3):>9}")
 
 if __name__ == '__main__':
     main()

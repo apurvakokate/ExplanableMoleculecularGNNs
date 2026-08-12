@@ -2,40 +2,36 @@
 #SBATCH -A eecs
 #SBATCH -p share,gpu,dgx2
 #SBATCH --gres=gpu:1
-#SBATCH -c 4
-#SBATCH --mem=48G
+#SBATCH -c 2
+#SBATCH --mem=24G
 #SBATCH -t 10:00:00
 #SBATCH -J motune
 #SBATCH -o fragmentation_tuning_experiment/logs/tune_%A_%a.out
-#SBATCH --array=1-17
-# ^ no %throttle: SLURM runs as many of the 17 as there are free GPUs. Submit all
-#   three datasets (see README) and idle cores backfill the later datasets; the
-#   earliest-submitted (Benzene) keeps scheduling priority. To cap concurrency
-#   instead, override at submit: sbatch --array=1-17%N ...
+#SBATCH --array=1-255%51
 # ---------------------------------------------------------------------------
-# MoSE OFAT sensitivity sweep for the conservative_ertl_ring_mdl_filter vocab.
-# ONE backbone (GAT), one dataset per submission, fold 0. One array task per
-# grid.tsv row (17). Row 1 = fixed center; each other row moves ONE of the
-# three explainer knobs (ent_reg, size_reg, explainer_lr), both sides.
-# DATASET is passed via env:
+# MoSE OFAT sensitivity sweep — conservative_ertl_ring_mdl_filter, GAT.
+# ALL FOLDS: 3 datasets x 5 folds x 17 configs (grid.tsv) = 255 tasks, up to 51
+# in parallel. No DATASET env needed — everything is derived from the task id:
+#   i    = SLURM_ARRAY_TASK_ID - 1          (0..254)
+#   ds   = DATASETS[i / 85]                 (85 = 17 configs x 5 folds)
+#   rem  = i % 85
+#   fold = rem / 17                         (0..4)
+#   cfg  = rem % 17 + 1                      (grid.tsv row)
+# Ordering is dataset-outer, so Benzene's 5 folds finish first.
 #
 #   source parallel/final_ertlmdl_env.sh
-#   DATASET=Mutagenicity sbatch fragmentation_tuning_experiment/tune_mose.sbatch
-#   (also Benzene_Verified_GT, Lipophilicity)
+#   sbatch fragmentation_tuning_experiment/tune_mose.sbatch
 #
 # Runs land in fragmentation_tuning_experiment/runs/ (NOT the production tree).
-# Only HP knobs are overridden; everything else replicates the deployed
-# run_mose() call, so results are comparable to the deployed GAT run.
+# Only HP knobs are overridden; everything else replicates the deployed run_mose
+# call, so results are comparable to the deployed (fold-averaged) GAT run.
 # ---------------------------------------------------------------------------
 set -euo pipefail
-: "${DATASET:?set DATASET=Mutagenicity|Benzene_Verified_GT|Lipophilicity}"
 BACKBONE="${BACKBONE:-GAT}"
 
-# SLURM executes a SPOOLED COPY of this script, so $0 / BASH_SOURCE is NOT the repo
-# path. The job's initial cwd is the submission dir (repo root, per README), so anchor
-# on SLURM_SUBMIT_DIR; then $PROJECT (set by the env script) locates everything.
-# (stderr is NOT suppressed, so any env/source error lands in the task log.)
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"               # -> PROJECT (repo root)
+# SLURM runs a SPOOLED COPY of this script, so BASH_SOURCE is not the repo path.
+# The job starts in the submission dir (repo root, per README).
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 source parallel/final_ertlmdl_env.sh >/dev/null   # sets PROJECT + roots + conda + NODE_ENCODER + DATA_ROOT
 
 HERE="$PROJECT/fragmentation_tuning_experiment"
@@ -43,15 +39,20 @@ GRID="$HERE/grid.tsv"
 OUT_TUNE="$HERE/runs"
 mkdir -p "$HERE/logs" "$OUT_TUNE"
 
-# SLURM_ARRAY_TASK_ID-th non-comment, non-blank grid row.
-LINE=$(grep -vE '^[[:space:]]*#' "$GRID" | grep -vE '^[[:space:]]*$' | sed -n "${SLURM_ARRAY_TASK_ID}p")
-read -r IDX KNOB ENT SIZE XLR GLR LAYERS HID PAT WD ES <<<"$LINE"
-[ -z "${IDX:-}" ] && { echo "no grid row for task ${SLURM_ARRAY_TASK_ID}"; exit 1; }
+DATASETS=(Benzene_Verified_GT Mutagenicity Lipophilicity)
+NCFG=17; NFOLD=5; PERDS=$((NCFG * NFOLD))          # 85
+i=$((SLURM_ARRAY_TASK_ID - 1))
+DS_IDX=$((i / PERDS)); REM=$((i % PERDS)); FOLD=$((REM / NCFG)); CFG=$((REM % NCFG + 1))
+DATASET="${DATASETS[$DS_IDX]}"
 
-echo "[$(date)] tune DATASET=$DATASET bb=$BACKBONE case=$IDX knob=$KNOB : ent=$ENT size=$SIZE xlr=$XLR glr=$GLR L=$LAYERS h=$HID pat=$PAT wd=$WD es=$ES (host $(hostname))"
+LINE=$(grep -vE '^[[:space:]]*#' "$GRID" | grep -vE '^[[:space:]]*$' | sed -n "${CFG}p")
+read -r IDX KNOB ENT SIZE XLR GLR LAYERS HID PAT WD ES <<<"$LINE"
+[ -z "${IDX:-}" ] && { echo "no grid row for cfg ${CFG} (task ${SLURM_ARRAY_TASK_ID})"; exit 1; }
+
+echo "[$(date)] tune DATASET=$DATASET fold=$FOLD bb=$BACKBONE cfg=$IDX knob=$KNOB : ent=$ENT size=$SIZE xlr=$XLR glr=$GLR L=$LAYERS h=$HID pat=$PAT wd=$WD es=$ES (host $(hostname))"
 
 python3 "$PROJECT/MOSE-GNN/run.py" \
-    --dataset       "$DATASET" --fold 0 \
+    --dataset       "$DATASET" --fold "$FOLD" \
     --backbone      "$BACKBONE" --node_encoder "$NODE_ENCODER" \
     --w_feat --w_readout \
     --epochs        "$EPOCHS" \
@@ -67,4 +68,4 @@ python3 "$PROJECT/MOSE-GNN/run.py" \
     --early_stop_metric "$ES" \
     --out_dir       "$OUT_TUNE/conservative_ertl_ring_mdl_filter"
 
-echo "[$(date)] tune DATASET=$DATASET bb=$BACKBONE case=$IDX ($KNOB) DONE"
+echo "[$(date)] tune DATASET=$DATASET fold=$FOLD cfg=$IDX ($KNOB) DONE"
