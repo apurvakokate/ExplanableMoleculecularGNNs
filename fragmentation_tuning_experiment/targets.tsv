@@ -1,0 +1,11 @@
+# Per-dataset backbones to tune. Data-driven: only backbones where the DEPLOYED
+# ERTL run underperforms rbrics on pearson_motif_all (fold-avg, fixed-unk).
+# Backbones already >= rbrics are omitted (no tuning needed).
+#   esol / Lipophilicity : ERTL loses on ALL 5 backbones
+#   hERG                 : ERTL loses only on GIN, PNA (GCN/SAGE/GAT already win)
+#   Mutagenicity         : ERTL loses on GCN, GAT, PNA (GIN/SAGE already win)
+# dataset        backbones(comma-sep)
+esol            GIN,GCN,SAGE,GAT,PNA
+Lipophilicity   GIN,GCN,SAGE,GAT,PNA
+hERG            GIN,PNA
+Mutagenicity    GCN,GAT,PNA
