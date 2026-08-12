@@ -31,10 +31,14 @@ set -euo pipefail
 : "${DATASET:?set DATASET=Mutagenicity|Benzene_Verified_GT|Lipophilicity}"
 BACKBONE="${BACKBONE:-GAT}"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."                                  # -> PROJECT (repo root)
-source parallel/final_ertlmdl_env.sh >/dev/null 2>&1   # roots + conda + NODE_ENCODER + DATA_ROOT
+# SLURM executes a SPOOLED COPY of this script, so $0 / BASH_SOURCE is NOT the repo
+# path. The job's initial cwd is the submission dir (repo root, per README), so anchor
+# on SLURM_SUBMIT_DIR; then $PROJECT (set by the env script) locates everything.
+# (stderr is NOT suppressed, so any env/source error lands in the task log.)
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"               # -> PROJECT (repo root)
+source parallel/final_ertlmdl_env.sh >/dev/null   # sets PROJECT + roots + conda + NODE_ENCODER + DATA_ROOT
 
+HERE="$PROJECT/fragmentation_tuning_experiment"
 GRID="$HERE/grid.tsv"
 OUT_TUNE="$HERE/runs"
 mkdir -p "$HERE/logs" "$OUT_TUNE"
