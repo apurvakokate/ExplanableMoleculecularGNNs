@@ -499,12 +499,15 @@ _should_skip_existing() {
 
 # MOSE / GSAT / MotifSAT nest runs as {out_base}/{ds}/fold{k}/{backbone}_…/tag/
 _nested_trainer_run_complete() {
-    local base=$1 ds=$2 fold=$3 backbone=$4
+    local base=$1 ds=$2 fold=$3 backbone=$4 match=${5:-}
     local parent="$base/$ds/fold$fold"
     local d
     [ -d "$parent" ] || return 1
     for d in "$parent"/"${backbone}"_*; do
         [ -d "$d" ] || continue
+        # optional substring the run-dir must contain (e.g. "unk-learnable_shared") so runs that
+        # differ ONLY by an in-slug knob (MOSE unk_mode) don't skip against each other.
+        [ -n "$match" ] && case "$d" in *"$match"*) ;; *) continue ;; esac
         _run_dir_complete "$d" && return 0
     done
     return 1
@@ -721,7 +724,7 @@ run_mose() {
                 local eff_fold="$fold"
                 case "$ds" in ogbg-*) eff_fold=0 ;; esac
                 local mose_base="$OUT_ROOT/mose/${variant}"
-                if _should_skip_existing && _nested_trainer_run_complete "$mose_base" "$ds" "$eff_fold" "$backbone"; then
+                if _should_skip_existing && _nested_trainer_run_complete "$mose_base" "$ds" "$eff_fold" "$backbone" "unk-${MOSE_UNK_MODE:-fixed}"; then
                     echo "  [skip existing] MOSE $ds fold$eff_fold $backbone → $mose_base/$ds/fold$eff_fold/${backbone}_*"
                     n_skip=$((n_skip + 1))
                     continue
@@ -1071,7 +1074,7 @@ run_mose_gt() {
                 fi
                 local enc="$(_dataset_node_encoder "$ds")"
                 local mose_gt_base="$OUT_ROOT/mose/${gt_variant}"
-                if _should_skip_existing && _nested_trainer_run_complete "$mose_gt_base" "$ds" "$fold" "$backbone"; then
+                if _should_skip_existing && _nested_trainer_run_complete "$mose_gt_base" "$ds" "$fold" "$backbone" "unk-${MOSE_UNK_MODE:-fixed}"; then
                     echo "  [skip existing] MOSE+GT $ds fold$fold $backbone → $mose_gt_base/$ds/fold$fold/${backbone}_*"
                     n_skip=$((n_skip + 1))
                     continue

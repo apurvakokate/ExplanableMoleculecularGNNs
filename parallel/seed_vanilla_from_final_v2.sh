@@ -16,7 +16,9 @@ DATASETS=(Mutagenicity BBBP hERG esol Lipophilicity
 BACKBONES=(GIN GCN SAGE GAT PNA)
 FOLDS=(0 1 2 3 4)
 TIER="real"                                  # planted deferred -> all vanilla trained on original labels
-NEW_VARIANTS=(conservative_ertl_ring_mdl conservative_ertl_ring_bpe)
+# all 4 fragmentation variants (vanilla is vocab-independent -> same checkpoint symlinked to each)
+NEW_VARIANTS=(conservative_ertl_ring_mdl conservative_ertl_ring_bpe \
+              conservative_ertl_ring_mdl_filter conservative_ertl_ring_bpe_filter)
 
 n_link=0 n_miss=0
 for ds in "${DATASETS[@]}"; do
