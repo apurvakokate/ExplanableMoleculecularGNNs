@@ -7,26 +7,29 @@
 #SBATCH -t 10:00:00
 #SBATCH -J motune
 #SBATCH -o fragmentation_tuning_experiment/logs/tune_%A_%a.out
-#SBATCH --array=1-80%20
+#SBATCH --array=1-17
+# ^ no %throttle: SLURM runs as many of the 17 as there are free GPUs. Submit all
+#   three datasets (see README) and idle cores backfill the later datasets; the
+#   earliest-submitted (Benzene) keeps scheduling priority. To cap concurrency
+#   instead, override at submit: sbatch --array=1-17%N ...
 # ---------------------------------------------------------------------------
-# MoSE hyperparameter tuning for the conservative_ertl_ring_mdl_filter vocab.
-# Per-dataset backbone targeting (targets.tsv): only backbones where the deployed
-# ERTL run loses to rbrics on pearson_motif. 16 HP cases (grid.tsv) each, fold 0.
-# Task id -> (backbone, grid-case):  backbone = TARGETS[DATASET][(id-1)/16],
-#                                     case     = (id-1) % 16 + 1.
-# Always submit --array=1-80%20; tasks past this dataset's backbone count no-op.
+# MoSE OFAT sensitivity sweep for the conservative_ertl_ring_mdl_filter vocab.
+# ONE backbone (GAT), one dataset per submission, fold 0. One array task per
+# grid.tsv row (17). Row 1 = fixed center; each other row moves ONE of the
+# three explainer knobs (ent_reg, size_reg, explainer_lr), both sides.
 # DATASET is passed via env:
 #
 #   source parallel/final_ertlmdl_env.sh
-#   DATASET=esol sbatch fragmentation_tuning_experiment/tune_mose.sbatch
+#   DATASET=Mutagenicity sbatch fragmentation_tuning_experiment/tune_mose.sbatch
+#   (also Benzene_Verified_GT, Lipophilicity)
 #
 # Runs land in fragmentation_tuning_experiment/runs/ (NOT the production tree).
-# Only HP knobs are overridden on the CLI; everything else replicates the
-# deployed run_mose() invocation, so results are comparable to the deployed
-# final_ertlmdl run for the same (backbone, dataset).
+# Only HP knobs are overridden; everything else replicates the deployed
+# run_mose() call, so results are comparable to the deployed GAT run.
 # ---------------------------------------------------------------------------
 set -euo pipefail
-: "${DATASET:?set DATASET=esol|Lipophilicity|hERG|Mutagenicity}"
+: "${DATASET:?set DATASET=Mutagenicity|Benzene_Verified_GT|Lipophilicity}"
+BACKBONE="${BACKBONE:-GAT}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE/.."                                  # -> PROJECT (repo root)
@@ -36,25 +39,12 @@ GRID="$HERE/grid.tsv"
 OUT_TUNE="$HERE/runs"
 mkdir -p "$HERE/logs" "$OUT_TUNE"
 
-# Backbones to tune for THIS dataset (data-driven; see targets.tsv).
-BBLINE=$(grep -vE '^[[:space:]]*#' "$HERE/targets.tsv" | awk -v d="$DATASET" '$1==d {print $2}')
-[ -z "$BBLINE" ] && { echo "no target backbones for DATASET=$DATASET in targets.tsv"; exit 1; }
-IFS=',' read -ra BACKBONES <<< "$BBLINE"
-NBB=${#BACKBONES[@]}
-NCASE=16
-BB_IDX=$(( (SLURM_ARRAY_TASK_ID - 1) / NCASE ))
-CASE_IDX=$(( (SLURM_ARRAY_TASK_ID - 1) % NCASE + 1 ))
-if [ "$BB_IDX" -ge "$NBB" ]; then
-    echo "task ${SLURM_ARRAY_TASK_ID}: $DATASET has only $NBB target backbone(s) (${BACKBONES[*]}) — no-op"; exit 0
-fi
-BACKBONE="${BACKBONES[$BB_IDX]}"
+# SLURM_ARRAY_TASK_ID-th non-comment, non-blank grid row.
+LINE=$(grep -vE '^[[:space:]]*#' "$GRID" | grep -vE '^[[:space:]]*$' | sed -n "${SLURM_ARRAY_TASK_ID}p")
+read -r IDX KNOB ENT SIZE XLR GLR LAYERS HID PAT WD ES <<<"$LINE"
+[ -z "${IDX:-}" ] && { echo "no grid row for task ${SLURM_ARRAY_TASK_ID}"; exit 1; }
 
-# CASE_IDX-th non-comment, non-blank row of the grid.
-LINE=$(grep -vE '^[[:space:]]*#' "$GRID" | grep -vE '^[[:space:]]*$' | sed -n "${CASE_IDX}p")
-read -r IDX LABEL ENT SIZE XLR LAYERS HID GLR PAT <<<"$LINE"
-[ -z "${IDX:-}" ] && { echo "no grid row for case ${CASE_IDX} (task ${SLURM_ARRAY_TASK_ID})"; exit 1; }
-
-echo "[$(date)] tune DATASET=$DATASET backbone=$BACKBONE case=$IDX ($LABEL): ent=$ENT size=$SIZE xlr=$XLR L=$LAYERS h=$HID glr=$GLR pat=$PAT (host $(hostname))"
+echo "[$(date)] tune DATASET=$DATASET bb=$BACKBONE case=$IDX knob=$KNOB : ent=$ENT size=$SIZE xlr=$XLR glr=$GLR L=$LAYERS h=$HID pat=$PAT wd=$WD es=$ES (host $(hostname))"
 
 python3 "$PROJECT/MOSE-GNN/run.py" \
     --dataset       "$DATASET" --fold 0 \
@@ -69,7 +59,8 @@ python3 "$PROJECT/MOSE-GNN/run.py" \
     --ent_reg       "$ENT"    --size_reg    "$SIZE" \
     --explainer_lr  "$XLR"    --gnn_lr      "$GLR" \
     --num_layers    "$LAYERS" --hidden_dim  "$HID" \
-    --patience      "$PAT" \
+    --patience      "$PAT"    --weight_decay "$WD" \
+    --early_stop_metric "$ES" \
     --out_dir       "$OUT_TUNE/conservative_ertl_ring_mdl_filter"
 
-echo "[$(date)] tune DATASET=$DATASET backbone=$BACKBONE case=$IDX ($LABEL) DONE"
+echo "[$(date)] tune DATASET=$DATASET bb=$BACKBONE case=$IDX ($KNOB) DONE"

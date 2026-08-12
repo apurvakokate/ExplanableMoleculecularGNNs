@@ -1,21 +1,26 @@
-# MoSE HP tuning grid — conservative_ertl_ring_mdl_filter, PNA, fold 0.
-# One row per case; the sbatch array reads the Nth non-comment row.
-# Core factorial = ent_reg{0.05,0.1,0.2} x size_reg{5e-5,5e-4} x explainer_lr{0.01,0.03} = 12 (idx 1-12; idx1 = deployed baseline).
-# Probes (idx 13-16) sit at ent=0.1,size=5e-4,xlr=0.01 and vary one capacity/training knob each.
-# cols: idx  label            ent    size   xlr    layers hid  glr     pat
-1   baseline          0.2    5e-5   0.01   3      64   0.001   30
-2   ent05_s5_x03      0.05   5e-5   0.03   3      64   0.001   30
-3   ent05_s50_x01     0.05   5e-4   0.01   3      64   0.001   30
-4   ent05_s50_x03     0.05   5e-4   0.03   3      64   0.001   30
-5   ent05_s5_x01      0.05   5e-5   0.01   3      64   0.001   30
-6   ent1_s5_x01       0.1    5e-5   0.01   3      64   0.001   30
-7   ent1_s5_x03       0.1    5e-5   0.03   3      64   0.001   30
-8   ent1_s50_x01      0.1    5e-4   0.01   3      64   0.001   30
-9   ent1_s50_x03      0.1    5e-4   0.03   3      64   0.001   30
-10  ent2_s5_x03       0.2    5e-5   0.03   3      64   0.001   30
-11  ent2_s50_x01      0.2    5e-4   0.01   3      64   0.001   30
-12  ent2_s50_x03      0.2    5e-4   0.03   3      64   0.001   30
-13  probe_longtrain   0.1    5e-4   0.01   3      64   0.001   60
-14  probe_L2          0.1    5e-4   0.01   2      64   0.001   30
-15  probe_h32         0.1    5e-4   0.01   3      32   0.001   30
-16  probe_glr5e-4     0.1    5e-4   0.01   3      64   0.0005  30
+# MoSE OFAT sensitivity sweep — conservative_ertl_ring_mdl_filter, GAT, fold 0.
+# ONLY three knobs: ent_reg, size_reg, explainer_lr. Each swept on BOTH sides of
+# center. All other columns are FIXED at center on every row (not swept).
+# Goal: find which direction each of the 3 explainer knobs should move, and
+# whether it improves the model (auc/rmse) AND explainer (pearson_motif/gt_roc).
+# cols: idx  knob          ent    size   xlr    glr    L   hid  pat  wd     es
+1   center        0.2    5e-5   0.01   1e-3   3   64   30   0.01   loss
+# --- ent_reg : both sides of 0.2  (below: 0, .05, .1 | above: .4, .8, 1.0) ---
+2   ent_reg       0.0    5e-5   0.01   1e-3   3   64   30   0.01   loss
+3   ent_reg       0.05   5e-5   0.01   1e-3   3   64   30   0.01   loss
+4   ent_reg       0.1    5e-5   0.01   1e-3   3   64   30   0.01   loss
+5   ent_reg       0.4    5e-5   0.01   1e-3   3   64   30   0.01   loss
+6   ent_reg       0.8    5e-5   0.01   1e-3   3   64   30   0.01   loss
+7   ent_reg       1.0    5e-5   0.01   1e-3   3   64   30   0.01   loss
+# --- size_reg : both sides of 5e-5  (below: 0, 1e-5 | above: 1e-4, 5e-4, 1e-3, 5e-3) ---
+8   size_reg      0.2    0.0    0.01   1e-3   3   64   30   0.01   loss
+9   size_reg      0.2    1e-5   0.01   1e-3   3   64   30   0.01   loss
+10  size_reg      0.2    1e-4   0.01   1e-3   3   64   30   0.01   loss
+11  size_reg      0.2    5e-4   0.01   1e-3   3   64   30   0.01   loss
+12  size_reg      0.2    1e-3   0.01   1e-3   3   64   30   0.01   loss
+13  size_reg      0.2    5e-3   0.01   1e-3   3   64   30   0.01   loss
+# --- explainer_lr : both sides of 0.01  (below: .001, .003 | above: .03, .1) ---
+14  explainer_lr  0.2    5e-5   0.001  1e-3   3   64   30   0.01   loss
+15  explainer_lr  0.2    5e-5   0.003  1e-3   3   64   30   0.01   loss
+16  explainer_lr  0.2    5e-5   0.03   1e-3   3   64   30   0.01   loss
+17  explainer_lr  0.2    5e-5   0.1    1e-3   3   64   30   0.01   loss
