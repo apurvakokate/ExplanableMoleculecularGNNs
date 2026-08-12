@@ -46,6 +46,13 @@ fragmentations:
   - {label: "ConservativeErtlRing+BPE", variant: conservative_ertl_ring_bpe,
      base: conservative_ertl_ring_bpe, method: conservative_ertl_ring_mdl,
      flags: "--linker_method bpe",     filtered: false, build_new: true}
+  # +Filter variants (downstream frequency threshold -> UNK); MOSE runs on these (filtered_only).
+  - {label: "ConservativeErtlRing+MDL+Filter", variant: conservative_ertl_ring_mdl_filter,
+     base: conservative_ertl_ring_mdl, method: conservative_ertl_ring_mdl,
+     flags: "--apply_threshold",       filtered: true,  build_new: true}
+  - {label: "ConservativeErtlRing+BPE+Filter", variant: conservative_ertl_ring_bpe_filter,
+     base: conservative_ertl_ring_bpe, method: conservative_ertl_ring_mdl,
+     flags: "--linker_method bpe --apply_threshold", filtered: true, build_new: true}
 # NOTE: head_source=ertl and whole rings are the DEFAULTS (the settled method); no flag needed.
 #       To also study rbrics-heads / break-fused, add entries with flags:
 #       "--head_source rbrics" / "--break_fused_rings".
@@ -56,7 +63,7 @@ models:
     train_phase: reuse                     # DO NOT retrain — copy/symlink best_model.pt from final_v2
     explain_phase: phase5_baselines        # step 2a: CPU
     resource: {train: none, explain: cpu}
-    vocabs: all                            # both new fragmentations
+    vocabs: all                            # all 4: {mdl,bpe} x {full,+filter}
     # RETRAIN (vocab-dependent): re-distill / re-occlude with the new motif map
     explainers_retrain: [MAGE, MotifOcclusion]
     # RE-AGGREGATE ONLY (node-level, vocab-independent scores from final_v2): re-pool to new motifs
@@ -65,11 +72,11 @@ models:
     train_phase: phase5_mose               # RETRAIN (ante-hoc, vocab-dependent) — GPU<->CPU
     resource: gpu_or_cpu
     injection: "--w_feat --w_readout"      # 101
-    vocabs: all                            # both new fragmentations (MOSE_BASE=1 to allow non-filtered)
+    vocabs: filtered_only                  # conservative_ertl_ring_{mdl,bpe}_filter (matches final_v2 pattern)
   GSAT:
     train_phase: reaggregate               # NODE-LEVEL only: re-pool final_v2 GSAT node attention
     resource: cpu
-    vocabs: all
+    vocabs: full_only                      # conservative_ertl_ring_{mdl,bpe} (full)
 
 explainability_methods: [GNNExplainer, PGExplainer, MAGE, MotifOcclusion, MOSE, GSAT]  # NO MotifSAT
 
@@ -113,7 +120,7 @@ regimes:
 
 # --- result sheets (fold-averaged; one row per config; compared vs final_v2 rbrics) ---
 output:
-  index_columns: [dataset, backbone, fragmentation, gt_tier, gt_rule]
+  index_columns: [dataset, backbone, fragmentation, filtered, regime, gt_tier, gt_rule]
   compare_baseline: {root: final_v2, fragmentations: [rbrics, rbrics_filter]}
   sheets:
     Model Performance: {per: model,  metrics: [auc_or_rmse, rmse_original]}

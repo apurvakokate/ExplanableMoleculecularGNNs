@@ -29,7 +29,7 @@ export CONV_NORMALIZE="none"
 export EPOCHS="${EPOCHS:-500}"
 # Planted DEFERRED this pass — no DNF relabel. (When run later: RULE_TIERS=3, easy/medium/hard.)
 export RULE_ENGINE="none"
-export MOSE_BASE=1                               # our variants are NOT *_filter -> MOSE must run on base vocab
+export MOSE_BASE=0                              # MOSE runs on *_filter vocab (filtered_only)
 export WANDB_MODE=disabled
 export SKIP_EXISTING="${SKIP_EXISTING:-1}"       # reuse seeded vanilla + any completed cells
 
