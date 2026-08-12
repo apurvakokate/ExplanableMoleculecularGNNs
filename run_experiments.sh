@@ -293,6 +293,8 @@ _vocab_focus_filtered_for() {
         "$V_FG_FIRST")    echo "$V_FG_FIRST_TH" ;;
         "$V_ERTL_FIRST")  echo "$V_ERTL_FIRST_TH" ;;
         "$V_RDKIT_FG")    echo "$V_RDKIT_FG_TH" ;;
+        conservative_ertl_ring_mdl)  echo "conservative_ertl_ring_mdl_filter" ;;
+        conservative_ertl_ring_bpe)  echo "conservative_ertl_ring_bpe_filter" ;;
         *)             echo "$1" ;;
     esac
 }
