@@ -1,0 +1,131 @@
+# =====================================================================
+# experiment_matrix_ertl_mdl.yaml
+# Scoped matrix for the conservative_ertl_ring {MDL, BPE} fragmentation study.
+# Same schema as experiment_matrix.yaml; the enumerator/dispatcher read THIS file.
+#
+# Scope:
+#   * TWO fragmentations: conservative_ertl_ring_mdl (default) and _bpe (--linker_method bpe).
+#   * Vocab built FROM SCRATCH into new roots (no reuse of vocab_final_v2).
+#   * Motif-based methods RETRAINED (vocab changed): MOSE, MAGE, MotifOcclusion.
+#   * Node-level explainers RE-AGGREGATED ONLY (not retrained): GNNExplainer, PGExplainer, GSAT
+#     — their node/edge scores from final_v2 are re-pooled along the new motif definitions.
+#   * Vanilla base GNNs REUSED from final_v2 (not retrained).
+#   * Datasets: SKIP mutag and both OGBG (molhiv, molbace).
+#   * Planted (synthetic_gt DNF) regime is DEFERRED — NOT run in this pass. When it is run later
+#     the correct setting is the FULL 3 difficulty tiers (easy/medium/hard), not one.
+#   * Compare every metric against the rbrics runs already in final_v2.
+# =====================================================================
+
+meta:
+  results_root: final_ertlmdl              # NEW results dir (nothing in final_v2 overwritten)
+  vocab_root:   vocab_ertlmdl              # NEW vocab dir — BUILT FROM SCRATCH
+  processed_root: processed_ertlmdl        # NEW processed cache (new vocab -> new motif tensors)
+  reuse_vocab: false                       # force fresh vocab build (Stage 0 / phase1)
+  reuse_vanilla_from: final_v2             # vanilla base best_model.pt reused, NOT retrained
+  compare_against: final_v2                # rbrics_filter / rbrics baselines live here
+  append_to: final_ertlmdl/tables/results.csv
+
+constants:
+  node_features: onehot
+  conv_normalize: none
+  graph_readout: add
+  edge_features: false
+  epochs: 500                              # early-stop
+  aggregate: mean_over_folds
+
+backbones: [GIN, GCN, SAGE, GAT, PNA]
+
+# --- fragmentation: sheet label -> code variant ---
+# Both are the SAME generate_vocab_rules method (conservative_ertl_ring_mdl); the BPE arm flips
+# --linker_method bpe. They MUST land in DISTINCT vocab dirs (via --variant) so training resolves
+# the right one.  [INFRA: phase1 must pass `flags` and write to `<method><variant_suffix>`.]
+fragmentations:
+  - {label: "ConservativeErtlRing+MDL", variant: conservative_ertl_ring_mdl,
+     base: conservative_ertl_ring_mdl, method: conservative_ertl_ring_mdl,
+     flags: "",                        filtered: false, build_new: true}
+  - {label: "ConservativeErtlRing+BPE", variant: conservative_ertl_ring_bpe,
+     base: conservative_ertl_ring_bpe, method: conservative_ertl_ring_mdl,
+     flags: "--linker_method bpe",     filtered: false, build_new: true}
+# NOTE: head_source=ertl and whole rings are the DEFAULTS (the settled method); no flag needed.
+#       To also study rbrics-heads / break-fused, add entries with flags:
+#       "--head_source rbrics" / "--break_fused_rings".
+
+# --- models & their explainability methods ---
+models:
+  Vanilla:
+    train_phase: reuse                     # DO NOT retrain — copy/symlink best_model.pt from final_v2
+    explain_phase: phase5_baselines        # step 2a: CPU
+    resource: {train: none, explain: cpu}
+    vocabs: all                            # both new fragmentations
+    # RETRAIN (vocab-dependent): re-distill / re-occlude with the new motif map
+    explainers_retrain: [MAGE, MotifOcclusion]
+    # RE-AGGREGATE ONLY (node-level, vocab-independent scores from final_v2): re-pool to new motifs
+    explainers_reaggregate: [GNNExplainer, PGExplainer]
+  MOSE:
+    train_phase: phase5_mose               # RETRAIN (ante-hoc, vocab-dependent) — GPU<->CPU
+    resource: gpu_or_cpu
+    injection: "--w_feat --w_readout"      # 101
+    vocabs: all                            # both new fragmentations (MOSE_BASE=1 to allow non-filtered)
+  GSAT:
+    train_phase: reaggregate               # NODE-LEVEL only: re-pool final_v2 GSAT node attention
+    resource: cpu
+    vocabs: all
+
+explainability_methods: [GNNExplainer, PGExplainer, MAGE, MotifOcclusion, MOSE, GSAT]  # NO MotifSAT
+
+# --- datasets: SKIP mutag + OGBG-molhiv + OGBG-molbace ---
+datasets:
+  Mutagenicity:      {code: Mutagenicity,                 task: classification, encoder: onehot, folds: 5}
+  BBBP:              {code: BBBP,                          task: classification, encoder: onehot, folds: 5}
+  hERG:              {code: hERG,                          task: classification, encoder: onehot, folds: 5}
+  esol:              {code: esol,                          task: regression,     encoder: onehot, folds: 5}
+  Lipophilicity:     {code: Lipophilicity,                 task: regression,     encoder: onehot, folds: 5}
+  Benzene:           {code: Benzene_Verified_GT,           task: classification, encoder: onehot, folds: 5}
+  Alkane_Carbonyl:   {code: Alkane_Carbonyl_Verified_GT,   task: classification, encoder: onehot, folds: 5}
+  Fluoride_Carbonyl: {code: Fluoride_Carbonyl_Verified_GT, task: classification, encoder: onehot, folds: 5}
+
+# --- regimes ---
+regimes:
+  original_labels:
+    train_on: original_labels
+    gt: none
+    tier: real
+    datasets: [esol, Lipophilicity, Mutagenicity, BBBP, hERG]
+    sheets: [Model Performance, Grouped Pearson, Instance Pearson]   # NO GTROC
+
+  relabelled:
+    sheets: [Model Performance, Grouped Pearson, Grouped GTROC, Instance Pearson]  # Instance GTROC deferred with planted
+    groups:
+      # ---- synthetic_gt (planted DNF) — DEFERRED, NOT run in this pass. ----
+      # WHEN run later, use the FULL 3 difficulty tiers (easy/medium/hard) — RULE_TIERS=3 — NOT one.
+      # synthetic_gt:
+      #   train_on: dnf_relabelled
+      #   rule_engine: dnf
+      #   datasets: [Mutagenicity, BBBP, hERG]
+      #   tiers: [easy, medium, hard]      # 3 tiers is the correct setting
+      #   gt_metric: instance_gt_roc       # planted -> INSTANCE gtroc
+      source_gt:                           # _Verified_GT: original-label training, GT from source SMARTS
+        train_on: original_labels
+        gt: source_smarts
+        datasets: [Benzene, Alkane_Carbonyl, Fluoride_Carbonyl]
+        tiers: [source]
+        gt_metric: grouped_gt_roc          # source -> gtroc (grouped)
+
+# --- result sheets (fold-averaged; one row per config; compared vs final_v2 rbrics) ---
+output:
+  index_columns: [dataset, backbone, fragmentation, gt_tier, gt_rule]
+  compare_baseline: {root: final_v2, fragmentations: [rbrics, rbrics_filter]}
+  sheets:
+    Model Performance: {per: model,  metrics: [auc_or_rmse, rmse_original]}
+    Grouped Pearson:   {per: method, metric: pearson_motif}
+    Instance Pearson:  {per: method, metric: pearson_instance}
+    Grouped GTROC:     {per: method, metric: global_gt_roc_node_auc_mean,   source_gt_only: true}
+    # Instance GTROC:  DEFERRED with the planted regime (3-tier). Re-enable when synthetic_gt runs.
+
+# --- resources (pre-reserved SLURM holders across partitions) ---
+# Reserve >= 300 CPU + >= 64 GPU across preempt / dgxh / dgx2 / gpu, then export HOLDERS
+# ("jobid:cores:gpus ...") for queue_dispatch_v2.sh.  See the launch notes.
+resources:
+  min_cpus: 300
+  min_gpus: 64
+  partitions: [preempt, dgxh, dgx2, gpu]

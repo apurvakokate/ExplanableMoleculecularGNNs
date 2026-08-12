@@ -56,20 +56,27 @@ def _accepted_dnf_tiers(code, base):
     return _tier_cache[key]
 
 # (display_dataset, tier) pairs across both regimes -----------------------------
+# regime groups are OPTIONAL — a scoped config may defer synthetic_gt or omit source_gt.
 runs = []
-for disp in r["original_labels"]["datasets"]:
+for disp in r.get("original_labels", {}).get("datasets", []):
     runs.append((disp, "real"))
-sg = r["relabelled"]["groups"]["synthetic_gt"]
-for disp in sg["datasets"]:
-    for t in sg["tiers"]:
-        runs.append((disp, t))
-srcg = r["relabelled"]["groups"]["source_gt"]
-for disp in srcg["datasets"]:
-    for t in srcg["tiers"]:
-        runs.append((disp, t))
+_groups = r.get("relabelled", {}).get("groups", {}) or {}
+for _gkey in ("synthetic_gt", "source_gt"):
+    _g = _groups.get(_gkey)
+    if not _g:
+        continue
+    for disp in _g["datasets"]:
+        for t in _g["tiers"]:
+            runs.append((disp, t))
 
-# every cell is keyed by a BASE variant; the phase derives full-vs-filter per celltype
-CELLTYPES = [("vtrain", "gpu"), ("posthoc", "cpu"), ("mose", "gpu"), ("gsat", "gpu"), ("motifsat", "gpu")]
+# every cell is keyed by a BASE variant; the phase derives full-vs-filter per celltype.
+# vtrain+posthoc (Vanilla) always; ante-hoc celltypes are derived from the config's models,
+# so a config that omits MotifSAT (or MOSE/GSAT) simply won't emit those cells.
+_MODEL_CELLTYPE = {"MOSE": ("mose", "gpu"), "GSAT": ("gsat", "gpu"), "MotifSAT": ("motifsat", "gpu")}
+CELLTYPES = [("vtrain", "gpu"), ("posthoc", "cpu")]
+for _m in c.get("models", {}):
+    if _m in _MODEL_CELLTYPE:
+        CELLTYPES.append(_MODEL_CELLTYPE[_m])
 
 out = []
 for disp, tier in runs:

@@ -242,6 +242,13 @@ _vocab_focus_resolve_one() {
         # merge-ON/OFF ablation arm: same detector + same finest cut, MDL_MAX_MERGES=0.
         # Vocab is built out-of-band; this only lets phase4/5 target it by name.
         rdkit_nomerge|nomerge)       echo "rdkit_nomerge" ;;
+        # conservative-Ertl-ring FCOL study (mdl_linker): vocab built out-of-band by
+        # generate_vocab_rules.py --method conservative_ertl_ring_mdl [--linker_method bpe
+        # --variant bpe]; these tokens only let phase4/5 target the pre-built vocab by name.
+        conservative_ertl_ring_mdl|conservative_ertl_ring|cerm)
+                                     echo "conservative_ertl_ring_mdl" ;;
+        conservative_ertl_ring_bpe|cerb)
+                                     echo "conservative_ertl_ring_bpe" ;;
         rbrics_protected|rbrics_prot)         echo "$V_RBRICS_PROT" ;;
         all_fallback_bpe_protected|all_protected|v4_protected|protected)
                                      echo "$V_ALL_PROT" ;;

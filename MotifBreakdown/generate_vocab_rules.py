@@ -1271,7 +1271,10 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 rule_rank: str = 'balanced',
                 preserve_typed_dummies: bool = False,
                 protect: bool = False,
-                rule_tiers: bool = False):
+                rule_tiers: bool = False,
+                head_source: str = 'ertl',
+                linker_method: str = 'mdl',
+                break_fused_rings: bool = False):
     """Run the full pipeline for one dataset with given settings.
 
     Args:
@@ -1424,7 +1427,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         #             [(_resolve(smi), atoms) for smi, atoms in mf]
         #             for mf in mol_frags_tracked]
     elif method in ('fg_first', 'fg_first_mdl', 'ertl_first', 'ertl_first_mdl',
-                    'rdkit_fg_first', 'rdkit_fg_first_mdl'):
+                    'rdkit_fg_first', 'rdkit_fg_first_mdl', 'conservative_ertl_ring_mdl'):
         # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
         # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
         # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
@@ -1442,8 +1445,14 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         #   fg_first       -> curated dictionary          (fg_first_frag.partition)
         #   ertl_first     -> Ertl/EFGs library-free      (ertl_frag.partition)
         #   rdkit_fg_first -> RDKit's FunctionalGroups.txt (rdkit_fg_frag.partition)
-        _part, _tag = None, 'fg_first'
-        if method.startswith('ertl_first'):
+        _part, _tag, _freeze = None, 'fg_first', 'rings'
+        if method.startswith('conservative_ertl_ring'):
+            # conservative Ertl clean-FG heads (dictionary-free); freeze='heads' so the well-formed
+            # rings AND conservative FGs are BOTH fixed and only the linker tier merges (letting a
+            # clean head merge would risk reintroducing under-fragmentation).
+            import ertl_conservative_frag as _ec
+            _part, _tag, _freeze = _ec.partition, 'conservative_ertl_ring', 'heads'
+        elif method.startswith('ertl_first'):
             import ertl_frag as _ef
             _part, _tag = _ef.partition, 'ertl_first'
         elif method.startswith('rdkit_fg_first'):
@@ -1455,7 +1464,22 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         _pm = _re.search(r'pool(\d+)', variant)
         _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
         _n_bad = 0
-        if _mdl:
+        if method.startswith('conservative_ertl_ring'):
+            # SETTLED FCOL linker tier: MDL SELECTION (or BPE) over a chemistry candidate pool
+            # (Hussain-Rea + rBRICS/BRICS/RECAP + MACCS + singletons; KRIMP select + prune), over a
+            # frozen partition (rings + conservative FG heads). Replaces the old bottom-up
+            # cascade_bpe_linker merge. Flags: --head_source {ertl,rbrics,none} /
+            # --linker_method {mdl,bpe} / --break_fused_rings.
+            import mdl_linker as _ml
+            _raw = _ml.build(smiles_all, head_source=head_source, linker_method=linker_method,
+                             break_fused_rings=break_fused_rings, verbose=True)
+            mol_frags_tracked = []
+            for _s, _mf in zip(smiles_all, _raw):
+                _m = Chem.MolFromSmiles(_s)
+                if _m is None:
+                    mol_frags_tracked.append([]); _n_bad += 1; continue
+                mol_frags_tracked.append([(k, set(at)) for k, at in _fgf.rekey_structural(_m, _mf)])
+        elif _mdl:
             # learn data-driven linker cuts once on the corpus, then replay per molecule
             import cascade_bpe_linker as _cb
             _bm = _re.search(r'b(\d+)', variant); _cm = _re.search(r'cap(\d+)', variant)
@@ -1468,9 +1492,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             # heuristic subcut_chains segmentation, so it is not a controlled merge ablation).
             _maxm = int(os.environ.get('MDL_MAX_MERGES', '4000'))
             print(f"    [{_tag}_mdl] learning linker cuts on {len(_valid)} mols "
-                  f"(finest=all_bonds beta={_beta} cap={_cap} freeze=rings max_merges={_maxm}) ...")
+                  f"(finest=all_bonds beta={_beta} cap={_cap} freeze={_freeze} max_merges={_maxm}) ...")
             _rules, _, _info = _cb.learn(_valid, finest='all_bonds', beta=_beta,
-                                         max_atoms=_cap, freeze='rings', fg_partition=_part,
+                                         max_atoms=_cap, freeze=_freeze, fg_partition=_part,
                                          max_merges=_maxm)
             print(f"    [{_tag}_mdl] {_info['n_merges']} merge rules; "
                   f"L {_info['L_traj'][0]:.0f} -> {_info['L_traj'][-1]:.0f}")
@@ -1479,7 +1503,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 mol = Chem.MolFromSmiles(orig_smi)
                 if mol is None:
                     mol_frags_tracked.append([]); _n_bad += 1; continue
-                _tr = _cb.apply_rules(mol, _rules, finest='all_bonds', freeze='rings',
+                _tr = _cb.apply_rules(mol, _rules, finest='all_bonds', freeze=_freeze,
                                       fg_partition=_part)
                 mol_frags_tracked.append([(k, set(at))
                                           for k, at in _fgf.rekey_structural(mol, _tr)])
@@ -1625,6 +1649,29 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     #             [(resolve(smi), atoms) for smi, atoms in mf]
     #             for mf in mol_frags_tracked]
     # ---- END LEGACY FRAGMENTATION + BPE (DISABLED) -------------------------
+
+    # conservative_ertl_ring FINAL keying: the model motif_list is PREFIX-FREE SMILES; the prefixed
+    # keys (ring:/fg:/chain:/frag:) are kept aligned by motif_id and saved separately (after
+    # save_outputs) for analysis only. Strip at source so every artifact (motif_list, lookups,
+    # motif_stats) is consistently prefix-free. Collision-checked (fails loud — no silent merging).
+    _prefix_map = None
+    if method.startswith('conservative_ertl_ring'):
+        def _strip_pref(_k):
+            for _p in ('ring:', 'fg:', 'chain:', 'frag:'):
+                if _k.startswith(_p):
+                    return _k[len(_p):]
+            return _k
+        _prefix_map = {}
+        for _mf in mol_frags_tracked:
+            for _i in range(len(_mf)):
+                _k, _at = _mf[_i]
+                _sk = _strip_pref(_k)
+                if _sk in _prefix_map and _prefix_map[_sk] != _k:
+                    raise ValueError(
+                        f"conservative_ertl_ring prefix-strip collision: {_k!r} and "
+                        f"{_prefix_map[_sk]!r} both map to {_sk!r} — refusing to silently merge.")
+                _prefix_map[_sk] = _k
+                _mf[_i] = (_sk, _at)
 
     # Vocabulary
     motif_list, frag_to_id, motif_stats = build_vocab(
@@ -1786,6 +1833,17 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         apply_threshold=apply_threshold,
                         threshold_pct=resolved_pct if apply_threshold else None,
                         mining_fold=fold)
+
+    # conservative_ertl_ring: save the PREFIXED reference vocabulary (analysis only), aligned by
+    # motif_id with the prefix-free motif_list the models train on.
+    if _prefix_map is not None:
+        import pickle as _pk
+        _base = str(out_dir / dataset / variant / f'{dataset}_{variant}')
+        _prefixed_list = [_prefix_map.get(_s, _s) for _s in motif_list]
+        with open(_base + '_motif_list_prefixed.pickle', 'wb') as _f:
+            _pk.dump(_prefixed_list, _f, protocol=4)
+        print(f"    [conservative_ertl_ring] motif_list is prefix-free ({len(motif_list)} motifs); "
+              f"prefixed reference -> {_base}_motif_list_prefixed.pickle")
 
     # Difficulty-tiered rules (easy/medium/hard) — opt-in via --rule_tiers.
     # Selects one rule per band by TRAINED P2 (occluder GT-ROC), a small GIN screen
@@ -2006,9 +2064,20 @@ Examples:
                    help='Output root directory')
     p.add_argument('--method',    default='all',
                    choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl',
-                            'ertl_first', 'ertl_first_mdl', 'rdkit_fg_first', 'rdkit_fg_first_mdl'],
+                            'ertl_first', 'ertl_first_mdl', 'rdkit_fg_first', 'rdkit_fg_first_mdl',
+                            'conservative_ertl_ring_mdl'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
+    p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],
+                   help="conservative_ertl_ring_mdl: FG-head freeze source. ertl (default) = "
+                        "rings + conservative-Ertl heads; rbrics = rBRICS-conservative heads; "
+                        "none = rings-only (skip the FG freeze).")
+    p.add_argument('--linker_method', default='mdl', choices=['mdl', 'bpe'],
+                   help="conservative_ertl_ring_mdl: linker-tier engine. mdl (default) = KRIMP "
+                        "selection over the chemistry candidate pool + prune; bpe = greedy-frequency.")
+    p.add_argument('--break_fused_rings', action='store_true',
+                   help="conservative_ertl_ring_mdl: freeze each SSSR ring separately (shared atoms "
+                        "to the earliest ring) instead of whole fused ring systems.")
     p.add_argument('--fallback',  action='store_true',
                    help='Apply structural fallbacks to unfragmented molecules')
     p.add_argument('--bpe',       action='store_true',
@@ -2112,7 +2181,10 @@ Examples:
                            rule_rank=args.rule_rank,
                            preserve_typed_dummies=args.preserve_typed_dummies,
                            protect=bool(args.protect),
-                           rule_tiers=bool(args.rule_tiers))
+                           rule_tiers=bool(args.rule_tiers),
+                           head_source=args.head_source,
+                           linker_method=args.linker_method,
+                           break_fused_rings=bool(args.break_fused_rings))
         meta['dataset'] = ds
         all_metas.append(meta)
 
