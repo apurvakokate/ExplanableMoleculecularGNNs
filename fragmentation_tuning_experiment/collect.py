@@ -76,7 +76,7 @@ def main():
         print(f"no {BACKBONE} runs under {tune_root}/{ds}/fold*"); return
 
     # deployed baseline (fold-averaged)
-    base_p = base_a = None
+    base_p = base_a = base_r = None
     if prod_root:
         pg = gather(prod_root, ds, BACKBONE)
         # deployed = the single production config; if several, take the one with most folds
@@ -84,6 +84,7 @@ def main():
             best = max(pg.values(), key=lambda e: len(e['pearson']))
             base_p = mean_std(best['pearson'])[0]
             base_a = mean_std(best['auc'])[0]
+            base_r = mean_std(best['rmse'])[0]
 
     # classify configs
     center = None
@@ -112,11 +113,19 @@ def main():
             flag = ' AUC-COLLAPSE'
         return f"{str(val):>8} | {pear:>12} {auc:>6} {rmse:>6} {gt:>6}  n={pn}{flag}"
 
+    def predstr(auc_v, rmse_v):
+        if auc_v is not None:
+            return f"auc={auc_v:.3f}"
+        if rmse_v is not None:
+            return f"rmse={rmse_v:.3f}"
+        return "pred=  -  "
+
     print(f"\n################  {ds} — {BACKBONE} — OFAT sweep (fold-averaged, mean±std)  ################")
     if base_p is not None:
-        print(f"DEPLOYED GAT baseline (fold-avg): pearson={base_p:.3f}  auc={base_a:.3f}")
+        print(f"DEPLOYED GAT baseline (fold-avg): pearson={base_p:.3f}  {predstr(base_a, base_r)}")
     if center:
-        cm = center['pear']; print(f"CENTER: pearson={cm[0]:.3f}±{cm[1]:.3f} (n={cm[2]})  auc={center['auc'][0]:.3f}")
+        cm = center['pear']
+        print(f"CENTER: pearson={cm[0]:.3f}±{cm[1]:.3f} (n={cm[2]})  {predstr(center['auc'][0], center['rmse'][0])}")
     cp = center['pear'][0] if center else None
 
     summary = []
