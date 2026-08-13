@@ -2083,7 +2083,7 @@ Examples:
                    help="conservative_ertl_ring_mdl: FG-head freeze source. ertl (default) = "
                         "rings + conservative-Ertl heads; rbrics = rBRICS-conservative heads; "
                         "none = rings-only (skip the FG freeze).")
-    p.add_argument('--linker_method', default='mdl', choices=['mdl', 'bpe'],
+    p.add_argument('--linker_method', default='mdl', choices=['mdl', 'bpe', 'shoulder'],
                    help="conservative_ertl_ring_mdl: linker-tier engine. mdl (default) = KRIMP "
                         "selection over the chemistry candidate pool + prune; bpe = greedy-frequency.")
     p.add_argument('--break_fused_rings', action='store_true',

@@ -155,17 +155,74 @@ def _freq_bpe_cover(mols, part_fn, floor_frac=0.005, max_merges=6000, verbose=Fa
     return [[(g.ident[i], frozenset(g.atoms[i])) for i in range(len(g.atoms))] for g in gs]
 
 
+# ───────────────────────────── shoulder-stopped BPE (data-derived floor) ────────
+def _knee_index(counts):
+    """Kneedle-style max-distance-from-chord knee on the (step, log10 support) decay curve.
+
+    counts = the per-step merge supports from frequency BPE (non-increasing). Support is ~Zipfian, so
+    the knee is detected on LOG-frequency (a linear-scale knee would sit at merge ~1-3, too aggressive).
+    Returns t* = number of leading merges to KEEP (the steep 'signal' head), dropping the flat 'noise'
+    tail. This replaces the arbitrary 0.5%-of-molecules floor with a per-corpus data-derived stop."""
+    n = len(counts)
+    if n <= 2:
+        return n
+    ys = [math.log10(max(c, 1)) for c in counts]
+    x1 = float(n - 1)
+    y0, y1 = ys[0], ys[-1]
+    dx, dy = x1, (y1 - y0)
+    denom = math.hypot(dx, dy) or 1.0
+    best_i, best_d = 0, -1.0
+    for i in range(n):
+        d = abs(dy * i - dx * (ys[i] - y0)) / denom          # perpendicular distance to the chord
+        if d > best_d:
+            best_d, best_i = d, i
+    return best_i + 1                                          # keep merges up to & incl. the knee
+
+
+def _shoulder_bpe_cover(mols, part_fn, max_merges=2000, verbose=False):
+    """Frequency-ordered BPE with a DATA-DERIVED stop (NO arbitrary floor). Pass 1: run to exhaustion
+    (top-pair support < 2, or cap), recording the merge-frequency decay curve c_t. Pass 2: find the knee
+    on (step, log10 c_t) and re-cover keeping only the leading t* (steep-head) merges. Frequency still
+    chooses WHICH pair to merge; the shoulder chooses WHEN to stop."""
+    gs = [_grow_graph(m, part_fn) for m in mols]
+    rules, counts = [], []
+    for _ in range(max_merges):
+        pk = Counter()
+        for g in gs:
+            for i, j, _r in g.linker_adjacencies():
+                pk[tuple(sorted((g.ident[i], g.ident[j])))] += 1
+        if not pk:
+            break
+        best, k = pk.most_common(1)[0]
+        if k < 2:                                             # a once-seen pair is not learnable
+            break
+        rules.append(best); counts.append(k)
+        for g in gs:
+            g.apply_merge(best)
+    tstar = _knee_index(counts)
+    if verbose:
+        at = counts[tstar - 1] if 0 < tstar <= len(counts) else None
+        print(f"    [ring_grow_bpe/shoulder] full trajectory={len(counts)} merges; knee t*={tstar} "
+              f"(support@knee={at}); keeping first {tstar}", flush=True)
+    gs2 = [_grow_graph(m, part_fn) for m in mols]
+    for r in rules[:tstar]:
+        for g in gs2:
+            g.apply_merge(r)
+    return [[(g.ident[i], frozenset(g.atoms[i])) for i in range(len(g.atoms))] for g in gs2]
+
+
 # ───────────────────────────── top-level entry ─────────────────────────────────
 def build(smiles_all, head_source='none', linker_method='mdl', break_fused_rings=False,
           beta=0.0, verbose=True):
     """Return mol_frags_tracked = per-mol [(key, set(atoms))], aligned to smiles_all (empty list for
     unparseable SMILES).
 
-    linker_method : 'mdl' (MDL-BPE, DEFAULT) | 'bpe' (frequency BPE). head_source accepted for
-    call-compatibility with ring_mdl.build / mdl_linker.build but IGNORED (rings-only seeding, no FG
-    heads). break_fused_rings freezes each SSSR ring separately instead of whole fused systems."""
-    if linker_method not in ('mdl', 'bpe'):
-        raise ValueError(f"linker_method must be mdl|bpe, got {linker_method!r}")
+    linker_method : 'mdl' (MDL-BPE, DEFAULT) | 'bpe' (frequency BPE, 0.5%% floor) | 'shoulder'
+    (frequency BPE stopped at the data-derived knee of the merge-frequency decay curve, no floor).
+    head_source accepted for call-compatibility with ring_mdl.build / mdl_linker.build but IGNORED
+    (rings-only seeding, no FG heads). break_fused_rings freezes each SSSR ring separately."""
+    if linker_method not in ('mdl', 'bpe', 'shoulder'):
+        raise ValueError(f"linker_method must be mdl|bpe|shoulder, got {linker_method!r}")
     part_fn = ring_mdl.make_partition(break_fused_rings)
     mols = [Chem.MolFromSmiles(s) for s in smiles_all]
     idx_valid = [i for i, m in enumerate(mols) if m is not None]
@@ -177,6 +234,8 @@ def build(smiles_all, head_source='none', linker_method='mdl', break_fused_rings
         return [[] for _ in smiles_all]
     if linker_method == 'mdl':
         covers = _mdl_bpe_cover(valid, part_fn, beta=beta, verbose=verbose)
+    elif linker_method == 'shoulder':
+        covers = _shoulder_bpe_cover(valid, part_fn, verbose=verbose)
     else:
         covers = _freq_bpe_cover(valid, part_fn, verbose=verbose)
     out = [[] for _ in smiles_all]
