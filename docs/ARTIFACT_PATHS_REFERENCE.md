@@ -51,9 +51,20 @@ Conda env: `l2xgnn` (torch 2.2, rdkit 2023.09; `torch_scatter` present on HPC).
 
 ## MoSE (ante-hoc) results  `{OUT_ROOT}/mose/{variant}/{ds}/fold{F}/{BB}_..._unk-{mode}_..._{tier}_.../`
 - ERTL: `final_ertlmdl/mose/conservative_ertl_ring_mdl_filter/...`, `.../ring_mdl_filter/...`
-- rBRICS (comparison): `final_v2/mose/rbrics_filter/...`
-- Per-run files: `summary.json`, `score_vs_impact.csv` (per-motif score+impact),
-  `correlation.csv`, `gt_roc.csv`, `motif_impact.csv`, `best_model.pt`,
+- **rBRICS (comparison) — CORRECTED root (use this):**
+  `antehoc_recompute_v1/mose/rbrics_filter/{ds}/fold{F}/{BB}_..._unk-{mode}_real_.../`
+  (Aug-8 re-eval, *after* the Aug 7–8 eval-path fix; 8 datasets, both `unk-fixed` and
+  `unk-learnable_shared` present; planted tiers under
+  `antehoc_recompute_v1/mose/rbrics_filter_relabelled_dnf_k{2,3}_r{1,2}/`; `ertl_first_filter`
+  also recomputed here). Schema = **`summary_splits.json`** (method→`{train,valid,test}`) +
+  derived CSVs: pooled Pearson in **`mose_grouped_corr_pooled_alltest.csv`** (`pearson_u_exclunk`
+  = the Tab-3.4 per-motif metric), per-instance in `mose_instance_corr_{split}.csv`,
+  impact/importance in `mose_{impact,importance}_{split}.csv`. rBRICS **GT-ROC** →
+  `gtroc_filtered_exclunk_v1` (authoritative, drop-UNK), *not* a summary field.
+  - ⚠️ **STALE — do NOT use:** `final_v2/mose/rbrics_filter/…/summary.json` (July-29, pre-fix,
+    flat `pearson_motif_all` field). Superseded by the recompute root above.
+- Per-run files (ERTL campaign, old-schema `summary.json`): `summary.json`, `score_vs_impact.csv`
+  (per-motif score+impact), `correlation.csv`, `gt_roc.csv`, `motif_impact.csv`, `best_model.pt`,
   `epoch_scalars.csv`/`epoch_motifs.csv` (per-epoch; stdout is buffered — progress is here).
 - unk modes: `unk-fixed` (value 0.5) | `unk-learnable_shared`.
 

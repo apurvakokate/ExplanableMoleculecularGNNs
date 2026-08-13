@@ -8,10 +8,13 @@ ring_mdl. Atom singletons remain in the pool solely as MDL's atomic base so the 
 Functions are REPLICATED from ring_mdl.py / mdl_linker.py (not imported) so it can iterate
 independently. The ONLY difference is make_partition, which freezes nothing.
 
-CONSEQUENCE (by design): with the Hussain-Rea cap at K=5, whole rings (>=6 atoms) cannot be selected
-as ring: motifs. Rings enter the vocab only via rBRICS/BRICS/RECAP segments (which do not break rings),
-keyed structurally as frag: WITH attachment context — so a substituted ring is NOT substituent-agnostic
-(different decorations -> different motifs), unlike the ring-frozen variants.
+CONSEQUENCE (by design): the Hussain-Rea cap is K=8, so whole 6-8-atom rings (benzene, pyridine,
+7/8-membered rings) CAN now be enumerated as connected subgraphs and selected by MDL as single
+frag: motifs when the compression pays off. Larger/fused ring systems (>8 atoms) still cannot be
+captured whole and enter only via rBRICS/BRICS/RECAP segments. Note motifs remain keyed structurally
+as frag: WITH attachment context (no ring-freezing) — so a substituted ring is still NOT
+substituent-agnostic (different decorations -> different motifs), unlike the ring-frozen variants;
+K=8 only restores whole-ring EXPRESSIBILITY, it does not make rings substituent-invariant.
 
 Top-level entry: ``build(smiles_all, head_source='none', linker_method='mdl', break_fused_rings=False)``
 returns mol_frags_tracked = per-mol [(key, set(atoms))] aligned to smiles_all, IDENTICAL format/signature
@@ -29,7 +32,7 @@ import ertl_conservative_frag as ec
 import chemfrag as cf
 from cascade_bpe_linker import _MolGraph, LOG2_20
 
-K_HR = 5          # Hussain-Rea connected-subgraph enumeration cap (heavy atoms)
+K_HR = 8          # Hussain-Rea connected-subgraph enumeration cap (heavy atoms)
 
 
 # ───────────────────────────── partition builder (freeze NOTHING) ──────────────
