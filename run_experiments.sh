@@ -250,6 +250,7 @@ _vocab_focus_resolve_one() {
         conservative_ertl_ring_bpe|cerb)
                                      echo "conservative_ertl_ring_bpe" ;;
         ring_mdl|ring)               echo "ring_mdl" ;;
+        mdl_only|mdlonly)            echo "mdl_only" ;;
         rbrics_protected|rbrics_prot)         echo "$V_RBRICS_PROT" ;;
         all_fallback_bpe_protected|all_protected|v4_protected|protected)
                                      echo "$V_ALL_PROT" ;;
@@ -297,6 +298,7 @@ _vocab_focus_filtered_for() {
         conservative_ertl_ring_mdl)  echo "conservative_ertl_ring_mdl_filter" ;;
         conservative_ertl_ring_bpe)  echo "conservative_ertl_ring_bpe_filter" ;;
         ring_mdl)                    echo "ring_mdl_filter" ;;
+        mdl_only)                    echo "mdl_only_filter" ;;
         *)             echo "$1" ;;
     esac
 }
