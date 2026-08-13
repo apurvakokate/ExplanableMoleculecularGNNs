@@ -131,27 +131,39 @@ def _mdl_bpe_cover(mols, part_fn, beta=0.0, max_atoms=None, max_merges=6000, ver
 
 
 # ───────────────────────────── frequency-BPE (optional head-to-head) ───────────
-def _freq_bpe_cover(mols, part_fn, floor_frac=0.005, max_merges=6000, verbose=False):
+def _freq_bpe_cover(mols, part_fn, floor_frac=0.005, max_atoms=None, max_merges=6000, verbose=False):
     """Classic frequency BPE with growable rings: each round merge the most-frequent adjacent type-pair
-    until its corpus count falls below floor_frac * n_mols. Returns per-mol cover [(key, atoms)]."""
+    until its corpus count falls below floor_frac * n_mols. If max_atoms is set, a pair whose merged
+    motif would exceed max_atoms heavy atoms is SKIPPED (the next-most-frequent in-budget pair is taken
+    instead) — this caps growth and curbs the over-merge tail. Returns per-mol cover [(key, atoms)]."""
     gs = [_grow_graph(m, part_fn) for m in mols]
     FLOOR = floor_frac * len(mols)
     n_merges = 0
     for _ in range(max_merges):
         pk: Counter = Counter()
+        psize = {}
         for g in gs:
             for i, j, _r in g.linker_adjacencies():
-                pk[tuple(sorted((g.ident[i], g.ident[j])))] += 1
-        if not pk:
+                p = tuple(sorted((g.ident[i], g.ident[j])))
+                pk[p] += 1
+                if p not in psize:
+                    psize[p] = len(g.atoms[i]) + len(g.atoms[j])
+        best = None
+        for p, k in pk.most_common():
+            if k < FLOOR:                                     # descending -> the rest are below floor too
+                break
+            if max_atoms is not None and psize[p] > max_atoms:
+                continue                                      # skip over-budget pair, take next in-budget
+            best = p
             break
-        best, k = pk.most_common(1)[0]
-        if k < FLOOR:
+        if best is None:
             break
         for g in gs:
             g.apply_merge(best)
         n_merges += 1
     if verbose:
-        print(f"    [ring_grow_bpe/bpe] {n_merges} merges (floor={FLOOR:.0f})", flush=True)
+        cap = 'none' if max_atoms is None else str(max_atoms)
+        print(f"    [ring_grow_bpe/bpe] {n_merges} merges (floor={FLOOR:.0f}, max_atoms={cap})", flush=True)
     return [[(g.ident[i], frozenset(g.atoms[i])) for i in range(len(g.atoms))] for g in gs]
 
 
@@ -217,12 +229,13 @@ def build(smiles_all, head_source='none', linker_method='mdl', break_fused_rings
     """Return mol_frags_tracked = per-mol [(key, set(atoms))], aligned to smiles_all (empty list for
     unparseable SMILES).
 
-    linker_method : 'mdl' (MDL-BPE, DEFAULT) | 'bpe' (frequency BPE, 0.5%% floor) | 'shoulder'
-    (frequency BPE stopped at the data-derived knee of the merge-frequency decay curve, no floor).
-    head_source accepted for call-compatibility with ring_mdl.build / mdl_linker.build but IGNORED
-    (rings-only seeding, no FG heads). break_fused_rings freezes each SSSR ring separately."""
-    if linker_method not in ('mdl', 'bpe', 'shoulder'):
-        raise ValueError(f"linker_method must be mdl|bpe|shoulder, got {linker_method!r}")
+    linker_method : 'mdl' (MDL-BPE, DEFAULT) | 'bpe' (frequency BPE, 0.5%% floor) | 'bpecap8'
+    (frequency BPE, 0.5%% floor + motif capped at 8 heavy atoms) | 'shoulder' (frequency BPE stopped
+    at the data-derived knee of the merge-frequency decay curve, no floor). head_source accepted for
+    call-compatibility with ring_mdl.build / mdl_linker.build but IGNORED (rings-only seeding, no FG
+    heads). break_fused_rings freezes each SSSR ring separately."""
+    if linker_method not in ('mdl', 'bpe', 'bpecap8', 'shoulder'):
+        raise ValueError(f"linker_method must be mdl|bpe|bpecap8|shoulder, got {linker_method!r}")
     part_fn = ring_mdl.make_partition(break_fused_rings)
     mols = [Chem.MolFromSmiles(s) for s in smiles_all]
     idx_valid = [i for i, m in enumerate(mols) if m is not None]
@@ -236,6 +249,8 @@ def build(smiles_all, head_source='none', linker_method='mdl', break_fused_rings
         covers = _mdl_bpe_cover(valid, part_fn, beta=beta, verbose=verbose)
     elif linker_method == 'shoulder':
         covers = _shoulder_bpe_cover(valid, part_fn, verbose=verbose)
+    elif linker_method == 'bpecap8':
+        covers = _freq_bpe_cover(valid, part_fn, max_atoms=8, verbose=verbose)
     else:
         covers = _freq_bpe_cover(valid, part_fn, verbose=verbose)
     out = [[] for _ in smiles_all]

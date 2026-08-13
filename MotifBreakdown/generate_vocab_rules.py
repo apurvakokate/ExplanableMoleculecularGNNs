@@ -1428,7 +1428,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         #             for mf in mol_frags_tracked]
     elif method in ('fg_first', 'fg_first_mdl', 'ertl_first', 'ertl_first_mdl',
                     'rdkit_fg_first', 'rdkit_fg_first_mdl', 'conservative_ertl_ring_mdl',
-                    'ring_mdl', 'mdl_only', 'ring_grow_bpe'):
+                    'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl'):
         # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
         # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
         # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
@@ -1465,7 +1465,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         _pm = _re.search(r'pool(\d+)', variant)
         _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
         _n_bad = 0
-        if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe')):
+        if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl')):
             # SETTLED FCOL linker tier: MDL SELECTION (or BPE) over a chemistry candidate pool
             # (Hussain-Rea + rBRICS/BRICS/RECAP + singletons; KRIMP select + prune), over a
             # frozen partition. Replaces the old bottom-up cascade_bpe_linker merge. Flags:
@@ -1478,6 +1478,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 import mdl_only as _ml
             elif method.startswith('ring_grow_bpe'):
                 import ring_grow_bpe as _ml
+            elif method.startswith('ring_grow_mdl'):
+                import ring_grow_mdl as _ml       # rings + bounded 1-2-hop growth + KRIMP-MDL selection
             elif method.startswith('ring_mdl'):
                 import ring_mdl as _ml
             else:
@@ -1666,7 +1668,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     # save_outputs) for analysis only. Strip at source so every artifact (motif_list, lookups,
     # motif_stats) is consistently prefix-free. Collision-checked (fails loud — no silent merging).
     _prefix_map = None
-    if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe')):
+    if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl')):
         def _strip_pref(_k):
             for _p in ('ring:', 'fg:', 'chain:', 'frag:'):
                 if _k.startswith(_p):
@@ -2076,14 +2078,15 @@ Examples:
     p.add_argument('--method',    default='all',
                    choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl',
                             'ertl_first', 'ertl_first_mdl', 'rdkit_fg_first', 'rdkit_fg_first_mdl',
-                            'conservative_ertl_ring_mdl', 'ring_mdl', 'mdl_only', 'ring_grow_bpe'],
+                            'conservative_ertl_ring_mdl', 'ring_mdl', 'mdl_only', 'ring_grow_bpe',
+                            'ring_grow_mdl'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],
                    help="conservative_ertl_ring_mdl: FG-head freeze source. ertl (default) = "
                         "rings + conservative-Ertl heads; rbrics = rBRICS-conservative heads; "
                         "none = rings-only (skip the FG freeze).")
-    p.add_argument('--linker_method', default='mdl', choices=['mdl', 'bpe', 'shoulder'],
+    p.add_argument('--linker_method', default='mdl', choices=['mdl', 'bpe', 'bpecap8', 'shoulder'],
                    help="conservative_ertl_ring_mdl: linker-tier engine. mdl (default) = KRIMP "
                         "selection over the chemistry candidate pool + prune; bpe = greedy-frequency.")
     p.add_argument('--break_fused_rings', action='store_true',

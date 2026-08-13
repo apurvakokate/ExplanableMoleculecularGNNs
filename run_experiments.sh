@@ -253,6 +253,8 @@ _vocab_focus_resolve_one() {
         mdl_only|mdlonly)            echo "mdl_only" ;;
         ring_grow_bpe|ringgrowbpe|rgb) echo "ring_grow_bpe" ;;
         ring_grow_bpe_freq|rgbf)     echo "ring_grow_bpe_freq" ;;
+        ring_grow_bpe_freqcap8|rgbfc8) echo "ring_grow_bpe_freqcap8" ;;
+        ring_grow_mdl|rgm)           echo "ring_grow_mdl" ;;
         rbrics_protected|rbrics_prot)         echo "$V_RBRICS_PROT" ;;
         all_fallback_bpe_protected|all_protected|v4_protected|protected)
                                      echo "$V_ALL_PROT" ;;
@@ -303,6 +305,8 @@ _vocab_focus_filtered_for() {
         mdl_only)                    echo "mdl_only_filter" ;;
         ring_grow_bpe)               echo "ring_grow_bpe_filter" ;;
         ring_grow_bpe_freq)          echo "ring_grow_bpe_freq_filter" ;;
+        ring_grow_bpe_freqcap8)      echo "ring_grow_bpe_freqcap8_filter" ;;
+        ring_grow_mdl)               echo "ring_grow_mdl_filter" ;;
         *)             echo "$1" ;;
     esac
 }

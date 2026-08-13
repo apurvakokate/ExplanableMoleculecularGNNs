@@ -54,6 +54,10 @@ CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
     # _filter = MDL-BPE objective (--linker_method mdl); _freq_filter = frequency-BPE (--linker_method bpe).
     'ring_grow_bpe_filter':               dict(UNIFIED_FILTER_THRESHOLDS),
     'ring_grow_bpe_freq_filter':          dict(UNIFIED_FILTER_THRESHOLDS),
+    # frequency-BPE capped at 8 heavy atoms (candidate #3).
+    'ring_grow_bpe_freqcap8_filter':      dict(UNIFIED_FILTER_THRESHOLDS),
+    # rings + bounded 1-2-hop growth + KRIMP-MDL selection (candidate #2; ring_grow_mdl.py).
+    'ring_grow_mdl_filter':               dict(UNIFIED_FILTER_THRESHOLDS),
     # FG-protected + threshold (mutag MOSE filtered; same cutoffs until phase-2 review)
     'rbrics_protected_filter':            dict(UNIFIED_FILTER_THRESHOLDS),
     'all_fallback_bpe_protected_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
