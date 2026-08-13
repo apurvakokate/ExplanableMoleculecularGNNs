@@ -50,6 +50,8 @@ CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
     'ring_mdl_filter':                    dict(UNIFIED_FILTER_THRESHOLDS),
     # MDL-only (mdl_only.py; no rings, no FG heads) thresholded variant — same unified cutoffs.
     'mdl_only_filter':                    dict(UNIFIED_FILTER_THRESHOLDS),
+    # rings-seeded GROWABLE BPE (ring_grow_bpe.py; rings grow, non-ring atomic) — same unified cutoffs.
+    'ring_grow_bpe_filter':               dict(UNIFIED_FILTER_THRESHOLDS),
     # FG-protected + threshold (mutag MOSE filtered; same cutoffs until phase-2 review)
     'rbrics_protected_filter':            dict(UNIFIED_FILTER_THRESHOLDS),
     'all_fallback_bpe_protected_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
