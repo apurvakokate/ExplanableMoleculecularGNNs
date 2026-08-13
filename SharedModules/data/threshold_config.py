@@ -46,6 +46,8 @@ CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
     # conservative Ertl-ring FCOL (mdl_linker) thresholded variants — same unified cutoffs.
     'conservative_ertl_ring_mdl_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
     'conservative_ertl_ring_bpe_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
+    # rings-only + MDL (ring_mdl.py; no FG-head tier) thresholded variant — same unified cutoffs.
+    'ring_mdl_filter':                    dict(UNIFIED_FILTER_THRESHOLDS),
     # FG-protected + threshold (mutag MOSE filtered; same cutoffs until phase-2 review)
     'rbrics_protected_filter':            dict(UNIFIED_FILTER_THRESHOLDS),
     'all_fallback_bpe_protected_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
