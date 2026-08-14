@@ -651,16 +651,24 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
                 grouped_pearson_w=g_all['pearson_w_exclunk'],
                 n_motifs=g_all['n_motifs_exclunk'],
                 gtroc_global=tsum.get('global_gt_roc_node_auc_mean', float('nan')),
-                gtroc_instance=tsum.get('instance_gt_roc_node_auc_mean', float('nan')))
+                gtroc_instance=tsum.get('instance_gt_roc_node_auc_mean', float('nan')),
+                pred_auc=tsum.get('auc', float('nan')))
 
 
-def _gt_rule(meta):
-    m = re.search(r'_relabelled_dnf_k(\d+)_r(\d+)$', str(meta.get('vocab_variant', '')))
-    return f'dnf_k{m.group(1)}_r{m.group(2)}' if m else ''
+def _gt_rule(meta, run_dir=''):
+    """Planted DNF rule id. LAYOUT B (ante-hoc) encodes it in vocab_variant
+    (`..._relabelled_dnf_kK_rR`); LAYOUT A (baselines) encodes it in the run-id path
+    (`..._gt_dnf_kK_rR`). Check both."""
+    for s in (str(meta.get('vocab_variant', '')), str(run_dir)):
+        m = re.search(r'_(?:relabelled_)?dnf_k(\d+)_r(\d+)', s)
+        if m:
+            return f'dnf_k{m.group(1)}_r{m.group(2)}'
+    return ''
 
 
-def _run_tier(meta):
-    if _gt_rule(meta):
+def _run_tier(meta, run_dir=''):
+    # planted runs carry use_gt=True (both layouts); source-GT datasets use native node_label.
+    if meta.get('use_gt') or _gt_rule(meta, run_dir):
         return 'planted'
     return 'source' if meta['dataset'] in SOURCE_GT else 'none'
 
@@ -718,6 +726,8 @@ def main():
     ap.add_argument('--processed_root', default=None)
     ap.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'])
     ap.add_argument('--loader_batch_size', type=int, default=128)
+    ap.add_argument('--fold', nargs='*', type=int, default=None,
+                    help='restrict to these fold indices (default all) — shard folds across jobs')
     ap.add_argument('--limit', type=int, default=None)
     args = ap.parse_args()
 
@@ -742,11 +752,13 @@ def main():
         v = str(meta.get('vocab_variant', ''))
         if _base_vocab(v) != want_base or v.endswith('_filter') != want_filter:
             continue
-        if _run_tier(meta) != args.gt_tier:
+        if _run_tier(meta, run_dir) != args.gt_tier:
+            continue
+        if args.fold is not None and meta.get('fold') not in args.fold:
             continue
         if args.limit and (ok + failed) >= args.limit:
             break
-        tag = f"{args.dataset}/{args.method}/{meta.get('backbone')}/fold{meta.get('fold')}/{_gt_rule(meta) or '-'}"
+        tag = f"{args.dataset}/{args.method}/{meta.get('backbone')}/fold{meta.get('fold')}/{_gt_rule(meta, run_dir) or '-'}"
         try:
             art_dir = (Path(args.artifacts_root) / run_dir.relative_to(args.ckpt_root)
                        if args.artifacts_root else run_dir)
@@ -754,7 +766,7 @@ def main():
             m = eval_run(args.method, run_dir, art_dir, meta, args, device, kept, dest_dir)
             out_rows.append(dict(
                 dataset=args.dataset, method=args.method, backbone=meta.get('backbone'),
-                fold=meta.get('fold'), vocab=args.vocab, gt_rule=_gt_rule(meta),
+                fold=meta.get('fold'), vocab=args.vocab, gt_rule=_gt_rule(meta, run_dir),
                 gt_tier=args.gt_tier, unk=args.unk, **m,
                 run_path=str(run_dir.relative_to(args.ckpt_root))))
             print(f'  [ok] {tag}')
