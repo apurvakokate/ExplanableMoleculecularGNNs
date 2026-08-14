@@ -543,6 +543,49 @@ def _keep_fn(kept, unk):
     return fn
 
 
+def _load_vanilla(run_dir, meta, dmeta, device):
+    """Rebuild VanillaGNN + load best_model.pt — used ONLY to reconstruct MAGE's mage_v2
+    per-node atts (the producer persisted mage_official atts, not mage_v2)."""
+    from SharedModules.baselines.vanilla_gnn import VanillaGNN
+    from SharedModules.data.loader import NUM_CLASSES
+    model = VanillaGNN(
+        x_dim=dmeta.x_dim, hidden_dim=int(meta.get('hidden_dim', 64)),
+        num_layers=int(meta.get('num_layers', 3)), backbone=meta['backbone'],
+        node_encoder=meta.get('node_encoder', 'onehot'),
+        apply_layer_norm=bool(meta.get('apply_layer_norm', False)),
+        dropout=float(meta.get('dropout', 0.0) or 0.0),
+        conv_normalize=meta.get('conv_normalize', 'none'),
+        graph_pool=meta.get('graph_pool', 'add'),
+        gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
+        num_classes=NUM_CLASSES.get(meta['dataset'], 1), deg=getattr(dmeta, 'deg', None))
+    model.load_state_dict(torch.load(Path(run_dir) / 'best_model.pt',
+                                     map_location='cpu', weights_only=False))
+    return model.to(device).eval()
+
+
+def mage_reload_atts(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, task_type):
+    """mage_v2 per-node atts by RELOADING the saved mage_attention.pt (NO re-fit) and re-scoring
+    attention_mean, then broadcasting to nodes. Needed because posthoc_v1 persisted mage_official
+    (label-leaking) atts to explainer_importances.json, not mage_v2. {split: {gi: np atts}}."""
+    from SharedModules.baselines.mage import _MotifAttention, score_mage
+    from SharedModules.evaluation.split_eval import _pi_to_node_atts
+    p = Path(art_dir) / 'mage_attention.pt'
+    if not p.exists():
+        return {s: {} for s in SPLITS}
+    sd = torch.load(p, map_location='cpu', weights_only=False)
+    attn = _MotifAttention(sd['W.weight'].shape[0])
+    attn.load_state_dict(sd)
+    attn = attn.to(device).eval()
+    model = _load_vanilla(run_dir, meta, dmeta, device)
+    out = {}
+    for s in SPLITS:
+        sl = split_lists.get(s) or []
+        _, pi = score_mage(model, attn, sl, vocab, device, task_type, return_per_instance=True,
+                           verbose=False, score_mode='attention_mean', embed_batch_size=256)
+        out[s] = {gi: _np1(a) for gi, a in _pi_to_node_atts(pi, sl).items()}
+    return out
+
+
 def _gtroc_summary(att_by_split, gt, split_lists, keep, unk):
     """{split: {instance_gt_roc_node_auc_mean, global_gt_roc_node_auc_mean, gt_roc_node_auc_mean}}.
     att_by_split[s] keyed by split-list index; realign to the GT graph list per split."""
@@ -566,6 +609,7 @@ def _gtroc_summary(att_by_split, gt, split_lists, keep, unk):
 
 def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
     stem = DISK_STEM.get(method, method)
+    dest_dir.mkdir(parents=True, exist_ok=True)      # before any write (ante-hoc atts cache)
     loaders, vocab, dmeta, tt = build_gt_loaders(
         meta, args.data_root, args.vocab_root, args.processed_root, args.loader_batch_size)
     split_lists, gt = split_lists_and_gt(loaders, meta)
@@ -618,6 +662,10 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
     else:  # POST-HOC — read saved artifacts, no model, no re-run
         by_split = read_pooled_rows(art_dir, stem)
         att_by_split = read_saved_atts(art_dir, stem)
+        if method == 'mage' and do_gtroc and not any(att_by_split.get(s) for s in SPLITS):
+            # producer saved mage_official atts, not mage_v2 -> reconstruct via saved attention
+            att_by_split = mage_reload_atts(run_dir, art_dir, meta, dmeta, vocab,
+                                            split_lists, device, tt)
         pred_by_split = read_producer_pred(art_dir, stem)
         for s in SPLITS:
             rows = by_split.get(s, [])
