@@ -306,34 +306,15 @@ def _fill_diagnostic_sidecars(d: dict, run_dir) -> None:
                     d.setdefault(f'{ex}_{agg}_topbot_{kk}', vv)
 
 
-def _regenerate_families(args) -> list[str]:
-    if getattr(args, 'families', None):
-        return list(args.families)
-    return ['mose', 'motifsat', 'gsat']
-
-
 def step_regenerate(args) -> int:
-    if not (args.data_root and args.vocab_root):
-        print('[regenerate] needs --data_root and --vocab_root; skipping.')
-        return 1
-    fams = _regenerate_families(args)
-    print(f'  regenerate families: {fams}')
-    cmd = [sys.executable, str(ANALYSIS / 'regenerate_eval.py'),
-           '--out_root', args.out_root,
-           '--data_root', args.data_root, '--vocab_root', args.vocab_root,
-           '--families', *fams]
-    if getattr(args, 'mutag_data_root', None):
-        cmd += ['--mutag_data_root', args.mutag_data_root]
-    if getattr(args, 'ogb_data_root', None):
-        cmd += ['--ogb_data_root', args.ogb_data_root]
-    if args.processed_root:
-        cmd += ['--processed_root', args.processed_root]
-    if _datasets_arg(args):
-        cmd += ['--dataset', *_datasets_arg(args)]
-    if getattr(args, 'dry_run', False):
-        cmd += ['--dry_run']
-    print('\n=== regenerate eval metrics from checkpoints ===')
-    return subprocess.run(cmd).returncode
+    """DEPRECATED. regenerate_eval.py (which re-ran run.py --eval_only and re-fit post-hoc
+    explainers) has been removed. Explainability re-eval is now analysis/evaluate.py, which
+    reads existing post-hoc explainer outputs and forwards ante-hoc checkpoints (no re-fit),
+    parameterized by --method/--dataset/--vocab/--gt_tier/--unk. See docs/AGENT_EVAL_PROMPT.md."""
+    print('[regenerate] DEPRECATED — use analysis/evaluate.py '
+          '(--method/--dataset/--vocab/--gt_tier/--unk). regenerate_eval.py was removed; '
+          'it re-fit explainers, which analysis/evaluate.py deliberately never does.')
+    return 0
 
 
 # Column lists inlined in step_collect (below); these were unused duplicates.

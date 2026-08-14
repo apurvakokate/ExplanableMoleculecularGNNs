@@ -115,6 +115,13 @@ def main():
                          "the post-hoc/baselines re-eval; vanilla is excluded unless "
                          "explicitly requested here.")
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--allow_filter_refit', action='store_true',
+                    help='DANGER: permit running baselines on a *_filter vocab, which '
+                         'RE-FITS MAGE/PGExplainer per vocab (unseeded, stochastic) and '
+                         'produces a re-fit mage_attention.pt / pgexplainer_mlp.pt that is '
+                         'WRONG for the paper. The filtered baseline column must instead '
+                         'come from analysis/evaluate.py with --unk exclude (drops UNK '
+                         'motifs/atoms from the FULL run). Off by default; runs are skipped.')
     ap.add_argument('--dry_run', action='store_true')
     ap.add_argument('--skip_done', action='store_true', default=True,
                     help='skip runs whose dest summary_splits.json is already non-empty '
@@ -139,6 +146,15 @@ def main():
         if args.limit and (ok + failed) >= args.limit:
             break
         tag = f"{meta.get('dataset')}/{fam}/{meta.get('backbone')}/{meta.get('vocab_variant')}/fold{meta.get('fold')}"
+        # GUARDRAIL: this is the FULL-vocab post-hoc PRODUCER — never re-fit a baseline
+        # explainer on a *_filter vocab. The filtered view is analysis/evaluate.py with
+        # --unk exclude (drops UNK/below-threshold motifs & atoms from this FULL run),
+        # NOT a re-fit here (which re-fits MAGE/PGExplainer, unseeded stochastic => wrong).
+        if (fam == 'baselines' and str(meta.get('vocab_variant', '')).endswith('_filter')
+                and not args.allow_filter_refit):
+            print(f'  [skip:filter-refit] {tag} -> filtered view is analysis/evaluate.py '
+                  f'--unk exclude on the FULL run; re-fit here only with --allow_filter_refit')
+            continue
         # skip runs already finished (non-empty summary_splits) — resumable + lets
         # extra workers be added onto freed cores without redoing completed runs.
         _dest = (Path(args.dest_root) / run_dir.relative_to(args.out_root)
