@@ -250,6 +250,7 @@ _vocab_focus_resolve_one() {
         conservative_ertl_ring_bpe|cerb)
                                      echo "conservative_ertl_ring_bpe" ;;
         ring_mdl|ring)               echo "ring_mdl" ;;
+        ring_bpe|ringbpe)            echo "ring_bpe" ;;
         mdl_only|mdlonly)            echo "mdl_only" ;;
         ring_grow_bpe|ringgrowbpe|rgb) echo "ring_grow_bpe" ;;
         ring_grow_bpe_freq|rgbf)     echo "ring_grow_bpe_freq" ;;
@@ -302,6 +303,7 @@ _vocab_focus_filtered_for() {
         conservative_ertl_ring_mdl)  echo "conservative_ertl_ring_mdl_filter" ;;
         conservative_ertl_ring_bpe)  echo "conservative_ertl_ring_bpe_filter" ;;
         ring_mdl)                    echo "ring_mdl_filter" ;;
+        ring_bpe)                    echo "ring_bpe_filter" ;;
         mdl_only)                    echo "mdl_only_filter" ;;
         ring_grow_bpe)               echo "ring_grow_bpe_filter" ;;
         ring_grow_bpe_freq)          echo "ring_grow_bpe_freq_filter" ;;
