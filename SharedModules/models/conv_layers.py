@@ -22,6 +22,7 @@ PNAConvSimple    — Custom PNA with 4 aggregators × 3 scalers, edge_atten
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -486,7 +487,11 @@ def create_conv_layers(
     for i in range(num_layers):
         d_in = in_dim if i == 0 else hidden_dim
         if backbone == 'GAT':
-            layers.append(factory(d_in, hidden_dim, heads=4))
+            # Default 4 heads (current behaviour). Override to 1 via
+            # MOSE_GAT_HEADS=1 to match the historic single-head GATConv
+            # (Jan Table-5 replication). No effect unless the env var is set.
+            _gat_heads = int(os.environ.get('MOSE_GAT_HEADS', '4'))
+            layers.append(factory(d_in, hidden_dim, heads=_gat_heads))
         elif backbone == 'PNA':
             layers.append(factory(d_in, hidden_dim, deg=deg))
         elif backbone == 'GIN':
