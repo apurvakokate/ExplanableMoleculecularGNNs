@@ -459,6 +459,8 @@ def main():
                         help='Optimizer (default adamw from MOSEConfig).')
     parser.add_argument('--weight_decay', type=float, default=None,
                         help='Weight decay (default 0.01 from MOSEConfig).')
+    parser.add_argument('--dropout',     type=float, default=None,
+                        help='Dropout prob (default 0.5 from MOSEConfig).')
     parser.add_argument('--early_stop_metric', default=None, choices=['loss', 'auc'],
                         help="Early-stop/scheduler signal: 'loss' = smoothed val "
                              "loss (default, paper); 'auc' = legacy val-AUC.")
@@ -570,6 +572,7 @@ def main():
             **({} if args.batch_size is None else {'batch_size': args.batch_size}),
             **({} if args.optimizer is None else {'optimizer': args.optimizer}),
             **({} if args.weight_decay is None else {'weight_decay': args.weight_decay}),
+            **({} if args.dropout is None else {'dropout': args.dropout}),
             **({} if args.early_stop_metric is None else {'early_stop_metric': args.early_stop_metric}),
             **({} if args.patience is None else {'patience': args.patience}),
             gnn_lr=0.001 if args.gnn_lr is None else args.gnn_lr,
