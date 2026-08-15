@@ -428,8 +428,16 @@ def make_sage_conv(in_dim: int, out_dim: int) -> SAGEConvWithAtten:
     return SAGEConvWithAtten(in_dim, out_dim, normalize=False, aggr='mean')
 
 def make_gat_conv(in_dim: int, out_dim: int,
-                  heads: int = 4, edge_dim: Optional[int] = None) -> GATConvWithAtten:
+                  heads: int = 1, edge_dim: Optional[int] = None) -> GATConvWithAtten:
     """GAT with concat=False: output is out_dim (not heads × out_dim).
+
+    heads=1 is the PROJECT STANDARD (single-head GAT): it matches the historic
+    Jan Table-5 codebase (stock ``GATConv`` default) and gives markedly better,
+    better-calibrated motif explanations on GAT (hERG grouped Pearson 0.73→0.83,
+    reaching/exceeding the paper's 0.794). See conv_layers create_conv_layers and
+    CLAUDE.md. Multi-head (4) was a later divergence that degraded GAT
+    explanations. Override per-run with env MOSE_GAT_HEADS=<n> only to reproduce
+    old heads=4 results.
 
     No constraint on out_dim % heads since heads are averaged, not concatenated.
     """
@@ -487,10 +495,13 @@ def create_conv_layers(
     for i in range(num_layers):
         d_in = in_dim if i == 0 else hidden_dim
         if backbone == 'GAT':
-            # Default 4 heads (current behaviour). Override to 1 via
-            # MOSE_GAT_HEADS=1 to match the historic single-head GATConv
-            # (Jan Table-5 replication). No effect unless the env var is set.
-            _gat_heads = int(os.environ.get('MOSE_GAT_HEADS', '4'))
+            # PROJECT STANDARD: GAT runs single-head (heads=1). This matches the
+            # historic Jan Table-5 codebase (stock GATConv) and materially
+            # improves GAT motif explanations (hERG grouped Pearson 0.73->0.83).
+            # 4-head was a later divergence and is NOT the default any more.
+            # Escape hatch: set env MOSE_GAT_HEADS=4 ONLY to reproduce the old
+            # 4-head results (e.g. pre-2026-08-14 final_v2/final_ertlmdl GAT runs).
+            _gat_heads = int(os.environ.get('MOSE_GAT_HEADS', '1'))
             layers.append(factory(d_in, hidden_dim, heads=_gat_heads))
         elif backbone == 'PNA':
             layers.append(factory(d_in, hidden_dim, deg=deg))
