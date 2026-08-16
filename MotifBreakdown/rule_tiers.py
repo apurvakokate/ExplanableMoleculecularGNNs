@@ -401,57 +401,62 @@ def select_tiers(smiles: List[str],
                  screen_epochs: int = SCREEN_EPOCHS,
                  confirm_epochs: int = CONFIRM_EPOCHS,
                  log: Callable[[str], None] = print) -> Dict[str, dict]:
-    """Select one representative rule per difficulty band (easy/medium/hard).
+    raise NotImplementedError(
+        "select_tiers is RETIRED (difficulty-tier engine, ~10 knobs + observed tier collapse). "
+        "Planted rules are now UNIFORMLY SAMPLED by rule_dnf.sample_dnf; difficulty is measured "
+        "downstream (GT-ROC), never selected here. This module's helpers (_foolability, _lr_cv_auc, "
+        "_atom_hist_matrix, _featurizer) are still used and remain live.")
+#     """Select one representative rule per difficulty band (easy/medium/hard).
 
-    smiles     : one SMILES per molecule.
-    mol_frags  : per molecule, list of (motif_key, atom_index_set) — the production
-                 tracked fragmentation (mol_frags_tracked). Keys must be the SAME
-                 strings used in rules.json / annotation_lookup so apply_gt matches.
+#     smiles     : one SMILES per molecule.
+#     mol_frags  : per molecule, list of (motif_key, atom_index_set) — the production
+#                  tracked fragmentation (mol_frags_tracked). Keys must be the SAME
+#                  strings used in rules.json / annotation_lookup so apply_gt matches.
 
-    Returns {tier: rule_dict} where rule_dict is apply_gt-compatible:
-        {'clauses': [{'motifs': [key, ...]}, ...], 'rule_str', 'P2', 'P4', 'cov',
-         'P2_std', 'tier_band', 'foolability': [ per-clause ... ]}
-    Missing bands are simply absent from the returned dict.
-    """
-    n = len(smiles)
-    feat = _featurizer()
-    base = [feat(s) for s in smiles]                       # None for unparseable
+#     Returns {tier: rule_dict} where rule_dict is apply_gt-compatible:
+#         {'clauses': [{'motifs': [key, ...]}, ...], 'rule_str', 'P2', 'P4', 'cov',
+#          'P2_std', 'tier_band', 'foolability': [ per-clause ... ]}
+#     Missing bands are simply absent from the returned dict.
+#     """
+#     n = len(smiles)
+#     feat = _featurizer()
+#     base = [feat(s) for s in smiles]                       # None for unparseable
 
-    motset = [{k for k, _ in mf} for mf in mol_frags]
-    from collections import Counter
-    cov = Counter()
-    for s in motset:
-        cov.update(s)
-    kept = {k for k, c in cov.items() if c >= MIN_SUP * n}
+#     motset = [{k for k, _ in mf} for mf in mol_frags]
+#     from collections import Counter
+#     cov = Counter()
+#     for s in motset:
+#         cov.update(s)
+#     kept = {k for k, c in cov.items() if c >= MIN_SUP * n}
     # literal candidates: kept motifs whose OWN coverage is in the literal band
-    cand = [k for k in kept if LIT_COV_LO <= cov[k] / n <= LIT_COV_HI]
-    pres = {k: np.array([k in motset[i] for i in range(n)]) for k in cand}
+#     cand = [k for k in kept if LIT_COV_LO <= cov[k] / n <= LIT_COV_HI]
+#     pres = {k: np.array([k in motset[i] for i in range(n)]) for k in cand}
 
-    def rule_cov(cls):
-        fires = np.zeros(n, bool)
-        for cl in cls:
-            f = np.ones(n, bool)
-            for k in cl:
-                f &= pres[k]
-            fires |= f
-        return float(fires.mean())
+#     def rule_cov(cls):
+#         fires = np.zeros(n, bool)
+#         for cl in cls:
+#             f = np.ones(n, bool)
+#             for k in cl:
+#                 f &= pres[k]
+#             fires |= f
+#         return float(fires.mean())
 
-    bal = lambda p: COV_LO <= p.mean() <= COV_HI
-    jc = lambda a, b: (a & b).sum() / max((a | b).sum(), 1)
+#     bal = lambda p: COV_LO <= p.mean() <= COV_HI
+#     jc = lambda a, b: (a & b).sum() / max((a | b).sum(), 1)
 
     # ── richness: per-motif atom count from the tracked fragmentation ────────────
-    motif_natoms: Dict[str, int] = {}
-    for mf in mol_frags:
-        for k, ats in mf:
-            motif_natoms.setdefault(k, len(ats))
+#     motif_natoms: Dict[str, int] = {}
+#     for mf in mol_frags:
+#         for k, ats in mf:
+#             motif_natoms.setdefault(k, len(ats))
 
-    def _structural(k: str) -> bool:      # a ring or a real ≥2-atom fragment (not a bare atom)
-        return k.startswith('ring:') or motif_natoms.get(k, 1) >= MIN_STRUCT_ATOMS
+#     def _structural(k: str) -> bool:      # a ring or a real ≥2-atom fragment (not a bare atom)
+#         return k.startswith('ring:') or motif_natoms.get(k, 1) >= MIN_STRUCT_ATOMS
 
-    def rule_atoms(cls) -> int:           # total atoms the rule references (richness proxy)
-        return sum(motif_natoms.get(m, 1) for cl in cls for m in cl)
+#     def rule_atoms(cls) -> int:           # total atoms the rule references (richness proxy)
+#         return sum(motif_natoms.get(m, 1) for cl in cls for m in cl)
 
-    def rule_structural(cls) -> bool:     # every CLAUSE (OR disjunct) must carry structure
+#     def rule_structural(cls) -> bool:     # every CLAUSE (OR disjunct) must carry structure
         # A bare single-atom motif (*Cl, *O) is admissible ONLY when ANDed with a
         # structural motif inside the same clause — never as a standalone OR disjunct:
         #   [[benzene, *Cl]]         -> True   (AND: the ring forces message passing)
@@ -459,49 +464,49 @@ def select_tiers(smiles: List[str],
         #   [[*Cl]] / [[*Cl, *O]]    -> False  (no ring / ≥2-atom FG anywhere)
         # Enforced per clause: each OR disjunct must contain at least one structural
         # motif; single atoms then survive only as co-constraints in an AND clause.
-        for cl in cls:                                    # cl = one AND clause / OR disjunct
-            if not any(_structural(m) for m in cl):
-                return False                              # clause is all bare atoms -> trivial
-        return True
+#         for cl in cls:                                    # cl = one AND clause / OR disjunct
+#             if not any(_structural(m) for m in cl):
+#                 return False                              # clause is all bare atoms -> trivial
+#         return True
 
     # ── pool: balanced singles + genuine conjunctions + a few disjoint DNFs ──────
-    singles = [(k,) for k in cand if bal(pres[k])]
-    singles.sort(key=lambda c: abs(cov[c[0]] / n - 0.3))
-    singles = singles[:POOL_SINGLES]
+#     singles = [(k,) for k in cand if bal(pres[k])]
+#     singles.sort(key=lambda c: abs(cov[c[0]] / n - 0.3))
+#     singles = singles[:POOL_SINGLES]
 
-    def genuine(a, b):
-        mm = pres[a] & pres[b]
-        pa, pb = pres[a].mean(), pres[b].mean()
-        return bool(pa) and bool(pb) and mm.mean() > 0.03 and \
-            mm.mean() / pa <= 0.7 and mm.mean() / pb <= 0.7
-    conj_all = [(a, b) for a, b in itertools.combinations(cand, 2)
-                if genuine(a, b) and bal(pres[a] & pres[b])]
+#     def genuine(a, b):
+#         mm = pres[a] & pres[b]
+#         pa, pb = pres[a].mean(), pres[b].mean()
+#         return bool(pa) and bool(pb) and mm.mean() > 0.03 and \
+#             mm.mean() / pa <= 0.7 and mm.mean() / pb <= 0.7
+#     conj_all = [(a, b) for a, b in itertools.combinations(cand, 2)
+#                 if genuine(a, b) and bal(pres[a] & pres[b])]
 
-    def spread(items, key, k):
-        s = sorted(items, key=key)
-        if len(s) <= k:
-            return s
-        return [s[round(j * (len(s) - 1) / (k - 1))] for j in range(k)]
-    conjs = spread(conj_all, lambda ab: (pres[ab[0]] & pres[ab[1]]).mean(), POOL_C)
+#     def spread(items, key, k):
+#         s = sorted(items, key=key)
+#         if len(s) <= k:
+#             return s
+#         return [s[round(j * (len(s) - 1) / (k - 1))] for j in range(k)]
+#     conjs = spread(conj_all, lambda ab: (pres[ab[0]] & pres[ab[1]]).mean(), POOL_C)
 
-    dnfs = []
-    chosen, mask = [], np.zeros(n, bool)
-    dp = [(ab, pres[ab[0]] & pres[ab[1]]) for ab in conj_all]
-    while len(chosen) < 3 and dp:
-        cs = [(ab, mm) for ab, mm in dp if all(jc(mm, cm) <= 0.2 for _, cm in chosen)]
-        if not cs:
-            break
-        ab, mm = max(cs, key=lambda x: (x[1] & ~mask).sum())
-        chosen.append((ab, mm)); mask |= mm
-        dp = [b for b in dp if b[0] != ab]
-    if len(chosen) >= 2:
-        dnfs.append([list(c[0]) for c in chosen])
-    topc = sorted(conj_all, key=lambda ab: -(pres[ab[0]] & pres[ab[1]]).mean())
-    for a, b in itertools.combinations(topc[:6], 2):
-        if jc(pres[a[0]] & pres[a[1]], pres[b[0]] & pres[b[1]]) <= 0.2:
-            dnfs.append([list(a), list(b)])
-        if len(dnfs) >= POOL_D:
-            break
+#     dnfs = []
+#     chosen, mask = [], np.zeros(n, bool)
+#     dp = [(ab, pres[ab[0]] & pres[ab[1]]) for ab in conj_all]
+#     while len(chosen) < 3 and dp:
+#         cs = [(ab, mm) for ab, mm in dp if all(jc(mm, cm) <= 0.2 for _, cm in chosen)]
+#         if not cs:
+#             break
+#         ab, mm = max(cs, key=lambda x: (x[1] & ~mask).sum())
+#         chosen.append((ab, mm)); mask |= mm
+#         dp = [b for b in dp if b[0] != ab]
+#     if len(chosen) >= 2:
+#         dnfs.append([list(c[0]) for c in chosen])
+#     topc = sorted(conj_all, key=lambda ab: -(pres[ab[0]] & pres[ab[1]]).mean())
+#     for a, b in itertools.combinations(topc[:6], 2):
+#         if jc(pres[a[0]] & pres[a[1]], pres[b[0]] & pres[b[1]]) <= 0.2:
+#             dnfs.append([list(a), list(b)])
+#         if len(dnfs) >= POOL_D:
+#             break
 
     # ── structural pool: rich rules from rings / ≥2-atom FGs ─────────────────────
     # Bare single atoms (*Cl, *O) have high coverage so they dominate the singles/conj
@@ -509,35 +514,35 @@ def select_tiers(smiles: List[str],
     # already in the balance band (e.g. a common ring), and (b) DNFs that OR several
     # lower-coverage rings/FGs up to the band — so genuinely rich rules exist at every
     # foolability level, not just bare atoms.
-    struct_dnfs = []
-    if PREFER_STRUCTURAL:
-        struct_singles = sorted([k for k in cand if _structural(k)], key=lambda k: -cov[k])
-        seen_struct = set()
+#     struct_dnfs = []
+#     if PREFER_STRUCTURAL:
+#         struct_singles = sorted([k for k in cand if _structural(k)], key=lambda k: -cov[k])
+#         seen_struct = set()
         # (a) single structural motif already balanced (benzene ring, etc.)
-        for k in struct_singles:
-            if bal(pres[k]):
-                struct_dnfs.append([[k]]); seen_struct.add(k)
+#         for k in struct_singles:
+#             if bal(pres[k]):
+#                 struct_dnfs.append([[k]]); seen_struct.add(k)
         # (b) greedy disjoint-ish DNFs of the remaining (sub-floor) structural motifs
-        remaining = [k for k in struct_singles if k not in seen_struct
-                     and pres[k].mean() < COV_LO]
-        used = set()
-        for seed in remaining:
-            if seed in used:
-                continue
-            clause, fires = [[seed]], pres[seed].copy(); used_local = {seed}
-            for k in remaining:
-                if k in used_local or fires.mean() >= COV_HI:
-                    continue
-                if jc(pres[k], fires) <= 0.3:                 # keep clauses distinct
-                    nf = fires | pres[k]
-                    if nf.mean() <= COV_HI:
-                        clause.append([k]); fires = nf; used_local.add(k)
-                if fires.mean() >= COV_TARGET and len(clause) >= 2:
-                    break                                     # OR up to mid-band, not the floor
-            if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
-                struct_dnfs.append([list(c) for c in clause]); used |= used_local
-            if len(struct_dnfs) >= POOL_D + 4:
-                break
+#         remaining = [k for k in struct_singles if k not in seen_struct
+#                      and pres[k].mean() < COV_LO]
+#         used = set()
+#         for seed in remaining:
+#             if seed in used:
+#                 continue
+#             clause, fires = [[seed]], pres[seed].copy(); used_local = {seed}
+#             for k in remaining:
+#                 if k in used_local or fires.mean() >= COV_HI:
+#                     continue
+#                 if jc(pres[k], fires) <= 0.3:                 # keep clauses distinct
+#                     nf = fires | pres[k]
+#                     if nf.mean() <= COV_HI:
+#                         clause.append([k]); fires = nf; used_local.add(k)
+#                 if fires.mean() >= COV_TARGET and len(clause) >= 2:
+#                     break                                     # OR up to mid-band, not the floor
+#             if COV_LO <= fires.mean() <= COV_HI and len(clause) >= 2:
+#                 struct_dnfs.append([list(c) for c in clause]); used |= used_local
+#             if len(struct_dnfs) >= POOL_D + 4:
+#                 break
 
     # ── FG-family OR recovery (OPT-IN, default OFF) ──────────────────────────────
     # Directly repairs the freeze='rings' coverage cost: growth splits one group into
@@ -549,170 +554,170 @@ def select_tiers(smiles: List[str],
     # GATED OFF by default so the main benchmark keeps the documented grown-FG coverage
     # limitation; enable with RULE_TIERS_FAMILY_OR=1 for the "increasing clause coverage"
     # study (regenerates tiers, changing which rules are planted).
-    fam_dnfs = []
-    if PREFER_STRUCTURAL and FAMILY_OR:
-        from collections import defaultdict as _dd
-        fams: Dict[frozenset, List[str]] = _dd(list)
-        for k in cand:
-            sig = _fg_family(k)
-            if sig is not None:
-                fams[sig].append(k)
-        rings_inband = sorted(
-            [k for k in cand if k.startswith('ring:') and pres[k].mean() >= COV_LO],
-            key=lambda k: -cov[k])
-        for sig, members in fams.items():
-            if len(members) < 2:
-                continue                                  # one motif: nothing to recover
-            fires, picked = np.zeros(n, bool), []
-            for k in sorted(members, key=lambda k: -cov[k]):
-                if fires.mean() >= COV_HI:
-                    break
-                nf = fires | pres[k]
-                if nf.mean() <= COV_HI:
-                    picked.append(k); fires = nf
-            if len(picked) < 2:
-                continue
-            if COV_LO <= fires.mean() <= COV_HI:          # (a) family-OR standalone
-                fam_dnfs.append([[k] for k in picked])
-            for r in rings_inband[:2]:                    # (b) ring ∧ family-OR (distributed)
-                dnf = [[r, k] for k in picked]
-                if COV_LO <= rule_cov(dnf) <= COV_HI:
-                    fam_dnfs.append(dnf); break
-            if len(fam_dnfs) >= POOL_D + 4:
-                break
+#     fam_dnfs = []
+#     if PREFER_STRUCTURAL and FAMILY_OR:
+#         from collections import defaultdict as _dd
+#         fams: Dict[frozenset, List[str]] = _dd(list)
+#         for k in cand:
+#             sig = _fg_family(k)
+#             if sig is not None:
+#                 fams[sig].append(k)
+#         rings_inband = sorted(
+#             [k for k in cand if k.startswith('ring:') and pres[k].mean() >= COV_LO],
+#             key=lambda k: -cov[k])
+#         for sig, members in fams.items():
+#             if len(members) < 2:
+#                 continue                                  # one motif: nothing to recover
+#             fires, picked = np.zeros(n, bool), []
+#             for k in sorted(members, key=lambda k: -cov[k]):
+#                 if fires.mean() >= COV_HI:
+#                     break
+#                 nf = fires | pres[k]
+#                 if nf.mean() <= COV_HI:
+#                     picked.append(k); fires = nf
+#             if len(picked) < 2:
+#                 continue
+#             if COV_LO <= fires.mean() <= COV_HI:          # (a) family-OR standalone
+#                 fam_dnfs.append([[k] for k in picked])
+#             for r in rings_inband[:2]:                    # (b) ring ∧ family-OR (distributed)
+#                 dnf = [[r, k] for k in picked]
+#                 if COV_LO <= rule_cov(dnf) <= COV_HI:
+#                     fam_dnfs.append(dnf); break
+#             if len(fam_dnfs) >= POOL_D + 4:
+#                 break
 
-    pool = ([('single', [list(c)]) for c in singles]
-            + [('conj', [list(c)]) for c in conjs]
-            + [('dnf', d) for d in dnfs]
-            + [('struct', d) for d in struct_dnfs]
-            + [('family', d) for d in fam_dnfs])
-    log(f"    [tiers] pool: {len(singles)} singles + {len(conjs)} conj + "
-        f"{len(dnfs)} dnf + {len(struct_dnfs)} struct + {len(fam_dnfs)} family")
+#     pool = ([('single', [list(c)]) for c in singles]
+#             + [('conj', [list(c)]) for c in conjs]
+#             + [('dnf', d) for d in dnfs]
+#             + [('struct', d) for d in struct_dnfs]
+#             + [('family', d) for d in fam_dnfs])
+#     log(f"    [tiers] pool: {len(singles)} singles + {len(conjs)} conj + "
+#         f"{len(dnfs)} dnf + {len(struct_dnfs)} struct + {len(fam_dnfs)} family")
 
-    def rule_str(cls):
-        return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)
+#     def rule_str(cls):
+#         return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)
 
     # ══ FAST LR GRADER (default) — no GNN, no cyclic dependency ═══════════════════
-    if grader == 'lr':
-        H = _atom_hist_matrix(base, n)
-        graded = []
-        for form, cls in pool:
-            cvg = rule_cov(cls)
-            if not (COV_LO <= cvg <= COV_HI):
-                continue
-            fool, learn, _ = _lr_grade_rule(cls, cand, pres, motset, H, n)
-            ok = learn >= LEARN_MIN                       # non-degenerate (composition-learnable)
-            graded.append(dict(form=form, cls=cls, cov=cvg,
-                               foolability_auc=fool, learnable_auc=learn, valid=ok))
-            log(f"    [tiers-lr] {form:6} cov={cvg:.2f} fool={fool:.3f} "
-                f"learn={learn:.3f} {'OK' if ok else 'reject'}  {rule_str(cls)[:48]}")
-        valids = [g for g in graded if g['valid']]
-        log(f"    [tiers-lr] {len(valids)}/{len(graded)} usable "
-            f"(cov∈[{COV_LO},{COV_HI}], learnable≥{LEARN_MIN})")
+#     if grader == 'lr':
+#         H = _atom_hist_matrix(base, n)
+#         graded = []
+#         for form, cls in pool:
+#             cvg = rule_cov(cls)
+#             if not (COV_LO <= cvg <= COV_HI):
+#                 continue
+#             fool, learn, _ = _lr_grade_rule(cls, cand, pres, motset, H, n)
+#             ok = learn >= LEARN_MIN                       # non-degenerate (composition-learnable)
+#             graded.append(dict(form=form, cls=cls, cov=cvg,
+#                                foolability_auc=fool, learnable_auc=learn, valid=ok))
+#             log(f"    [tiers-lr] {form:6} cov={cvg:.2f} fool={fool:.3f} "
+#                 f"learn={learn:.3f} {'OK' if ok else 'reject'}  {rule_str(cls)[:48]}")
+#         valids = [g for g in graded if g['valid']]
+#         log(f"    [tiers-lr] {len(valids)}/{len(graded)} usable "
+#             f"(cov∈[{COV_LO},{COV_HI}], learnable≥{LEARN_MIN})")
         # TERCILE banding on foolability (shortcut availability): the 3 planted rules
         # SPAN the available difficulty range (easy = least foolable third, hard = most).
         # Relative-within-dataset by design — the ABSOLUTE difficulty is the phase-5
         # models' measured GT-ROC, which can relabel the tiers post-hoc. Robust to the
         # data-dependent foolability distribution (fixed thresholds can leave bands empty).
-        vs = sorted(valids, key=lambda g: g['foolability_auc'])
-        m = len(vs)
-        if m >= 3:
-            t = m // 3
-            groups = {'easy': vs[:t], 'medium': vs[t:m - t], 'hard': vs[m - t:]}
-        elif m == 2:
-            groups = {'easy': [vs[0]], 'hard': [vs[1]]}
-        elif m == 1:
-            groups = {'medium': [vs[0]]}
-        else:
-            groups = {}
-        out = {}
-        for lvl in ('easy', 'medium', 'hard'):
-            inband = groups.get(lvl) or []
-            if not inband:
-                log(f"    [tiers-lr] {lvl:6}: (no rule in this tercile)")
-                continue
+#         vs = sorted(valids, key=lambda g: g['foolability_auc'])
+#         m = len(vs)
+#         if m >= 3:
+#             t = m // 3
+#             groups = {'easy': vs[:t], 'medium': vs[t:m - t], 'hard': vs[m - t:]}
+#         elif m == 2:
+#             groups = {'easy': [vs[0]], 'hard': [vs[1]]}
+#         elif m == 1:
+#             groups = {'medium': [vs[0]]}
+#         else:
+#             groups = {}
+#         out = {}
+#         for lvl in ('easy', 'medium', 'hard'):
+#             inband = groups.get(lvl) or []
+#             if not inband:
+#                 log(f"    [tiers-lr] {lvl:6}: (no rule in this tercile)")
+#                 continue
             # representative: prefer a chemically RICH rule (all-structural, then more
             # atoms), using learnability + mid-coverage only as tiebreaks. Falls back to
             # the old learnability-first pick when PREFER_STRUCTURAL is off.
-            if PREFER_STRUCTURAL:
-                rep = max(inband, key=lambda g: (
-                    rule_structural(g['cls']), rule_atoms(g['cls']),
-                    g['learnable_auc'], -abs(g['cov'] - 0.3)))
-            else:
-                rep = max(inband, key=lambda g: (g['learnable_auc'], -abs(g['cov'] - 0.3)))
-            out[lvl] = dict(
-                clauses=[{'motifs': list(cl)} for cl in rep['cls']],
-                rule_str=rule_str(rep['cls']), form=rep['form'],
-                cov=round(rep['cov'], 4),
-                foolability_auc=round(rep['foolability_auc'], 4),
-                learnable_auc=round(rep['learnable_auc'], 4),
-                grader='lr', tier_band=lvl,
+#             if PREFER_STRUCTURAL:
+#                 rep = max(inband, key=lambda g: (
+#                     rule_structural(g['cls']), rule_atoms(g['cls']),
+#                     g['learnable_auc'], -abs(g['cov'] - 0.3)))
+#             else:
+#                 rep = max(inband, key=lambda g: (g['learnable_auc'], -abs(g['cov'] - 0.3)))
+#             out[lvl] = dict(
+#                 clauses=[{'motifs': list(cl)} for cl in rep['cls']],
+#                 rule_str=rule_str(rep['cls']), form=rep['form'],
+#                 cov=round(rep['cov'], 4),
+#                 foolability_auc=round(rep['foolability_auc'], 4),
+#                 learnable_auc=round(rep['learnable_auc'], 4),
+#                 grader='lr', tier_band=lvl,
                 # per-clause data-side shortcut detail (same LR family), for inspection
-                foolability=_foolability([tuple(cl) for cl in rep['cls']],
-                                         cand, pres, motset, n),
-            )
-            log(f"    [tiers-lr] {lvl:6}: {rep['form']} fool={rep['foolability_auc']:.3f} "
-                f"learn={rep['learnable_auc']:.3f} cov={rep['cov']:.2f}  {rule_str(rep['cls'])[:48]}")
-        return out
+#                 foolability=_foolability([tuple(cl) for cl in rep['cls']],
+#                                          cand, pres, motset, n),
+#             )
+#             log(f"    [tiers-lr] {lvl:6}: {rep['form']} fool={rep['foolability_auc']:.3f} "
+#                 f"learn={rep['learnable_auc']:.3f} cov={rep['cov']:.2f}  {rule_str(rep['cls'])[:48]}")
+#         return out
 
     # ══ GNN GRADER (opt-in: grader='gnn') — the trained-P2 prior (cyclic, slow) ════
     # ── STAGE A: screen whole pool (cheap GIN), gate on cov & P4 ──────────────────
-    screened = []
-    for form, cls in pool:
-        cvg = rule_cov(cls)
-        if not (COV_LO <= cvg <= COV_HI):
-            continue
-        agg = _train_grade([tuple(cl) for cl in cls], base, mol_frags,
-                           backbones, folds, screen_epochs)
-        valid = (agg['P4'] >= TAU_P4) and not np.isnan(agg['P2'])
-        screened.append(dict(form=form, cls=cls, cov=cvg, valid=valid, **agg))
-        log(f"    [tiers] {form:6} cov={cvg:.2f} P4={agg['P4']:.3f} "
-            f"P2={agg['P2']:.3f} {'OK' if valid else 'reject'}  {rule_str(cls)[:52]}")
+#     screened = []
+#     for form, cls in pool:
+#         cvg = rule_cov(cls)
+#         if not (COV_LO <= cvg <= COV_HI):
+#             continue
+#         agg = _train_grade([tuple(cl) for cl in cls], base, mol_frags,
+#                            backbones, folds, screen_epochs)
+#         valid = (agg['P4'] >= TAU_P4) and not np.isnan(agg['P2'])
+#         screened.append(dict(form=form, cls=cls, cov=cvg, valid=valid, **agg))
+#         log(f"    [tiers] {form:6} cov={cvg:.2f} P4={agg['P4']:.3f} "
+#             f"P2={agg['P2']:.3f} {'OK' if valid else 'reject'}  {rule_str(cls)[:52]}")
 
-    valids = [s for s in screened if s['valid']]
-    log(f"    [tiers] {len(valids)}/{len(screened)} learnable "
-        f"(cov∈[{COV_LO},{COV_HI}], P4≥{TAU_P4})")
+#     valids = [s for s in screened if s['valid']]
+#     log(f"    [tiers] {len(valids)}/{len(screened)} learnable "
+#         f"(cov∈[{COV_LO},{COV_HI}], P4≥{TAU_P4})")
 
-    selected = {}
-    for lvl, lo, hi in BANDS:
-        inband = [s for s in valids if lo <= s['P2'] < hi]
-        if not inband:
-            log(f"    [tiers] {lvl:6}: (no valid rule with P2∈[{lo:.2f},{hi:.2f}))")
-            continue
-        rep = max(inband, key=lambda s: (s['P4'], -abs(s['cov'] - 0.3)))
-        selected[lvl] = rep
-        log(f"    [tiers] {lvl:6}: {rep['form']} P2={rep['P2']:.3f} "
-            f"cov={rep['cov']:.2f}  {rule_str(rep['cls'])[:56]}")
+#     selected = {}
+#     for lvl, lo, hi in BANDS:
+#         inband = [s for s in valids if lo <= s['P2'] < hi]
+#         if not inband:
+#             log(f"    [tiers] {lvl:6}: (no valid rule with P2∈[{lo:.2f},{hi:.2f}))")
+#             continue
+#         rep = max(inband, key=lambda s: (s['P4'], -abs(s['cov'] - 0.3)))
+#         selected[lvl] = rep
+#         log(f"    [tiers] {lvl:6}: {rep['form']} P2={rep['P2']:.3f} "
+#             f"cov={rep['cov']:.2f}  {rule_str(rep['cls'])[:56]}")
 
     # ── STAGE B: confirm selected on more backbones/folds + foolability ──────────
-    out = {}
-    for lvl, rep in selected.items():
-        cls = rep['cls']
-        agg = _train_grade([tuple(cl) for cl in cls], base, mol_frags,
-                           confirm_backbones, confirm_folds, confirm_epochs)
-        fool = _foolability([tuple(cl) for cl in cls], cand, pres, motset, n)
-        out[lvl] = dict(
-            clauses=[{'motifs': list(cl)} for cl in cls],
-            rule_str=rule_str(cls),
-            form=rep['form'],
-            grader='gnn',
-            cov=round(rep['cov'], 4),
-            P4=round(agg['P4'], 4),
-            P2=round(agg['P2'], 4) if not np.isnan(agg['P2']) else None,
-            P2_std=round(agg['P2_std'], 4),
-            P5drop=round(agg['P5drop'], 4) if not np.isnan(agg['P5drop']) else None,
-            foolability=fool,
-        )
-        log(f"    [tiers] confirm {lvl:6} P4={agg['P4']:.3f} P2={agg['P2']:.3f} "
-            f"(spread={agg['P2_std']:.3f})")
+#     out = {}
+#     for lvl, rep in selected.items():
+#         cls = rep['cls']
+#         agg = _train_grade([tuple(cl) for cl in cls], base, mol_frags,
+#                            confirm_backbones, confirm_folds, confirm_epochs)
+#         fool = _foolability([tuple(cl) for cl in cls], cand, pres, motset, n)
+#         out[lvl] = dict(
+#             clauses=[{'motifs': list(cl)} for cl in cls],
+#             rule_str=rule_str(cls),
+#             form=rep['form'],
+#             grader='gnn',
+#             cov=round(rep['cov'], 4),
+#             P4=round(agg['P4'], 4),
+#             P2=round(agg['P2'], 4) if not np.isnan(agg['P2']) else None,
+#             P2_std=round(agg['P2_std'], 4),
+#             P5drop=round(agg['P5drop'], 4) if not np.isnan(agg['P5drop']) else None,
+#             foolability=fool,
+#         )
+#         log(f"    [tiers] confirm {lvl:6} P4={agg['P4']:.3f} P2={agg['P2']:.3f} "
+#             f"(spread={agg['P2_std']:.3f})")
 
     # RELABEL by the CONFIRMED multi-backbone P2 (authoritative over the 1-fold screen
     # that assigned the bands) — otherwise labels can violate their own P2 ordering.
-    if len(out) >= 2:
-        order = sorted(out, key=lambda l: -(out[l]['P2'] if out[l]['P2'] is not None else -1))
-        names = ['easy', 'medium', 'hard'][:len(order)]
-        out = {nm: {**out[ol], 'tier_band': nm} for nm, ol in zip(names, order)}
-    else:
-        for lvl in out:
-            out[lvl]['tier_band'] = lvl
-    return out
+#     if len(out) >= 2:
+#         order = sorted(out, key=lambda l: -(out[l]['P2'] if out[l]['P2'] is not None else -1))
+#         names = ['easy', 'medium', 'hard'][:len(order)]
+#         out = {nm: {**out[ol], 'tier_band': nm} for nm, ol in zip(names, order)}
+#     else:
+#         for lvl in out:
+#             out[lvl]['tier_band'] = lvl
+#     return out

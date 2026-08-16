@@ -1879,13 +1879,16 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             # rule name -> {clauses:[{motifs}], ...}), just keyed 'dnf_k1/2/3' instead of easy/med/hard,
             # so apply_gt.load_tier_rule and the phase4/5 driver read it unchanged. Difficulty is
             # MEASURED downstream (GT-ROC), not asserted here.
-            if _os.environ.get('RULE_ENGINE', 'tiers') == 'dnf':
+            # RULE_ENGINE now DEFAULTS to 'dnf' (uniform sampling via rule_dnf.sample_dnf). The
+            # 'tiers' (rule_tiers.select_tiers) and 'grid' (rule_grid.select_grid) engines are
+            # RETIRED and raise if invoked — set RULE_ENGINE only to 'dnf'.
+            if _os.environ.get('RULE_ENGINE', 'dnf') == 'dnf':
                 import rule_dnf as _rd
                 # RULE_DNF_N caps the anchor count: unset => module default (20, top by coverage);
                 # 'all' => full population; int => that many.
                 _nr = _os.environ.get('RULE_DNF_N')
                 if _nr in (None, ''):
-                    _nr = _rd.N_RULES
+                    _nr = 10                        # sample_dnf default (N_RULES constant retired)
                 elif _nr == 'all':
                     _nr = None
                 else:
@@ -1894,7 +1897,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     except ValueError:
                         raise SystemExit(
                             f"RULE_DNF_N must be a positive integer or 'all' (got {_nr!r}). "
-                            f"Unset it for the default ({_rd.N_RULES}).")
+                            f"Unset it for the default (10).")
                     if _nr < 1:
                         raise SystemExit(
                             f"RULE_DNF_N must be >= 1 or 'all' (got {_nr}).")

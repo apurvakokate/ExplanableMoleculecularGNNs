@@ -105,71 +105,74 @@ def select_grid(smiles: List[str],
                 jaccard_max: float = JACCARD_MAX,
                 report_foolability: bool = True,
                 log: Callable[[str], None] = print) -> Dict[str, dict]:
-    """Plant one rule per (form x prevalence) cell. Returns {cell: apply_gt-rule}.
-    Empty cells are simply absent. Same (smiles, mol_frags) contract as
-    rule_tiers.select_tiers, so it is a drop-in for the pipeline."""
-    global N_MIN, JACCARD_MAX
-    N_MIN, JACCARD_MAX = n_min, jaccard_max
-    n = len(smiles)
-    cand, pres, motset, natoms, cov = _presence(mol_frags)
-    log(f"    [grid] candidates: {len(cand)} motifs with >= {n_min} molecules "
-        f"(of {len(cov)} in vocab)")
-    pool = _enumerate(cand, pres, n)
-    by_form: Dict[str, list] = {'single': [], 'and': [], 'or': []}
-    for form, cls, fires in pool:
-        by_form[form].append((cls, fires))
-    log(f"    [grid] pool: {len(by_form['single'])} single / "
-        f"{len(by_form['and'])} and / {len(by_form['or'])} or")
+    raise NotImplementedError(
+        "select_grid is RETIRED (form x prevalence grid engine). Planted rules are now UNIFORMLY "
+        "SAMPLED by rule_dnf.sample_dnf; difficulty is measured downstream, not gridded here.")
+#     """Plant one rule per (form x prevalence) cell. Returns {cell: apply_gt-rule}.
+#     Empty cells are simply absent. Same (smiles, mol_frags) contract as
+#     rule_tiers.select_tiers, so it is a drop-in for the pipeline."""
+#     global N_MIN, JACCARD_MAX
+#     N_MIN, JACCARD_MAX = n_min, jaccard_max
+#     n = len(smiles)
+#     cand, pres, motset, natoms, cov = _presence(mol_frags)
+#     log(f"    [grid] candidates: {len(cand)} motifs with >= {n_min} molecules "
+#         f"(of {len(cov)} in vocab)")
+#     pool = _enumerate(cand, pres, n)
+#     by_form: Dict[str, list] = {'single': [], 'and': [], 'or': []}
+#     for form, cls, fires in pool:
+#         by_form[form].append((cls, fires))
+#     log(f"    [grid] pool: {len(by_form['single'])} single / "
+#         f"{len(by_form['and'])} and / {len(by_form['or'])} or")
 
-    def rule_str(cls):
-        return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)
+#     def rule_str(cls):
+#         return ' ∨ '.join('(' + ' ∧ '.join(cl) + ')' for cl in cls)
 
-    def key_of(cls):
-        return tuple(sorted(tuple(sorted(cl)) for cl in cls))
+#     def key_of(cls):
+#         return tuple(sorted(tuple(sorted(cl)) for cl in cls))
 
-    used: Set[tuple] = set()
-    out: Dict[str, dict] = {}
+#     used: Set[tuple] = set()
+#     out: Dict[str, dict] = {}
     # deterministic cell order: prevalence-major, form-minor
-    for pv_name, pv in PREVALENCES:
-        for form in FORMS:
-            cell = f"{form}_{pv_name}"
-            best, best_score = None, None
-            for cls, fires in by_form[form]:
-                if key_of(cls) in used:
-                    continue
-                p = fires.mean()
-                npos, nneg = int(fires.sum()), int((~fires).sum())
-                if min(npos, nneg) < N_MIN:                         # gate: learnability
-                    continue
+#     for pv_name, pv in PREVALENCES:
+#         for form in FORMS:
+#             cell = f"{form}_{pv_name}"
+#             best, best_score = None, None
+#             for cls, fires in by_form[form]:
+#                 if key_of(cls) in used:
+#                     continue
+#                 p = fires.mean()
+#                 npos, nneg = int(fires.sum()), int((~fires).sum())
+#                 if min(npos, nneg) < N_MIN:                         # gate: learnability
+#                     continue
                 # rank ONLY by distance to the cell's target; tiebreak = more atoms (interpretable)
-                natom = sum(natoms.get(m, 1) for cl in cls for m in cl)
-                score = (abs(p - pv), -natom)
-                if best is None or score < best_score:
-                    best, best_score = (cls, fires, p, npos, nneg, natom), score
-            if best is None or best_score[0] > PREV_TOL:            # empty if nothing WITHIN the band
-                why = "no valid rule" if best is None else \
-                      f"nearest is cov={best[2]:.2f}, > {PREV_TOL:.3f} from target"
-                log(f"    [grid] {cell:12}: (empty — {why} near prevalence {pv:.2f})")
-                continue
-            cls, fires, p, npos, nneg, natom = best
-            used.add(key_of(cls))
-            rec = dict(
-                clauses=[{'motifs': list(cl)} for cl in cls],
-                rule_str=rule_str(cls), form=form, cell=cell,
-                cov=round(float(p), 4), n_pos=npos, n_neg=nneg,
-                n_atoms=natom, grader='grid',
-            )
-            if report_foolability:
-                fool = _foolability([tuple(cl) for cl in cls], cand, pres, motset, n)
-                rec['foolability'] = fool                          # DESCRIPTIVE covariate only
-                rec['foolability_auc'] = round(float(np.mean(
-                    [f['shortcut_auc'] for f in fool])) if fool else float('nan'), 4)
-            out[cell] = rec
-            fa = rec.get('foolability_auc', float('nan'))
-            log(f"    [grid] {cell:12}: cov={p:.2f} pos/neg={npos}/{nneg} "
-                f"fool={fa:.3f} atoms={natom}  {rule_str(cls)[:52]}")
-    log(f"    [grid] filled {len(out)}/{len(PREVALENCES)*len(FORMS)} cells")
-    return out
+#                 natom = sum(natoms.get(m, 1) for cl in cls for m in cl)
+#                 score = (abs(p - pv), -natom)
+#                 if best is None or score < best_score:
+#                     best, best_score = (cls, fires, p, npos, nneg, natom), score
+#             if best is None or best_score[0] > PREV_TOL:            # empty if nothing WITHIN the band
+#                 why = "no valid rule" if best is None else \
+#                       f"nearest is cov={best[2]:.2f}, > {PREV_TOL:.3f} from target"
+#                 log(f"    [grid] {cell:12}: (empty — {why} near prevalence {pv:.2f})")
+#                 continue
+#             cls, fires, p, npos, nneg, natom = best
+#             used.add(key_of(cls))
+#             rec = dict(
+#                 clauses=[{'motifs': list(cl)} for cl in cls],
+#                 rule_str=rule_str(cls), form=form, cell=cell,
+#                 cov=round(float(p), 4), n_pos=npos, n_neg=nneg,
+#                 n_atoms=natom, grader='grid',
+#             )
+#             if report_foolability:
+#                 fool = _foolability([tuple(cl) for cl in cls], cand, pres, motset, n)
+#                 rec['foolability'] = fool                          # DESCRIPTIVE covariate only
+#                 rec['foolability_auc'] = round(float(np.mean(
+#                     [f['shortcut_auc'] for f in fool])) if fool else float('nan'), 4)
+#             out[cell] = rec
+#             fa = rec.get('foolability_auc', float('nan'))
+#             log(f"    [grid] {cell:12}: cov={p:.2f} pos/neg={npos}/{nneg} "
+#                 f"fool={fa:.3f} atoms={natom}  {rule_str(cls)[:52]}")
+#     log(f"    [grid] filled {len(out)}/{len(PREVALENCES)*len(FORMS)} cells")
+#     return out
 
 
 # ── CLI smoke: run on a saved tracked fragmentation ──────────────────────────────
