@@ -1429,7 +1429,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     elif method in ('fg_first', 'fg_first_mdl', 'ertl_first', 'ertl_first_mdl',
                     'rdkit_fg_first', 'rdkit_fg_first_mdl', 'conservative_ertl_ring_mdl',
                     'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct',
-                    'lm_strict', 'lm_bde', 'lm_bde_g4'):
+                    'lm_strict', 'lm_bde', 'lm_bde_g4', 'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg'):
         # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
         # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
         # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
@@ -1466,7 +1466,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         _pm = _re.search(r'pool(\d+)', variant)
         _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
         _n_bad = 0
-        if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde')):
+        if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_fg')):
             # SETTLED FCOL linker tier: MDL SELECTION (or BPE) over a chemistry candidate pool
             # (Hussain-Rea + rBRICS/BRICS/RECAP + singletons; KRIMP select + prune), over a
             # frozen partition. Replaces the old bottom-up cascade_bpe_linker merge. Flags:
@@ -1485,11 +1485,11 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 import ring_mdl as _ml
             elif method.startswith('crush_direct'):
                 import crush_direct as _ml       # CRUSH rule cuts, NO MDL (deterministic units)
-            elif method.startswith(('lm_strict', 'lm_bde')):
+            elif method.startswith(('lm_strict', 'lm_bde', 'lm_fg')):
                 import entropy_bde_frag as _ml   # threshold-free branching-entropy local-maxima (+BDE veto)
             else:
                 import mdl_linker as _ml
-            if method.startswith(('lm_strict', 'lm_bde')):
+            if method.startswith(('lm_strict', 'lm_bde', 'lm_fg')):
                 # entropy_bde_frag selects its gate combination by method name
                 # (lm_strict / lm_bde / lm_bde_g4); the other kwargs are accepted but ignored.
                 _raw = _ml.build(smiles_all, method=method, head_source=head_source,
@@ -1679,7 +1679,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     # save_outputs) for analysis only. Strip at source so every artifact (motif_list, lookups,
     # motif_stats) is consistently prefix-free. Collision-checked (fails loud — no silent merging).
     _prefix_map = None
-    if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde')):
+    if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_fg')):
         def _strip_pref(_k):
             for _p in ('ring:', 'fg:', 'chain:', 'frag:'):
                 if _k.startswith(_p):
@@ -2093,7 +2093,8 @@ Examples:
                    choices=['rbrics', 'brics', 'all', 'rbrics_old', 'fg_first', 'fg_first_mdl',
                             'ertl_first', 'ertl_first_mdl', 'rdkit_fg_first', 'rdkit_fg_first_mdl',
                             'conservative_ertl_ring_mdl', 'ring_mdl', 'mdl_only', 'ring_grow_bpe',
-                            'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_bde_g4'],
+                            'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_bde_g4',
+                            'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],

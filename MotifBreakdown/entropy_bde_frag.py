@@ -47,7 +47,8 @@ from collections import Counter, defaultdict
 from rdkit import Chem
 
 import chemfrag as cf
-from crush_direct import _meaningful_bonds, _components   # Gate 0 candidate pool + partition helper
+from crush_direct import _meaningful_bonds, _components, _fused_protected  # Gate 0 pool + helpers
+import ertl_frag   # Ertl-IFG functional-group detection (algorithmic, complete over heteroatom FGs)
 
 # ─────────────────────────── Gate 3: physical bond cost (BDE) ──────────────────────────
 # Textbook average single-bond dissociation energies (kcal/mol). Discrete lookup, corpus-free.
@@ -134,11 +135,53 @@ def _is_terminal_heteroatom_bond(bond):
     return False
 
 
-def _select_cuts(mol, ctx, use_bde, gate4):
+# ───────────── Gate 0+ : freeze functional groups (measured causal units) ──────────────
+# Functional groups are detected by ERTL-IFG (algorithmic, complete over heteroatom functionality),
+# NOT a hand-SMARTS list. A size CAP drops over-merged Ertl units (contiguous-heteroatom blobs) so a
+# frozen unit never spans several groups: Ertl gives coverage, the cap gives the "valid single group"
+# property RDKit's atomic FG list couldn't. Bonds INTERNAL to a kept group are frozen (never cut), the
+# same way ring bonds are. With freeze_fg on, Gate 0 = "CRUSH-valid bond that is not ring / fused /
+# FG-internal", and the LM (+BDE) gates decide only those remaining linker/scaffold bonds.
+_FG_CAP = 8   # Ertl units larger than this are treated as over-merged and NOT frozen (measured: kills
+              #  the 26-atom merge tail while keeping over-merge ~0%; the entropy gate then cuts them).
+
+
+def _fg_internal_bonds(mol):
+    """Bond indices internal to an Ertl functional group of size <= _FG_CAP — frozen."""
+    frozen = set()
+    for grp in ertl_frag.ertl_fgs(mol):
+        if len(grp) > _FG_CAP:                       # cap: skip over-merged Ertl blobs
+            continue
+        g = set(grp)
+        for b in mol.GetBonds():
+            if b.GetBeginAtomIdx() in g and b.GetEndAtomIdx() in g:
+                frozen.add(b.GetIdx())
+    return frozen
+
+
+def _candidate_bonds_frozen(mol):
+    """Gate 0 with FG-freezing: CRUSH-valid bonds MINUS ring / fused / FG-internal. CRUSH still
+    constrains cuts to chemically-valid disconnections; rings + Ertl FGs are frozen; LM/BDE decide
+    the rest."""
+    prot = _fused_protected(mol)
+    fg = _fg_internal_bonds(mol)
+    cands = set()
+    for bi in _meaningful_bonds(mol):                            # CRUSH-valid disconnections only
+        if bi in fg:                                             # minus frozen functional groups
+            continue
+        b = mol.GetBondWithIdx(bi)
+        if b.GetBeginAtomIdx() in prot or b.GetEndAtomIdx() in prot:  # minus fused systems
+            continue
+        cands.add(bi)                                            # rings already excluded by CRUSH
+    return cands
+
+
+def _select_cuts(mol, ctx, use_bde, gate4, freeze_fg=False):
     """Return the set of candidate-bond indices to cut under the chosen gates."""
     ecache = _entropy_cache(mol, ctx)
+    candidates = _candidate_bonds_frozen(mol) if freeze_fg else _meaningful_bonds(mol)  # Gate 0
     cuts = set()
-    for bi in _meaningful_bonds(mol):                       # Gate 0
+    for bi in candidates:
         neigh = _neighbour_entropies(mol, bi, ecache)
         if not (neigh and ecache[bi] > max(neigh)):         # Gate 2: strict local maximum
             continue
@@ -158,6 +201,10 @@ _METHODS = {
     'lm_strict':  dict(use_bde=False, gate4=False),
     'lm_bde':     dict(use_bde=True,  gate4=False),
     'lm_bde_g4':  dict(use_bde=True,  gate4=True),
+    # rings + functional groups frozen at Gate 0; LM/BDE apply only to linker/scaffold bonds:
+    'lm_fg':       dict(use_bde=False, gate4=False, freeze_fg=True),
+    'lm_bde_fg':   dict(use_bde=True,  gate4=False, freeze_fg=True),
+    'lm_bde_g4_fg': dict(use_bde=True, gate4=True,  freeze_fg=True),
 }
 
 
