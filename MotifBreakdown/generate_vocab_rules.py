@@ -1803,9 +1803,12 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     if g == 'test' and s in lookup_all}
 
     # Rules — classification only; regression datasets skip rule mining.
-    if is_regression:
+    # VOCAB_NO_RULES=1 (env) also skips it: building a fragmentation vocabulary never needs the
+    # synthetic-GT DNF rule ("planted rules") process, which is unrelated to motif_list.
+    if is_regression or os.environ.get('VOCAB_NO_RULES') == '1':
         rules = []
-        print('    Rules: skipped (regression dataset — no rule mining)')
+        print('    Rules: skipped'
+              + (' (regression dataset)' if is_regression else ' (VOCAB_NO_RULES=1)'))
     else:
         rules = extract_rules(motif_list, motif_stats, X, labels_all,
                               rank_mode=rule_rank, threshold_motifs=threshold_motifs)
