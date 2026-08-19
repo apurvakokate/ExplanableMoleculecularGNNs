@@ -58,6 +58,10 @@ CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
     'ring_grow_bpe_freqcap8_filter':      dict(UNIFIED_FILTER_THRESHOLDS),
     # rings + bounded 1-2-hop growth + KRIMP-MDL selection (candidate #2; ring_grow_mdl.py).
     'ring_grow_mdl_filter':               dict(UNIFIED_FILTER_THRESHOLDS),
+    # SFO: off-the-shelf candidates -> corpus statistics -> exact-cover ILP.
+    # Same unified cutoffs; the fragmenter's own eligibility gate uses this SAME
+    # number as S_min, so "eligible" and "kept" mean the same thing by construction.
+    'size_frequency_optimization_filter':  dict(UNIFIED_FILTER_THRESHOLDS),
     # FG-protected + threshold (mutag MOSE filtered; same cutoffs until phase-2 review)
     'rbrics_protected_filter':            dict(UNIFIED_FILTER_THRESHOLDS),
     'all_fallback_bpe_protected_filter':  dict(UNIFIED_FILTER_THRESHOLDS),

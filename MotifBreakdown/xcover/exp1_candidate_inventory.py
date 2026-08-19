@@ -44,6 +44,20 @@ DEFAULT_MB = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 
 FRAGMENTERS = ('BRICS', 'RECAP', 'rBRICS', 'CRUSH')
 
+# S_min is deliberately NOT a new hyperparameter: it is the SAME cutoff the downstream
+# vocabulary already applies (SharedModules/data/threshold_config.py,
+# UNIFIED_FILTER_THRESHOLDS), as a fraction of N_trainval.  Eligibility then means
+# "would survive the vocabulary threshold", so the objective is aligned with the metric
+# the method is judged on, and the gate cannot discard anything the pipeline would keep.
+THRESHOLD_PCT = {
+    'Mutagenicity': 0.002, 'Benzene': 0.005, 'BBBP': 0.006, 'hERG': 0.005,
+    'Alkane_Carbonyl': 0.005, 'Fluoride_Carbonyl': 0.005,
+    'Benzene_Verified_GT': 0.005, 'Fluoride_Carbonyl_Verified_GT': 0.005,
+    'Alkane_Carbonyl_Verified_GT': 0.005, 'esol': 0.002, 'Lipophilicity': 0.005,
+    'freesolv': 0.005, 'tox21': 0.005, 'mutag': 0.005,
+    'ogbg-molhiv': 0.004, 'ogbg-molbace': 0.005,
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 1 -- SMIRKS -> cut-bond compilation, and the three repaired RECAP rules
@@ -421,7 +435,7 @@ def keys_for(mol, atoms):
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 6 -- per-candidate structural score and the three S_methods diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
-def s_structure(n_atoms, n_attach):
+def s_structure(n_atoms, n_attach, form='size'):
     """S_structure = (1 - 1/n) * n/(n + |dF|).  ZERO free parameters, by design.
 
     Its ONE job is to counteract the size-frequency bias: small fragments have inflated
@@ -437,6 +451,12 @@ def s_structure(n_atoms, n_attach):
     """
     if n_atoms <= 0:
         return 0.0
+    if form == 'sizefree':
+        # SIZE-FREE: only the non-triviality floor (1 atom is not a structure) and
+        # boundary quality, which is attachment count relative to size.  Does NOT
+        # keep rising with n, so a 20-atom one-off no longer scores 0.905 for being big.
+        nontrivial = 0.0 if n_atoms <= 1 else 1.0
+        return nontrivial * (n_atoms / (n_atoms + n_attach))
     return (1.0 - 1.0 / n_atoms) * (n_atoms / (n_atoms + n_attach))
 
 
@@ -573,7 +593,8 @@ def process_molecule(args):
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 8 -- corpus aggregation and W(F)
 # ─────────────────────────────────────────────────────────────────────────────
-def aggregate(results, alpha, beta, eta, delta, w_form='multiplicative'):
+def aggregate(results, alpha, beta, eta, delta, w_form='multiplicative',
+              s_form='log_floor', struct_form='size'):
     """Corpus statistics computed ONCE over candidates, BEFORE any partition exists.
 
     This is the anti-circularity requirement (spec section 2): support here counts
@@ -598,12 +619,22 @@ def aggregate(results, alpha, beta, eta, delta, w_form='multiplicative'):
             mult[k].append(n)
 
     max_sup = max(sup2.values()) if sup2 else 1
-    denom = math.log1p(max_sup) or 1.0
+    # S_support FLOOR-RESCALED so support-1 maps to EXACTLY 0.
+    #   plain log1p:  support 1 -> 0.103  (a motif seen ONCE earned 10% of benzene's
+    #                 evidence, which is what let large one-off blobs survive)
+    #   floor-rescaled: support 1 -> 0.000, support 10 -> 0.282, max -> 1.000
+    # Encodes: a motif seen once is not evidence.
+    _lo = math.log1p(1)
+    denom = (math.log1p(max_sup) - _lo) if s_form == 'log_floor' else math.log1p(max_sup)
+    if denom <= 0:
+        denom = 1.0
     rows = []
     for k, s in rec.items():
         support = sup2[k]
-        s_sup = math.log1p(support) / denom
-        s_str = s_structure(s['n_atoms'], s['n_attach'])
+        s_sup = ((math.log1p(support) - _lo) / denom) if s_form == 'log_floor' \
+                else (math.log1p(support) / denom)
+        s_sup = max(0.0, s_sup)
+        s_str = s_structure(s['n_atoms'], s['n_attach'], form=struct_form)
         # S_stability: how concentrated is this motif's boundary context across the
         # corpus?  1 = always wired the same way, 0 = wired every possible way.  This
         # is where boundary context we kept OUT of the ring key comes back as EVIDENCE.
@@ -649,7 +680,7 @@ def aggregate(results, alpha, beta, eta, delta, w_form='multiplicative'):
 # W(F) is a CORPUS statistic and must be finished before any molecule is solved.
 # Solving during pass 1 would make each partition depend on statistics that were
 # themselves derived from partitions -- the circularity spec section 2 forbids.
-def solve_partition(blocks, cand_list, W_by_key, n_atoms, lam):
+def solve_partition(blocks, cand_list, W_by_key, n_atoms, lam, mask=None):
     """max  sum_j (W(F_j) - lambda) * x_j   s.t.  sum_{j: a in F_j} x_j == 1  for all a
 
     lb=1, ub=1 IS the whole requirement: every atom covered at least once (nothing
@@ -659,6 +690,13 @@ def solve_partition(blocks, cand_list, W_by_key, n_atoms, lam):
     """
     import numpy as np
     from scipy.optimize import milp, Bounds, LinearConstraint
+    if not cand_list:
+        return None
+    if mask is not None:
+        idx_map = [j for j, ok in enumerate(mask) if ok]
+        cand_list = [cand_list[j] for j in idx_map]
+    else:
+        idx_map = list(range(len(cand_list)))
     if not cand_list:
         return None
     ncand = len(cand_list)
@@ -675,7 +713,7 @@ def solve_partition(blocks, cand_list, W_by_key, n_atoms, lam):
                bounds=Bounds(np.zeros(ncand), np.ones(ncand)))
     if not res.success or res.x is None:
         return None
-    sel = [j for j, v in enumerate(res.x) if v > 0.5]
+    sel = [idx_map[j] for j, v in enumerate(res.x) if v > 0.5]
     return sel, float(-res.fun)
 
 
@@ -694,6 +732,82 @@ def verify_partition(n_atoms, blocks, cand_list, sel, rings):
     for r in rings:
         assert any(r <= p for p in parts), 'a ring was split across fragments'
     return parts
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8c -- MOTIF ELIGIBILITY (spec section 15)
+# ─────────────────────────────────────────────────────────────────────────────
+# Rarity ALONE is NOT a reason to reject a fragment -- spec section 15 forbids that
+# explicitly ("do not destroy a rare chemically coherent fragment simply because it is
+# rare").  The criterion is whether a BETTER ALTERNATIVE EXISTS.  Three clauses:
+#
+#   1 SUPPORTED     Support(F) >= S_min                 -- it earned its place
+#   2 IRREDUCIBLE   F is a single block                 -- cannot be refined at all;
+#                                                          also the feasibility fallback
+#   3 NO-BETTER     no PROPER sub-candidate of F is supported
+#                                                       -- refining it surfaces nothing,
+#                                                          so keeping it whole is honest
+#
+# Clause 3 is the section-15 protection.  A 24-atom molecule-specific blob contains a
+# benzene and common linkers, so refining DOES surface supported motifs -> clause 3
+# fails -> it is gated and must split.  A genuinely rare motif whose pieces are all
+# equally rare passes clause 3 and survives intact.
+#
+# Because candidates are connected unions of blocks and the blocks of any remainder are
+# themselves candidates, "some cover of F contains a supported member" reduces to
+# "some proper sub-candidate of F is supported" -- which is what is tested here.
+def eligibility(cand_list, supported):
+    """-> (eligible_mask, clause_counts).  Single blocks are ALWAYS eligible, which is
+    what keeps the exact cover feasible for every molecule."""
+    sup_sets = [frozenset(bidx) for bidx, key in cand_list if supported.get(key, False)]
+    mask, clauses = [], Counter()
+    for bidx, key in cand_list:
+        S = frozenset(bidx)
+        if supported.get(key, False):
+            mask.append(True); clauses['1_supported'] += 1
+        elif len(S) == 1:
+            mask.append(True); clauses['2_irreducible'] += 1
+        elif not any(T < S for T in sup_sets):
+            mask.append(True); clauses['3_no_better'] += 1
+        else:
+            mask.append(False); clauses['0_gated'] += 1
+    return mask, clauses
+
+
+
+def split_value(blocks, cand_list, W_by_key, mask, j_sel):
+    """Best achievable value of covering F's atoms using ONLY PROPER sub-candidates.
+
+    This is the SPLIT side of your point-5 keep-vs-split margin.  It is an exact cover
+    restricted to F's own atoms with F itself excluded, so it answers exactly:
+    "what is the best I could do if I were forbidden from keeping F whole?"
+    Returns None when F is a single block (no split exists -- irreducible).
+    """
+    import numpy as np
+    from scipy.optimize import milp, Bounds, LinearConstraint
+    S = set(cand_list[j_sel][0])
+    if len(S) < 2:
+        return None
+    atoms = sorted(set().union(*[set(blocks[i]) for i in S]))
+    amap = {a: i for i, a in enumerate(atoms)}
+    sub = [(bidx, key) for jj, (bidx, key) in enumerate(cand_list)
+           if set(bidx) < S and (mask is None or mask[jj])]
+    if not sub:
+        return None
+    A = np.zeros((len(atoms), len(sub)))
+    w = np.empty(len(sub))
+    for c, (bidx, key) in enumerate(sub):
+        for i in bidx:
+            for a in blocks[i]:
+                A[amap[a], c] = 1.0
+        w[c] = W_by_key.get(key, 0.0)
+    res = milp(c=-w,
+               constraints=LinearConstraint(A, lb=np.ones(len(atoms)), ub=np.ones(len(atoms))),
+               integrality=np.ones(len(sub)), bounds=Bounds(np.zeros(len(sub)), np.ones(len(sub))))
+    if not res.success or res.x is None:
+        return None
+    return float(-res.fun)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -762,6 +876,10 @@ def brics_fidelity(smiles, mb_dir, n_check):
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 10 -- driver, report, outputs
 # ─────────────────────────────────────────────────────────────────────────────
+def _bucket(s_):
+    return '1' if s_ <= 1 else ('2-9' if s_ < 10 else ('10-49' if s_ < 50 else '50+'))
+
+
 def pct(x, n):
     return round(100.0 * x / n, 2) if n else 0.0
 
@@ -773,8 +891,16 @@ def run_corpus(name, path, args):
 
     df = pd.read_csv(path)
     smiles = df['smiles'].astype(str).tolist()
+    groups = df['group'].tolist() if 'group' in df.columns else ['training'] * len(smiles)
     if args.limit:
-        smiles = smiles[:args.limit]
+        smiles = smiles[:args.limit]; groups = groups[:args.limit]
+    # S_min from the DOWNSTREAM threshold table (dataset name = corpus minus _<fold>)
+    base = name.rsplit('_', 1)[0] if name.rsplit('_', 1)[-1].isdigit() else name
+    thr_pct = args.s_min_pct if args.s_min_pct >= 0 else THRESHOLD_PCT.get(base, 0.005)
+    n_tv = sum(1 for g in groups if g in ('training', 'valid'))
+    s_min = max(1, int(thr_pct * n_tv))
+    print(f'   S_min: dataset={base} pct={thr_pct} n_trainval={n_tv} -> '
+          f'motif needs >= {s_min} molecules', flush=True)
     print(f'\n══ {name}: {len(smiles)} rows from {path}', flush=True)
 
     work = [(s, args.motifbreakdown, args.max_blocks, args.max_heavy,
@@ -789,7 +915,8 @@ def run_corpus(name, path, args):
     import statistics as st
     okr = [r for r in results if r['ok']]
     rows, sups = aggregate(okr, args.alpha, args.beta, args.eta, args.delta,
-                           w_form=args.w_form)
+                           w_form=args.w_form, s_form=args.s_form,
+                           struct_form=args.struct_form)
 
     n = len(okr)
 
@@ -797,20 +924,32 @@ def run_corpus(name, path, args):
     # W(F) is now final for the whole corpus, so every molecule can be solved
     # against statistics that no selection influenced.
     W_by_key = {r['key']: r['W'] for r in rows}
+    supported = {r['key']: (r['support'] >= s_min) for r in rows}
+    n_supported_keys = sum(1 for v in supported.values() if v)
     lam_grid = [float(x) for x in args.lam_sweep.split(',') if x.strip()] or [args.lam]
     if args.lam not in lam_grid:
         lam_grid.append(args.lam)
     sweep = {}
     partitions = None
+    clause_tot = Counter()
+    margin_rows = []
+    n_margin_mols = 0
     for lam in sorted(lam_grid):
         n_frag = []; n_single = []; n_fail = 0; obj = []; sizes_sel = []
+        sel_sup = []; sel_size = []
+        sup_by_key = {r['key']: r['support'] for r in rows}
         keep = [] if lam == args.lam else None
         for r in okr:
             from rdkit import Chem as _C
             mol = _C.MolFromSmiles(r['smiles'])
             rings = [set(x) for x in mol.GetRingInfo().AtomRings()]
+            mask, cl = (eligibility(r['cand_list'], supported)
+                        if args.eligibility == 'gate' else (None, Counter()))
+            if lam == args.lam:
+                for k, v in cl.items():
+                    clause_tot[k] += v
             got = solve_partition(r['blocks'], r['cand_list'], W_by_key,
-                                  r['n_atoms'], lam)
+                                  r['n_atoms'], lam, mask=mask)
             if got is None:
                 n_fail += 1
                 continue
@@ -818,8 +957,38 @@ def run_corpus(name, path, args):
             parts = verify_partition(r['n_atoms'], r['blocks'], r['cand_list'], sel, rings)
             n_frag.append(len(sel))
             n_single.append(sum(1 for j in sel if len(r['cand_list'][j][0]) == 1))
+            if keep is not None:
+                for j in sel:
+                    k = r['cand_list'][j][1]
+                    sel_sup.append(sup_by_key.get(k, 0))
+                    sel_size.append(len(set().union(
+                        *[set(r['blocks'][i]) for i in r['cand_list'][j][0]])))
             sizes_sel.extend(len(p) for p in parts)
             obj.append(value)
+            # KEEP-vs-SPLIT margin (your point 5).  Computed over ALL ELIGIBLE
+            # multi-block candidates, NOT only the selected ones: a selected fragment
+            # has already beaten its own split by construction, so restricting the log
+            # to selections makes the statistic tautologically 100% keep.  The
+            # `selected` flag preserves that view as a column.
+            if keep is not None and n_margin_mols < args.margin_n:
+                n_margin_mols += 1
+                selset = set(sel)
+                for j, (bidx, key) in enumerate(r['cand_list']):
+                    if len(bidx) < 2:
+                        continue
+                    if mask is not None and not mask[j]:
+                        continue
+                    natoms = len(set().union(*[set(r['blocks'][i]) for i in bidx]))
+                    wk = W_by_key.get(key, 0.0)
+                    sv = split_value(r['blocks'], r['cand_list'], W_by_key, mask, j)
+                    if sv is None:
+                        continue
+                    margin_rows.append({
+                        'smiles': r['smiles'], 'key': key,
+                        'support': sup_by_key.get(key, 0), 'size': natoms,
+                        'n_blocks': len(bidx), 'selected': int(j in selset),
+                        'W_keep': round(wk, 6), 'best_split': round(sv, 6),
+                        'keep_minus_split': round(wk - sv, 6)})
             if keep is not None:
                 keep.append({'smiles': r['smiles'],
                              'fragments': [{'key': r['cand_list'][j][1],
@@ -834,13 +1003,33 @@ def run_corpus(name, path, args):
             'single_block_fragments_pct': pct(sum(n_single), sum(n_frag)) if n_frag else 0,
             'heavy_atoms_per_fragment_mean': round(st.mean(sizes_sel), 3) if sizes_sel else 0,
             'trivial_fragments_pct': pct(sum(1 for x in sizes_sel if x <= 1), len(sizes_sel)) if sizes_sel else 0,
-            'objective_mean': round(st.mean(obj), 4) if obj else 0}
+            'objective_mean': round(st.mean(obj), 4) if obj else 0,
+            'selected_support_1_pct': pct(sum(1 for x in sel_sup if x == 1), len(sel_sup)) if sel_sup else None,
+            'selected_below_smin_pct': pct(sum(1 for x in sel_sup if x < s_min), len(sel_sup)) if sel_sup else None,
+            'selected_gt10_atoms_pct': pct(sum(1 for x in sel_size if x > 10), len(sel_size)) if sel_size else None,
+            'selected_gt15_atoms_pct': pct(sum(1 for x in sel_size if x > 15), len(sel_size)) if sel_size else None}
         if keep is not None:
             partitions = keep
         print(f'    lambda={lam:<5g} solved={len(n_frag):5d} fail={n_fail:3d} '
               f'frags/mol={sweep[f"{lam:g}"]["fragments_per_molecule_mean"]:.2f} '
               f'single-block={sweep[f"{lam:g}"]["single_block_fragments_pct"]:.1f}% '
               f'trivial={sweep[f"{lam:g}"]["trivial_fragments_pct"]:.1f}%', flush=True)
+
+    # keep-vs-split margin summary (your point 5) -- computed BEFORE the summary dict
+    _red = margin_rows
+    summary_margin = {
+        'logged_candidates': len(margin_rows),
+        'molecules_covered': n_margin_mols,
+        'selected_share_pct': pct(sum(1 for r_ in _red if r_['selected']), len(_red)) if _red else 0,
+        'keep_beat_split_pct': pct(sum(1 for r_ in _red if r_['keep_minus_split'] > 0), len(_red)) if _red else 0,
+        'split_beat_keep_pct': pct(sum(1 for r_ in _red if r_['keep_minus_split'] < 0), len(_red)) if _red else 0,
+        'tie_pct': pct(sum(1 for r_ in _red if r_['keep_minus_split'] == 0), len(_red)) if _red else 0,
+        'mean_margin': round(sum(r_['keep_minus_split'] for r_ in _red) / len(_red), 5) if _red else 0,
+        'keep_wins_by_support': {
+            b: pct(sum(1 for r_ in _red if _bucket(r_['support']) == b and r_['keep_minus_split'] > 0),
+                   sum(1 for r_ in _red if _bucket(r_['support']) == b))
+            for b in ('1', '2-9', '10-49', '50+')} if _red else {},
+    } if margin_rows else {}
 
     tot_pair = defaultdict(lambda: [0, 0])
     for r in okr:
@@ -858,7 +1047,8 @@ def run_corpus(name, path, args):
         'n_rows': len(smiles), 'n_parsed': n, 'n_unparsed': len(smiles) - n,
         'config': {k: getattr(args, k) for k in
                    ('max_blocks', 'max_heavy', 'max_cands', 'no_fixpoint',
-                    'w_form', 'alpha', 'beta', 'eta', 'delta')},
+                    'w_form', 's_form', 'struct_form', 'eligibility',
+                    'alpha', 'beta', 'eta', 'delta', 'lam')},
         'fixpoint': {
             'molecules_gaining_cuts': sum(1 for r in okr if r['n_new_cuts'] > 0),
             'pct_gaining': pct(sum(1 for r in okr if r['n_new_cuts'] > 0), n),
@@ -883,6 +1073,13 @@ def run_corpus(name, path, args):
             'layer0_candidates_offered': sum(r['n_single_block_cands'] for r in okr),
             'layer0_candidates_kept': sum(r['n_single_block_kept'] for r in okr),
             'unkeyable_blocks_rescued': sum(r['n_unkeyable_blocks'] for r in okr)},
+        'eligibility': {
+            'mode': args.eligibility, 's_min_molecules': s_min, 's_min_pct': thr_pct,
+            'n_trainval': n_tv, 'supported_keys': n_supported_keys,
+            'clause_counts': dict(clause_tot),
+            'gated_pct': pct(clause_tot.get('0_gated', 0), sum(clause_tot.values()))
+                          if clause_tot else 0},
+        'keep_vs_split_margin': summary_margin,
         'partition_optimisation': sweep,
         'lambda_used_for_output': args.lam,
         'root_candidates_skipped': sum(r['n_root_skipped'] for r in okr),
@@ -915,6 +1112,18 @@ def run_corpus(name, path, args):
             fh.write(','.join('"' + str(r[c]).replace('"', '""') + '"'
                               if c == 'key' else str(r[c]) for c in cols) + '\n')
 
+    if margin_rows:
+        mpath = os.path.join(args.out, f'exp1_{name}_margins.csv.gz')
+        mcols = ['smiles', 'key', 'support', 'size', 'n_blocks', 'selected',
+                 'W_keep', 'best_split', 'keep_minus_split']
+        with gzip.open(mpath, 'wt') as fh:
+            fh.write(','.join(mcols) + '\n')
+            for r_ in margin_rows:
+                fh.write(','.join('"' + str(r_[c]).replace('"', '""') + '"'
+                                  if c in ('smiles', 'key') else str(r_[c])
+                                  for c in mcols) + '\n')
+        print(f'  wrote {mpath}  ({len(margin_rows)} selected fragments)')
+
     if partitions is not None:
         ppath = os.path.join(args.out, f'exp1_{name}_partitions.jsonl.gz')
         with gzip.open(ppath, 'wt') as fh:
@@ -946,6 +1155,8 @@ def main():
     ap.add_argument('--max_cands', type=int, default=20000)
     ap.add_argument('--no_fixpoint', action='store_true')
     ap.add_argument('--fidelity_n', type=int, default=200)
+    ap.add_argument('--margin_n', type=int, default=250,
+                    help='number of MOLECULES to compute keep-vs-split margins over')
     # W(F) weights -- gamma is absent BY DESIGN; eta/delta default 0 until Experiment 2
     ap.add_argument('--w_form', choices=['multiplicative', 'additive'],
                     default='multiplicative',
@@ -957,9 +1168,17 @@ def main():
     ap.add_argument('--delta', type=float, default=0.0)
     # lambda = the flat per-fragment fee in the objective.  UNMEASURED: the sweep
     # exists precisely because we have no evidence for a value yet.
-    ap.add_argument('--lam', type=float, default=0.2,
+    ap.add_argument('--s_form', choices=['log_floor', 'log'], default='log_floor',
+                    help='log_floor makes support-1 score exactly 0 (default)')
+    ap.add_argument('--struct_form', choices=['size', 'sizefree'], default='size',
+                    help='sizefree removes the monotone size reward (arm D)')
+    ap.add_argument('--eligibility', choices=['gate', 'off'], default='gate',
+                    help='gate = spec section 15 three-clause motif eligibility')
+    ap.add_argument('--s_min_pct', type=float, default=-1.0,
+                    help='override the downstream threshold fraction; <0 uses the table')
+    ap.add_argument('--lam', type=float, default=0.0,
                     help='per-fragment penalty used for the WRITTEN partitions')
-    ap.add_argument('--lam_sweep', default='0.0,0.1,0.2,0.4,0.8',
+    ap.add_argument('--lam_sweep', default='0.0,0.1,0.2',
                     help='lambda values to report fragmentation statistics for')
     args = ap.parse_args()
 
