@@ -15,32 +15,41 @@ LEARNABLE; DIFFICULTY is MEASURED downstream (phase-5 GT-ROC), never built in.
 What changed vs rule_grid.py: the AND clauses are DISCOVERED by frequent-itemset mining
 (Apriori) instead of enumerated, and the rules are genuine DNF, drawn by UNIFORM sampling.
 
-Procedure (each step has a one-line reason; the tunables are min_support, the coverage band,
-and the identifiability correlation threshold):
+Procedure. There are TWO acceptance tests (balance, non-redundancy). The support floor tau is
+NOT an acceptance test — it is the MINING parameter that defines the Apriori pool, i.e. the
+population that "uniform sampling" is uniform over; it is enforced once at pool construction and
+is logically implied by non-redundancy anyway (new-positives(S) <= supp(S)). Identifiability is
+COMPUTED and RECORDED but NOT gated (see step 5).
 
   1. TRANSACTIONS — each molecule = its set of motif keys (market-basket). No atom sets
      needed for mining (apply_gt marks GT atoms downstream from the keys).
-  2. FREQUENT ITEMSETS — Apriori at support >= min_support (absolute count = estimability).
+  2. FREQUENT ITEMSETS — Apriori at support >= tau (absolute count = estimability).
      Gives conjunctions of ANY arity that actually occur; support self-limits the depth.
   3. ADMISSIBLE CLAUSE POOL — frequent itemsets of arity 1..a_max with support <= cov_hi*N
      (a clause too prevalent to sit in an in-band rule is pruned). Sorted deterministically so
-     sampling is reproducible from `seed` alone.
-  4. SAMPLE — draw arity k ~ Uniform{1..k_max}, then k distinct clauses uniformly from the pool;
-     the OR of them is a candidate DNF. Rejection-sample until n_rules pass the FOUR constraints:
+     sampling is reproducible from `seed` alone. THIS is where tau acts.
+  4. SAMPLE — draw k ~ Uniform{1..k_max} DISJUNCTS, then k distinct clauses uniformly from the
+     pool; the OR of them is a candidate DNF. Rejection-sample until n_rules pass BOTH tests:
        (1) BALANCE          — coverage cov = |F|/N in [cov_lo, cov_hi] (non-degenerate classes).
-       (2) SUPPORT          — every clause supp(S) >= min_support (guaranteed by the pool).
-       (3) NON-REDUNDANCY   — each disjunct adds >= min_support NEW positives (a real added cause).
-       (4) IDENTIFIABILITY  — every non-rule motif with |corr| >= spur_corr is a candidate
-           confounder; the WORST class-1 correlate must still leave >= min_support positives where
-           it is ABSENT, so the cause is separable from it. class-0 correlates are recorded, not gated.
-  5. RECORD (never select on): the four constraint VALUES, plus difficulty descriptors
-     (overlap o, spread s, correlate r, LR-learnability auc_lr, annotation size, clause
-     connectivity), structural look-alikes (family_motifs, size-gated), and foolability.
+       (2) NON-REDUNDANCY   — each disjunct adds >= tau NEW positives (a real added cause).
+  5. RECORD (never select on): the acceptance VALUES, the per-clause support, and — as of the
+     2026-08 revision — IDENTIFIABILITY. Every non-rule motif with |corr| >= spur_corr is a
+     candidate confounder, split by sign into spurious_pos (class-1) / spurious_neg (class-0),
+     and identifiability_sep = min over class-1 correlates of |F \ supp(m)| is stored. sep == 0
+     means the cause is perfectly shadowed: an UNIDENTIFIABLE rule is now ADMITTED ON PURPOSE,
+     because which of the two observationally-identical motifs a model attends to is an empirical
+     fact about inductive bias and is exactly what the GT-ROC vs spurious-ROC contrast measures.
+     Read GT-ROC in the low-sep stratum as PREFERENCE, not accuracy, and stratify tables by
+     identifiability_sep. Also recorded: difficulty descriptors (overlap o, spread s, correlate r,
+     LR-learnability auc_lr, annotation size, clause connectivity), structural look-alikes
+     (family_motifs, size-gated), and foolability.
 
-Output is apply_gt-compatible, keyed by 'dnf_k<k>_r<i>'. Tunables: min_sup_frac (2% of N, the
-estimability floor), [cov_lo, cov_hi] (the coverage band), a_max (max clause arity), MAX_K
-(declared form axis), spur_corr (identifiability threshold). Apriori depth is uncapped — deeper
-conjunctions die off below min_support on their own, so there is no MAX_LEN knob.
+Output is apply_gt-compatible, keyed by 'dnf_k<k>_r<i>' where k is the number of DISJUNCTS
+(conjunct width is capped separately by a_max and does NOT appear in the key) and i indexes the
+rules sampled at that k. Tunables: min_sup_frac (2% of N, the estimability floor), [cov_lo,
+cov_hi] (the coverage band), a_max (max clause arity), MAX_K (declared form axis), spur_corr
+(the correlate-reporting threshold — reporting only, no longer a gate). Apriori depth is
+uncapped — deeper conjunctions die off below tau on their own, so there is no MAX_LEN knob.
 
 The greedy anchor-growth engine (Psi overlap penalty, comparable_cov arm, structural single-atom
 gate, per-clause prevalence cap) is RETIRED as `_select_dnf_greedy_retired`; `select_dnf` is a
@@ -129,7 +138,7 @@ def sample_dnf(smiles: List[str],
                spur_corr: float = 0.5,
                a_max: int = 2,
                k_max: int = MAX_K,
-               n_rules: int = 10,
+               n_rules: int = 50,
                seed: int = 0,
                max_tries: int = 200_000,
                fam_atom_tol: int = 2,
@@ -138,18 +147,19 @@ def sample_dnf(smiles: List[str],
                log: Callable[[str], None] = print) -> Dict[str, dict]:
     """Sample planted DNF rules by UNIFORM sampling from the frequent-itemset pool.
 
-    Supersedes the greedy anchor-growth of select_dnf. The ONLY generation constraints are the
-    FOUR agreed ones, each recorded on every rule:
-      (1) SUPPORT       — each clause supp(S) >= min_support (estimability; the Apriori pool).
-      (2) BALANCE       — rule coverage cov = |F|/N in [cov_lo, cov_hi] (non-degenerate classes).
-      (3) NON-REDUNDANCY— each disjunct adds >= min_support NEW positives (a real added cause).
-      (4) IDENTIFIABILITY (separability floor over ALL high correlates) — EVERY non-rule motif with
-          |corr| >= spur_corr is a candidate confounder, split by sign: class-1 markers (present in
-          positives) threaten identifiability; class-0 markers (present in negatives) are prediction
-          shortcuts (recorded for a class-0 SpurROC, not an identifiability threat). GATE: the WORST
-          class-1 correlate must still leave >= min_support positive molecules where it is ABSENT
-          (min_{m in spurious_pos} |F \ supp(m)| >= min_support). Removes only UNIDENTIFIABLE rules;
-          strong-but-separable shortcuts are kept and measured (correlate_r, spurious_pos/neg).
+    Supersedes the greedy anchor-growth of select_dnf. There are TWO acceptance tests:
+      (1) BALANCE       — rule coverage cov = |F|/N in [cov_lo, cov_hi] (non-degenerate classes).
+      (2) NON-REDUNDANCY— each disjunct adds >= tau NEW positives (a real added cause).
+    SUPPORT (each clause supp(S) >= tau) is guaranteed upstream by the Apriori pool and is implied
+    by non-redundancy; it is recorded (support_min_clause), never re-tested here.
+    IDENTIFIABILITY is COMPUTED AND RECORDED BUT NOT GATED (changed 2026-08). EVERY non-rule motif
+    with |corr| >= spur_corr is a candidate confounder, split by sign: class-1 markers (present in
+    positives) compete with the cause for attribution; class-0 markers (present in negatives) are
+    prediction shortcuts. identifiability_sep = min_{m in spurious_pos} |F \ supp(m)| is stored.
+    A rule with sep == 0 (cause perfectly shadowed) is ADMITTED ON PURPOSE: which of two
+    observationally-identical motifs a model attends to is a fact about inductive bias, and the
+    GT-ROC vs spurious-ROC contrast is precisely the instrument that measures it. Downstream,
+    stratify by identifiability_sep and read low-sep GT-ROC as PREFERENCE, not accuracy.
     No Psi overlap penalty, no anchor selection, no structural single-atom gate, no per-clause
     prevalence cap (the coverage band subsumes it: supp(S_c) <= |F| <= cov_hi*N). Difficulty is
     MEASURED per rule (overlap o, spread s, correlate r, LR-learnability auc_lr, annotation size,
@@ -265,22 +275,25 @@ def sample_dnf(smiles: List[str],
         if sig in seen_sig:
             continue
         F = set().union(*sets); cov = len(F) / n
-        # ── ACCEPTANCE: the four generation constraints, each COMPUTED here and RECORDED below ──
+        # ── ACCEPTANCE: two tests, plus values COMPUTED here and RECORDED below ──
         # (1) BALANCE: rule coverage in band.
         if not (cov_lo <= cov <= cov_hi):
             continue
-        # (2) SUPPORT: every clause cleared the floor tau in the pool; keep the min for the record.
+        # SUPPORT: every clause cleared the floor tau when the pool was built; not re-tested (it is
+        # also implied by non-redundancy, since new-positives(S) <= supp(S)). Kept for the record.
         min_clause_support = min(len(ss) for ss in sets)
-        # (3) NON-REDUNDANCY: every disjunct adds >= tau positives no other disjunct covers.
+        # (2) NON-REDUNDANCY: every disjunct adds >= tau positives no other disjunct covers.
         min_new_positives = min(
             len(sets[i] - (set().union(*[sets[j] for j in range(k) if j != i]) if k > 1 else set()))
             for i in range(k))
         if min_new_positives < min_sup:
             continue
-        # (4) IDENTIFIABILITY: collect ALL non-rule motifs with |corr(x_m, y)| >= spur_corr, split
-        # by sign. class-1 (corr>0, present in positives) threaten identifiability; class-0 (corr<0,
-        # present in negatives) are prediction shortcuts (recorded, not gated). GATE: the WORST
-        # class-1 correlate must still leave >= min_support positives where it is ABSENT.
+        # IDENTIFIABILITY (RECORDED, NOT GATED — 2026-08): collect ALL non-rule motifs with
+        # |corr(x_m, y)| >= spur_corr, split by sign. class-1 (corr>0, present in positives) compete
+        # with the cause for attribution and become the per-motif spurious-ROC targets downstream;
+        # class-0 (corr<0, present in negatives) are prediction shortcuts. NO REJECTION happens on
+        # this — a perfectly-shadowed cause (sep == 0) is an admissible and deliberately interesting
+        # rule; stratify on identifiability_sep at reporting time instead.
         rule_motifs = {m for c in clauses for m in c}
         y = np.zeros(n, bool)
         for idx in F:
@@ -288,6 +301,7 @@ def sample_dnf(smiles: List[str],
         fidx = np.fromiter(F, int, len(F))
         yf = y.astype(float); rr = 0.0
         spur_pos: List[tuple] = []; spur_neg: List[tuple] = []
+        best_pos: Optional[tuple] = None      # strongest POSITIVE correlate, whatever its value
         for m in cand:
             if m in rule_motifs:
                 continue
@@ -296,14 +310,32 @@ def sample_dnf(smiles: List[str],
                 continue
             cc = float(np.corrcoef(xm, yf)[0, 1])
             rr = max(rr, abs(cc))
+            if cc > 0 and (best_pos is None or cc > best_pos[1]):
+                best_pos = (m, round(cc, 4), int((~pres[m][fidx]).sum()), int(pres[m].sum()))
             if cc >= spur_corr:
-                spur_pos.append((m, round(cc, 4), int((~pres[m][fidx]).sum())))  # (motif, corr, |F\supp(m)|)
+                # (motif, corr, sep=|F\supp(m)|, supp=corpus support). supp is recorded so a
+                # low-support correlate — whose per-motif spurious-ROC would rest on a handful of
+                # graphs — can be filtered at REPORTING time rather than gated at generation time.
+                spur_pos.append((m, round(cc, 4), int((~pres[m][fidx]).sum()), int(pres[m].sum())))
             elif cc <= -spur_corr:
                 spur_neg.append((m, round(cc, 4)))
-        # separability = worst class-1 correlate's |F \ supp(m)|; no strong class-1 correlate => identifiable
-        separability = min((s for _, _, s in spur_pos), default=len(F))
-        if separability < min_sup:
-            continue
+        # separability = worst class-1 correlate's |F \ supp(m)|; no strong class-1 correlate =>
+        # identifiable. RECORDED ONLY — there is deliberately no `if separability < min_sup` gate.
+        # COMPUTED BEFORE the audit fallback below, and therefore over the >= spur_corr entries
+        # ONLY: identifiability is a claim about STRONG confounders, so a weak top-1 correlate
+        # must not be allowed to drag sep down and corrupt the stratification axis.
+        separability = min((s for _, _, s, _ in spur_pos), default=len(F))
+        # AUDIT FALLBACK: keep every correlate at >= spur_corr (all of them, not just the top),
+        # but when NONE reaches the threshold fall back to the single strongest positive correlate
+        # so the shortcut audit is never empty. Measured: at spur_corr=0.5, 43/50 BBBP rules and
+        # 50/50 Mutagenicity rules have no qualifying correlate, so without this the spurious axis
+        # simply vanishes on most rules. Fallback entries are FLAGGED — their corr is below
+        # threshold, so a high spurious-ROC against one is not evidence of shortcut-following.
+        if not spur_pos and best_pos is not None:
+            spur_pos = [best_pos]
+            _fallback = {best_pos[0]}
+        else:
+            _fallback = set()
         seen_sig.add(sig)
         spur_pos.sort(key=lambda t: -t[1]); spur_neg.sort(key=lambda t: t[1])
         # ---- difficulty descriptors (recorded, never gated) ----
@@ -335,12 +367,19 @@ def sample_dnf(smiles: List[str],
             n_atoms=sum(natoms.get(m, 1) for c in clauses for m in c),
             # ── the four acceptance-constraint VALUES (each rule records why it was admitted) ──
             #   (1) BALANCE = cov (= |F|/N, above)
-            support_min_clause=int(min_clause_support),          # (2) SUPPORT: min clause support (>= min_support)
-            nonredundancy_min_new_pos=int(min_new_positives),    # (3) NON-REDUNDANCY: min new positives (>= min_support)
-            identifiability_sep=int(separability),               # (4) IDENTIFIABILITY: worst class-1 |F\supp(m)| (>= min_support)
-            spurious_pos=[{'motif': m, 'corr': c, 'sep': s} for m, c, s in spur_pos],  # class-1 correlates (SpurROC)
+            support_min_clause=int(min_clause_support),          # pool-guaranteed: min clause support (>= tau)
+            nonredundancy_min_new_pos=int(min_new_positives),    # (2) NON-REDUNDANCY: min new positives (>= tau)
+            identifiability_sep=int(separability),               # RECORDED, NOT GATED: worst class-1 |F\supp(m)|
+            # class-1 correlates: the per-motif spurious-ROC targets (apply_gt marks one
+            # node_label_spurious column per entry, IN THIS ORDER — corr-descending).
+            spurious_pos=[{'motif': m, 'corr': c, 'sep': s, 'supp': n_m,
+                           'fallback': m in _fallback}
+                          for m, c, s, n_m in spur_pos],
             spurious_neg=[{'motif': m, 'corr': c} for m, c in spur_neg],               # class-0 correlates (neg SpurROC)
-            spurious_motif=(spur_pos[0][0] if spur_pos else None),                     # convenience: top class-1 correlate
+            # (no singular `spurious_motif` field: with the audit fallback, spurious_pos[0] can
+            #  be a SUB-THRESHOLD fallback correlate, so a field named "the spurious motif" would
+            #  hand out a <spur_corr motif to any later reader. Use spurious_pos[0], which carries
+            #  its corr and fallback flag.)
             # ── difficulty descriptors (recorded, never gated) ──
             overlap_o=round(float(o), 4), spread_s=round(float(s_spread), 4),
             correlate_r=round(float(rr), 4),
@@ -370,7 +409,7 @@ def sample_dnf(smiles: List[str],
 def select_dnf(smiles: List[str],
                mol_frags: List[List[Tuple[str, Set[int]]]],
                *,
-               n_rules: Optional[int] = 10,
+               n_rules: Optional[int] = 50,
                max_k: int = MAX_K,
                min_sup_frac: float = MIN_SUP_FRAC,
                min_sup_floor: int = MIN_SUP_FLOOR,
@@ -384,7 +423,7 @@ def select_dnf(smiles: List[str],
     anti-confound constraints. Retired kwargs (comparable_cov, gamma, max_clause_frac, min_k) are
     accepted and ignored. Same (smiles, mol_frags) contract; returns {'dnf_k<k>_r<i>': apply_gt-rule}."""
     return sample_dnf(smiles, mol_frags, min_sup_frac=min_sup_frac, min_sup_floor=min_sup_floor,
-                      k_max=max_k, n_rules=(n_rules if n_rules else 10),
+                      k_max=max_k, n_rules=(n_rules if n_rules else 50),
                       report_foolability=report_foolability, report_family=report_family, log=log)
 
 
@@ -626,9 +665,10 @@ if __name__ == '__main__':
     ap.add_argument('--min_sup_frac', type=float, default=MIN_SUP_FRAC,
                     help='min support as a FRACTION of dataset size (default 0.02 = 2%%)')
     ap.add_argument('--max_k', type=int, default=MAX_K,
-                    help='largest DNF arity k sampled (default 3)')
-    ap.add_argument('--n_rules', type=int, default=10,
-                    help='number of rules to sample (default 10)')
+                    help='largest number of DISJUNCTS sampled, k ~ U{1..max_k} (default 3). '
+                         'Conjunct width is capped separately by a_max and is NOT this knob.')
+    ap.add_argument('--n_rules', type=int, default=50,
+                    help='number of rules to sample (default 50 — the settled campaign size)')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 

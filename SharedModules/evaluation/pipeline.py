@@ -29,6 +29,7 @@ from .motif_eval import (
     gt_vs_outside_gt_eval,
     gt_motif_ids_from_labels,
     compute_gt_roc,
+    spurious_motif_names,
     compute_dnf_gt_roc,
     model_node_att_fn,
     motif_class_discriminativeness,
@@ -48,9 +49,9 @@ def _has_node_attr(graphs, attr: str) -> bool:
     graph and only sets 1.0 where such an atom exists. A rule with no spurious/family
     atoms anywhere therefore has the attr present-but-all-zero; scoring it yields an
     undefined AUC (NaN) that pollutes the summary and the aggregate tables. Skipping
-    it instead leaves the metric absent for that rule. Causal (node_label) and fired
-    (node_label_fired) labels always carry positives on rule-positive graphs, so this
-    never gates them out."""
+    it instead leaves the metric absent for that rule. The causal label (node_label —
+    fired-clause atoms) always carries positives on rule-positive graphs, so this never
+    gates it out."""
     for g in graphs:
         v = getattr(g, attr, None)
         if v is None:
@@ -121,29 +122,61 @@ def explainability_summary_fields(
     gt     = results.get(f'gt_roc_{tag}' if tag else 'gt_roc', {})
     gt_node = results.get(f'gt_roc_node_{tag}' if tag else 'gt_roc_node', {})
     gt_edge = results.get(f'gt_roc_edge_{tag}' if tag else 'gt_roc_edge', {})
-    gt_fired = results.get(f'gt_roc_node_fired_{tag}' if tag else 'gt_roc_node_fired', {})
-    spur    = results.get(f'spurious_roc_node_{tag}' if tag else 'spurious_roc_node', {})
+    # Per-motif spurious blocks. BOTH scopes live in ONE results dict: the pooled pass stores
+    # every key again with an '_all' suffix (see `results[f'{key}_all']` in the producer). Every
+    # other field in this function is fetched by EXACT name, so only this prefix-matched block can
+    # cross scopes — and it must exclude the other scope EXPLICITLY. Without that, the test scope
+    # absorbs pooled motifs as phantom '<motif>_all' entries AND its max is silently taken over
+    # pooled values (measured: test max reported 0.95, the pooled number, instead of 0.60).
+    _spur_pref = 'spurious_roc_node__'
+    _ALL = '_all'
+
+    def _spur_motif_name(k: str) -> Optional[str]:
+        """Motif name if key k belongs to THIS scope, else None. (Motif keys are SMARTS /
+        ring:-prefixed fragments and never end in '_all', so the suffix test is unambiguous.)"""
+        if not k.startswith(_spur_pref):
+            return None
+        rest = k[len(_spur_pref):]
+        if tag:                                   # pooled scope: take only '_all' keys, strip it
+            return rest[:-len(_ALL)] if rest.endswith(_ALL) else None
+        return None if rest.endswith(_ALL) else rest   # test scope: reject pooled keys
+
+    spur_per = {}
+    for _k, _v in results.items():
+        _nm = _spur_motif_name(_k)
+        if _nm and isinstance(_v, dict):
+            spur_per[_nm] = _v
     fam     = results.get(f'family_roc_node_{tag}' if tag else 'family_roc_node', {})
 
     fields = _corr_block()
     fields.update({
         f'gt_roc_auc_mean{suffix}':            gt.get('auc_mean', nan),
         f'gt_roc_n_graphs{suffix}':            gt.get('n_graphs', 0),
-        # Mode 1 (whole-rule) node GT-ROC
+        # Node GT-ROC vs the planted cause = atoms of the clause(s) that FIRED (node_label).
+        # The whole-rule Mode-1 metric is gone; this key now carries fired-clause semantics
+        # and is NOT comparable with the same key in pre-2026-08 archives.
         f'gt_roc_node_auc_mean{suffix}':       gt_node.get('auc_mean', nan),
         f'gt_roc_edge_auc_mean{suffix}':       gt_edge.get('auc_mean', nan),
-        # Mode 2 (fired-clause / OR-aware) node GT-ROC
-        f'gt_roc_node_fired_auc_mean{suffix}': gt_fired.get('auc_mean', nan),
-        f'gt_roc_node_fired_n_graphs{suffix}': gt_fired.get('n_graphs', 0),
-        # Spurious-shortcut ROC — explanation vs strongest non-GT motif (high = fooled)
-        f'spurious_roc_node_auc_mean{suffix}': spur.get('auc_mean', nan),
-        f'spurious_roc_node_n_graphs{suffix}': spur.get('n_graphs', 0),
         # Family ROC — explanation vs super/sub-structures of the cause (high = right-chem-wrong-granularity)
         f'family_roc_node_auc_mean{suffix}': fam.get('auc_mean', nan),
         f'family_roc_node_n_graphs{suffix}': fam.get('n_graphs', 0),
         f'within_motif_var{suffix}':  results.get(f'within_motif_var_{tag}' if tag else 'within_motif_var', nan),
         f'between_motif_var{suffix}': results.get(f'between_motif_var_{tag}' if tag else 'between_motif_var', nan),
     })
+    # Per-motif spurious-shortcut ROC — ONE field per class-1 correlate, named for its motif.
+    # Deliberately not collapsed: 'did the explainer follow THIS shortcut' is a per-motif
+    # question, and with an unidentifiable rule (identifiability_sep == 0) the contrast
+    # between gt_roc_node and a specific correlate's ROC IS the experiment.
+    _finite = []
+    for _nm, _d in spur_per.items():
+        _v = _d.get('auc_mean', nan)
+        fields[f'spurious_roc_node_auc_mean__{_nm}{suffix}'] = _v
+        fields[f'spurious_roc_node_n_graphs__{_nm}{suffix}'] = _d.get('n_graphs', 0)
+        if _v == _v:
+            _finite.append(_v)
+    # single comparable scalar (max over motifs) so the legacy one-column tables still resolve
+    fields[f'spurious_roc_node_auc_mean{suffix}'] = max(_finite) if _finite else nan
+    fields[f'spurious_motifs{suffix}'] = sorted(spur_per)
     return fields
 
 
@@ -278,20 +311,17 @@ class EvalPipeline:
         gt_graphs = gt_eval_list if gt_eval_list is not None else data_list
         if self._has_ground_truth_on(gt_graphs):
             _is_planted = _has_node_attr(gt_graphs, 'node_label_clauses')
-            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious/family shortcut ROC —
-            # planted-only, guarded on the attr being present (else compute_gt_roc would
-            # silently fall back to the edge_label-derived rule mask and mislabel them).
-            # Independent of the whole-rule metric below.
-            if _has_node_attr(gt_graphs, 'node_label_fired'):
-                block['gt_roc_node_fired'] = compute_gt_roc(
-                    self.model, gt_graphs, self.device,
-                    node_att_fn=self.node_att_fn, level='node',
-                    gt_attr='node_label_fired')
+            # Spurious/family shortcut ROC — planted-only, guarded on the attr being present
+            # (else compute_gt_roc would silently fall back to the edge_label-derived rule
+            # mask and mislabel them). The fired-clause GT-ROC is no longer a separate metric:
+            # node_label IS the fired-clause cause since 2026-08.
             if _has_node_attr(gt_graphs, 'node_label_spurious'):
-                block['spurious_roc_node'] = compute_gt_roc(
-                    self.model, gt_graphs, self.device,
-                    node_att_fn=self.node_att_fn, level='node',
-                    gt_attr='node_label_spurious')
+                # [N,S] — one AUC per class-1 correlate, keyed by motif.
+                for _j, _nm in enumerate(spurious_motif_names(gt_graphs)):
+                    block[f'spurious_roc_node__{_nm}'] = compute_gt_roc(
+                        self.model, gt_graphs, self.device,
+                        node_att_fn=self.node_att_fn, level='node',
+                        gt_attr='node_label_spurious', gt_col=_j)
             if _has_node_attr(gt_graphs, 'node_label_family'):
                 block['family_roc_node'] = compute_gt_roc(
                     self.model, gt_graphs, self.device,
@@ -430,18 +460,15 @@ class EvalPipeline:
                                      if self.gt_level == 'node'
                                      else results['gt_roc_edge'])
 
-            # Mode-2 (fired-clause / OR-aware) GT-ROC + spurious-shortcut ROC, guarded on
-            # the attr being present (else compute_gt_roc falls back to the rule mask).
-            if _has_node_attr(_gt, 'node_label_fired'):
-                results['gt_roc_node_fired'] = compute_gt_roc(
-                    self.model, _gt, self.device,
-                    node_att_fn=self.node_att_fn, level='node',
-                    gt_attr='node_label_fired')
+            # Per-motif spurious-shortcut ROC, guarded on the attr being present (else
+            # compute_gt_roc falls back to the rule mask). node_label is already the
+            # fired-clause cause, so there is no separate fired metric any more.
             if _has_node_attr(_gt, 'node_label_spurious'):
-                results['spurious_roc_node'] = compute_gt_roc(
-                    self.model, _gt, self.device,
-                    node_att_fn=self.node_att_fn, level='node',
-                    gt_attr='node_label_spurious')
+                for _j, _nm in enumerate(spurious_motif_names(_gt)):
+                    results[f'spurious_roc_node__{_nm}'] = compute_gt_roc(
+                        self.model, _gt, self.device,
+                        node_att_fn=self.node_att_fn, level='node',
+                        gt_attr='node_label_spurious', gt_col=_j)
             if _has_node_attr(_gt, 'node_label_family'):
                 results['family_roc_node'] = compute_gt_roc(
                     self.model, _gt, self.device,

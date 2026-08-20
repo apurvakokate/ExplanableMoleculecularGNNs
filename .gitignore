@@ -66,5 +66,8 @@ thesis_results/
 tables_main/
 tables_v*/
 offline_results/
+offline_results_superseded/
+results_offline_superseded/
+vocab_ertlmdl/
 
 *.md

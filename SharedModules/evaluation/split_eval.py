@@ -10,8 +10,8 @@ and post-hoc (GNNExplainer/PGExplainer/Motif-Occlusion/MAGE) methods, producing:
                                      over train+valid+test — 4 variants
   grouped_corr_pooled_testonly.csv   same, test split only — 4 variants
   instance_corr_{split}.csv      per-instance (motif,graph) Pearson/Spearman, 3 files
-  summary_splits.json            all GT-ROC (whole-rule / fired / spurious / family /
-                                 DNF global / DNF instance) + AUC/RMSE per split
+  summary_splits.json            all GT-ROC (fired-clause cause / per-motif spurious /
+                                 family / DNF global / DNF instance) + AUC/RMSE per split
   importance_global.csv / impact_global.csv   pooled over splits AND explainers
 
 DESIGN — Option B (reuse, don't rewrite): every metric comes from the EXISTING
@@ -39,6 +39,7 @@ from .motif_eval import (
     compute_motif_impact,
     compute_gt_roc,
     compute_dnf_gt_roc,
+    spurious_motif_names,
     caches_from_motif_impact,
     per_instance_correlation_from_caches,
     build_graph_mask_cache,
@@ -111,14 +112,18 @@ def grouped_corr_variants(rows: List[dict]) -> Dict[str, float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GT-ROC block (whole-rule / fired / spurious / family / DNF) for one graph list
+# GT-ROC block (fired-clause cause / per-motif spurious / family / DNF) for one graph list
 # ─────────────────────────────────────────────────────────────────────────────
 
 def gt_roc_block(model, gt_list, device, node_att_fn) -> Dict[str, float]:
     """All GT-ROC scalars for one graph list under a given node-attribution fn.
     Mirrors the ante-hoc/post-hoc GT-ROC set incl. DNF global/instance with the
-    source-GT single-clause alias (whole-rule → global/instance when no clause
-    tensor is present). Empty dict when the list carries no GT labels."""
+    source-GT single-clause alias (node_label → global/instance when no clause
+    tensor is present). Empty dict when the list carries no GT labels.
+
+    node_label is the FIRED-CLAUSE cause (the whole-rule Mode-1 GT was removed 2026-08), so
+    gt_roc_node_auc_mean now means fired-clause recovery — NOT comparable with the same key in
+    pre-2026-08 archives. The spurious audit is per-motif: one AUC per class-1 correlate."""
     b: Dict[str, float] = {}
     if not _has_node_attr(gt_list, 'node_label') and not _has_node_attr(gt_list, 'edge_label'):
         return b
@@ -126,12 +131,25 @@ def gt_roc_block(model, gt_list, device, node_att_fn) -> Dict[str, float]:
                                                node_att_fn=node_att_fn, level='node')['auc_mean']
     b['gt_roc_edge_auc_mean'] = compute_gt_roc(model, gt_list, device,
                                                node_att_fn=node_att_fn, level='edge')['auc_mean']
-    for attr, key in (('node_label_fired', 'gt_roc_node_fired_auc_mean'),
-                      ('node_label_spurious', 'spurious_roc_node_auc_mean'),
-                      ('node_label_family', 'family_roc_node_auc_mean')):
-        if _has_node_attr(gt_list, attr):
-            b[key] = compute_gt_roc(model, gt_list, device, node_att_fn=node_att_fn,
-                                    level='node', gt_attr=attr)['auc_mean']
+    if _has_node_attr(gt_list, 'node_label_family'):
+        b['family_roc_node_auc_mean'] = compute_gt_roc(
+            model, gt_list, device, node_att_fn=node_att_fn,
+            level='node', gt_attr='node_label_family')['auc_mean']
+    # SPURIOUS: node_label_spurious is [N,S] — ONE AUC PER CLASS-1 CORRELATE, each keyed by its
+    # motif. Never collapsed: 'did the explainer follow THIS shortcut' is a per-motif question.
+    # spurious_roc_node_auc_mean is kept as the max over motifs, purely so the single legacy
+    # column has a successor; read the per-motif keys for anything interpreted.
+    if _has_node_attr(gt_list, 'node_label_spurious'):
+        names = spurious_motif_names(gt_list)
+        per = {}
+        for j, nm in enumerate(names):
+            per[nm] = compute_gt_roc(model, gt_list, device, node_att_fn=node_att_fn,
+                                     level='node', gt_attr='node_label_spurious',
+                                     gt_col=j)['auc_mean']
+            b[f'spurious_roc_node_auc_mean__{nm}'] = per[nm]
+        finite = [v for v in per.values() if v == v]
+        b['spurious_roc_node_auc_mean'] = max(finite) if finite else float('nan')
+        b['spurious_motifs'] = list(names)
     # DNF clause-decomposed (Instance = any one fired disjunct; Global = union).
     try:
         dnf = compute_dnf_gt_roc(model, gt_list, device, node_att_fn)
@@ -330,7 +348,6 @@ def _gtroc_scalars_from_block(block: dict) -> Dict[str, float]:
     for src, key in (
         ('gt_roc_node', 'gt_roc_node_auc_mean'),
         ('gt_roc_edge', 'gt_roc_edge_auc_mean'),
-        ('gt_roc_node_fired', 'gt_roc_node_fired_auc_mean'),
         ('spurious_roc_node', 'spurious_roc_node_auc_mean'),
         ('family_roc_node', 'family_roc_node_auc_mean'),
         ('instance_gt_roc_node', 'instance_gt_roc_node_auc_mean'),
@@ -525,7 +542,7 @@ def _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode=None):
     """NODE-DIRECT GT-ROC for one explainer on one split: grade the explainer's own
     per-node atts (aligned sl->gl; identity remap for a GT subset like mutag) against the
     GT via gt_roc_block. Replaces validate_posthoc_gtroc so one path/one tree carries the
-    full per-node metric set (node/edge/fired/spurious/family/instance/global).
+    full per-node metric set (node/edge/per-motif spurious/family/instance/global).
     ``unk_mode`` = filtered-vocab UNK-atom handling (matches MoSE; folds in the old
     gtroc_filtered_* trees):
       None      -> atts as-is (FULL / unfiltered)
@@ -689,7 +706,7 @@ def evaluate_posthoc_all_splits(
             # GT-ROC grades the explainer's OWN attribution NODE-DIRECT: feed the
             # per-node atts it produced (GNN/PG raw per-node; MAGE/occlusion motif-
             # broadcast), NOT the per-motif-mean. Yields the full gt_roc_block set
-            # (node/edge/fired/spurious/family/instance/global) as the correct per-node
+            # (node/edge/per-motif spurious/family/instance/global) as the correct per-node
             # metric — folds in validate_posthoc_gtroc so there's one path/one tree.
             gtroc = _gtroc_node_direct(model, gl, sl, device, atts, sc, unk_mode) if gl else {}
             summary[ex][split] = {**pred_flat, **gtroc}

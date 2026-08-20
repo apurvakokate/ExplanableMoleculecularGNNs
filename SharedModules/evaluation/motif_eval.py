@@ -1040,6 +1040,30 @@ def _gt_node_mask(
     return gt
 
 
+def spurious_motif_names(gt_list) -> List[str]:
+    """Ordered class-1 correlate names for node_label_spurious's columns.
+
+    apply_gt stores them per graph as a tab-joined ``spurious_motif_keys`` string (same
+    attribute shape as data.smiles, so it survives DataLoader collation). Falls back to
+    positional names when a cache predates that field, so a stale cache degrades to
+    ``spur0/spur1/...`` instead of losing the per-motif breakdown entirely."""
+    n_cols = 0
+    for d in gt_list:
+        nl = getattr(d, 'node_label_spurious', None)
+        if nl is not None and nl.dim() > 1:
+            n_cols = int(nl.size(-1))
+            break
+    if not n_cols:
+        return []
+    for d in gt_list:
+        keys = getattr(d, 'spurious_motif_keys', None)
+        if isinstance(keys, str) and keys:
+            names = keys.split('\t')
+            if len(names) == n_cols:
+                return names
+    return [f'spur{j}' for j in range(n_cols)]
+
+
 @torch.no_grad()
 def explainer_roc_vs_gt(
     node_att: torch.Tensor,
@@ -1074,8 +1098,12 @@ def explainer_roc_vs_gt(
         directly.  If False (legacy), edge scores are derived from node
         attention as att[src]*att[dst].
     node_label : Tensor [N] or None
-        Explicit node-level GT (1.0 = rule-motif atom), as produced by
+        Explicit node-level GT (1.0 = fired-clause atom), as produced by
         apply_gt.py (data.node_label).  Preferred for level='node'.
+        MUST be 1-D.  A 2-D mask (node_label_spurious [N,S] / node_label_clauses
+        [N,K]) is rejected rather than flattened: ``.view(-1)`` would silently
+        produce an N*S-long vector misaligned with the N-long attribution and
+        yield a meaningless AUC.  Select one column before calling.
 
     Returns
     -------
@@ -1084,6 +1112,13 @@ def explainer_roc_vs_gt(
     if level == 'node':
         y_score = node_att.view(-1).cpu().numpy()
         if node_label is not None:
+            if node_label.dim() > 1 and node_label.size(-1) != 1:
+                raise ValueError(
+                    f"explainer_roc_vs_gt: node_label must be 1-D, got shape "
+                    f"{tuple(node_label.shape)}. Multi-column masks "
+                    f"(node_label_spurious [N,S], node_label_clauses [N,K]) must be "
+                    f"sliced to a single column by the caller — flattening them would "
+                    f"misalign the GT against the N-long attribution.")
             y_true = node_label.view(-1).cpu().numpy().astype(float)
         else:
             n = node_att.view(-1).size(0)
@@ -1141,13 +1176,21 @@ def compute_gt_roc(
     node_att_fn=None,
     level: str = 'node',
     gt_attr: str = 'node_label',
+    gt_col: Optional[int] = None,
 ) -> Dict[str, float]:
     """Compute mean explainer ROC-AUC vs ground truth across all test graphs.
 
     ``gt_attr`` selects which node-GT to grade against (node level only):
-      'node_label'        Mode 1 — whole-rule / instance-agnostic (all clauses' motif atoms).
-      'node_label_fired'  Mode 2 — per-instance / OR-aware (only the clause(s) that fired here).
-    Both are attached by apply_gt.py.
+      'node_label'           the planted cause — atoms of the clause(s) that FIRED on that
+                             molecule (apply_gt.py).  Source-GT datasets set it natively.
+      'node_label_spurious'  [N,S] class-1 correlates; REQUIRES ``gt_col``.
+      'node_label_family'    right-chemistry-wrong-granularity look-alikes.
+    ``gt_col`` selects one column of a 2-D mask (per-motif spurious audit).  Passing a 2-D
+    mask without ``gt_col`` raises rather than silently flattening.
+
+    NOTE (2026-08): 'node_label_fired' no longer exists.  The whole-rule Mode-1 GT was removed
+    and ``node_label`` now carries the fired-clause semantics, so the old
+    gt_attr='node_label_fired' call sites collapse into the default.
 
     Each graph that has ``data.edge_label`` set (by ``apply_gt.py``)
     and at least one positive and one negative edge contributes one AUC value.
@@ -1180,7 +1223,13 @@ def compute_gt_roc(
 
     for data in data_list:
         edge_label = getattr(data, 'edge_label', None)
-        node_label = getattr(data, gt_attr, None)   # gt_attr: node_label (Mode 1) | node_label_fired (Mode 2)
+        node_label = getattr(data, gt_attr, None)   # node_label | node_label_spurious | node_label_family
+        if node_label is not None and node_label.dim() > 1 and node_label.size(-1) != 1:
+            if gt_col is None:
+                raise ValueError(
+                    f"compute_gt_roc: {gt_attr} is 2-D {tuple(node_label.shape)}; pass gt_col to "
+                    f"select one column (the spurious audit is PER MOTIF, one AUC each).")
+            node_label = node_label[:, gt_col]
 
         # GT vector for THIS level (used for the degeneracy/skip check).
         # node level prefers the authoritative node_label, falling back to the
@@ -1275,7 +1324,7 @@ def compute_gt_roc(
 #   Instance — did the explainer recover ANY one complete fired clause? (sufficiency)
 #   Global   — did it recover the UNION of all fired clauses?          (completeness)
 # apply_gt stores data.node_label_clauses as [N, K]: column j = atoms of clause j when
-# clause j fired here (else all-zero). node_label_fired == its per-node max over j.
+# clause j fired here (else all-zero). node_label == its per-node max over j.
 
 def _auc_pos_neg(scores, pos_idx, neg_idx) -> float:
     """ROC-AUC ranking pos_idx above neg_idx by ``scores``. NaN if either side empty."""

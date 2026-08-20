@@ -6,9 +6,18 @@ picks the rule at --rule_index, then for every split of the dataset annotates ea
 PyG Data object:
 
   data.y          replaced with 1/0 based on whether the rule fires
-  data.node_label float [N] — 1.0 for atoms that belong to a rule-motif, 0.0
-                  otherwise.  The authoritative node-level explanation target.
-  data.edge_label float [E] — 1.0 for edges whose BOTH endpoints are rule-motif
+  data.node_label float [N] — 1.0 for atoms of motifs in the clause(s) that ACTUALLY
+                  FIRED on this molecule.  The authoritative node-level explanation
+                  target.  A DNF needs only one fired clause, so motifs from a
+                  present-but-unfired clause caused nothing here and are NOT marked.
+                  (The former Mode-1 'whole-rule' variant and the separate
+                  node_label_fired attribute were removed 2026-08 — see annotate_split.)
+  data.node_label_clauses float [N,K] — column j = clause j's atoms iff clause j fired.
+                  node_label is its per-node max over j.  Instance vs Global GT-ROC.
+  data.node_label_spurious float [N,S] — column j = atoms of the j-th class-1 correlate
+                  in rule['spurious_pos'] (corr-descending).  Each column gets its OWN
+                  spurious-ROC, reported per motif; never collapsed to a single number.
+  data.edge_label float [E] — 1.0 for edges whose BOTH endpoints are fired-clause
                   atoms (AND), 0.0 otherwise.  Used by the edge-level explainer
                   ROC; AND (not OR) so motif-boundary edges don't penalise a
                   correctly motif-focused explainer and so the edge GT matches
@@ -251,71 +260,31 @@ def validate_rule_fires_on_trainable_motifs(
         )
 
 
-def choose_spurious_motif(data_lists: List[List],
-                          rule_clauses: List[Set[str]],
-                          graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
-                          min_support: int = 10) -> Tuple[Optional[str], float]:
-    """Pick the strongest SPURIOUS (non-GT) motif: the motif — not part of any
-    rule clause — whose per-molecule presence most POSITIVELY correlates with the
-    synthetic label (the rule firing). This is the shortcut that competes with the
-    true cause; a fooled explainer attributes to it. Returns (smarts, corr) or
-    (None, nan) if no eligible motif clears ``min_support``.
-
-    Computed corpus-wide (all splits) for a stable choice, then the same motif is
-    annotated across every split so spurious_roc is comparable across folds/splits.
-    """
-    rule_motifs = {m for cl in rule_clauses for m in cl}
-    ys: List[float] = []
-    present: Dict[str, List[int]] = {}
-    row = 0
-    for dl in data_lists:
-        for data in dl:
-            smi = getattr(data, 'smiles', None)
-            node_map = graph_lookup.get(smi, {}) if smi else {}
-            frag_set = {smarts for smarts, _mid in node_map.values()}
-            fires = any(cl.issubset(frag_set) for cl in rule_clauses if cl)
-            ys.append(1.0 if fires else 0.0)
-            for smarts in frag_set:
-                if smarts in rule_motifs:
-                    continue
-                present.setdefault(smarts, []).append(row)
-            row += 1
-    if not ys:
-        return None, float('nan')
-    y = np.asarray(ys, dtype=float)
-    n = len(y)
-    if y.std() == 0:
-        return None, float('nan')
-    best_m, best_corr = None, -2.0
-    for smarts, rows in present.items():
-        if len(rows) < min_support or n - len(rows) < min_support:
-            continue
-        p = np.zeros(n, dtype=float)
-        p[rows] = 1.0
-        if p.std() == 0:
-            continue
-        corr = float(np.corrcoef(p, y)[0, 1])
-        if corr > best_corr:
-            best_corr, best_m = corr, smarts
-    if best_m is None:
-        return None, float('nan')
-    return best_m, round(best_corr, 4)
-
-
 def annotate_split(data_list: List,
                    rule_clauses: List[Set[str]],
                    graph_lookup: Dict[str, Dict[int, Tuple[str, int]]],
                    relabel: bool = True,
-                   spurious_motif: Optional[str] = None,
+                   spurious_motifs: Optional[List[str]] = None,
                    family_motifs: Optional[Set[str]] = None) -> Tuple[List, Dict]:
     """Annotate Data objects with GT labels and edge labels.
 
     rule_clauses: list of sets — DNF rule fires when ANY clause fires.
                   A clause fires when ALL its motifs are present (AND logic).
     graph_lookup: {smiles: {node_idx: (smarts, motif_id)}}
+    spurious_motifs: ordered class-1 correlates from rule['spurious_pos'] (corr-descending).
+                  Column j of node_label_spurious marks motif j — SAME ORDER, so the eval
+                  names its per-motif spurious-ROC columns from the rule record.
 
-    Sets data.node_label [N] (1.0 = rule-motif atom) and data.edge_label [E]
-    (1.0 = BOTH endpoints are rule-motif atoms; AND).
+    Sets data.node_label [N] = 1.0 for atoms of motifs in the clause(s) that ACTUALLY FIRED on
+    this molecule, and data.edge_label [E] = 1.0 when BOTH endpoints are such atoms (AND).
+
+    NOTE (2026-08): node_label is FIRED-CLAUSE ONLY. The former Mode-1 'whole-rule' node_label
+    — which marked a motif's atoms even when its clause never fired — is REMOVED: a motif whose
+    conjunction did not complete caused nothing on that molecule, so marking it as ground-truth
+    cause penalised explainers for correctly ignoring it. The old `node_label_fired` attribute is
+    gone; `node_label` now carries exactly those semantics. Source-GT datasets (mutag,
+    *_Verified_GT) set node_label natively and are unaffected — they are a single always-firing
+    clause and never pass through this function (see the mutag guard in main()).
 
     Returns (annotated_data_list, stats_dict).
     """
@@ -325,8 +294,10 @@ def annotate_split(data_list: List,
     n_total_edges = 0
     n_pos_nodes = 0
     n_total_nodes = 0
-    n_pos_spurious_nodes = 0
-    n_graphs_with_spurious = 0
+    spurious_motifs = list(spurious_motifs or [])
+    n_spur = len(spurious_motifs)
+    n_pos_spurious_nodes = [0] * n_spur          # per-motif marked-atom count
+    n_graphs_with_spurious = [0] * n_spur        # per-motif marked-graph count
 
     out = []
     for data in data_list:
@@ -360,27 +331,31 @@ def annotate_split(data_list: List,
         n_edges = data.edge_index.size(1)
         n_total_nodes += n_nodes
         n_total_edges += n_edges
-        node_label = torch.zeros(n_nodes, dtype=torch.float32)         # Mode 1: whole-rule
-        node_label_fired = torch.zeros(n_nodes, dtype=torch.float32)   # Mode 2: fired-clause only
-        node_label_spurious = torch.zeros(n_nodes, dtype=torch.float32)  # strongest non-GT shortcut
+        # node_label = FIRED-CLAUSE atoms only (the single node-GT; see the docstring note).
+        node_label = torch.zeros(n_nodes, dtype=torch.float32)
+        # [N, S] one column per class-1 correlate in rule['spurious_pos'], SAME ORDER.
+        node_label_spurious = torch.zeros(n_nodes, max(n_spur, 1), dtype=torch.float32)
         node_label_family = torch.zeros(n_nodes, dtype=torch.float32)    # right chemistry, wrong granularity
         # [N, K] per-fired-clause atom masks (K = #clauses). Column j = atoms of clause j
         # when clause j FIRED here (else all-zero). Enables Instance (max over fired
-        # clauses) vs Global (union) GT-ROC; node_label_fired == its per-node max over j.
+        # clauses) vs Global (union) GT-ROC; node_label == its per-node max over j.
         node_label_clauses = torch.zeros(n_nodes, max(len(rule_clauses), 1), dtype=torch.float32)
         edge_label = torch.zeros(n_edges, dtype=torch.float32)
 
-        # Spurious GT: atoms of the chosen shortcut motif, marked on the SAME positive
-        # graphs as node_label so spurious_roc and gt_roc share a graph population. A
-        # fooled explainer ranks these atoms high → high spurious_roc.
-        if spurious_motif is not None and rule_fires and node_map:
-            spur_nodes = [idx for idx, (smarts, _mid) in node_map.items()
-                          if smarts == spurious_motif]
-            if spur_nodes:
+        # Spurious GT: atoms of EVERY class-1 correlate (rule['spurious_pos']), one column each,
+        # marked on the SAME positive graphs as node_label so each spurious_roc and gt_roc share a
+        # graph population. The audit is per-motif: a fooled explainer ranks column j's atoms high
+        # → high spurious_roc for motif j. Reported individually, never collapsed into one number.
+        if n_spur and rule_fires and node_map:
+            for j, spur_m in enumerate(spurious_motifs):
+                spur_nodes = [idx for idx, (smarts, _mid) in node_map.items()
+                              if smarts == spur_m]
+                if not spur_nodes:
+                    continue
                 spur_nodes = _validate_rule_nodes(spur_nodes, n_nodes, smi or '?')
-                node_label_spurious[torch.tensor(spur_nodes, dtype=torch.long)] = 1.0
-                n_pos_spurious_nodes += len(spur_nodes)
-                n_graphs_with_spurious += 1
+                node_label_spurious[torch.tensor(spur_nodes, dtype=torch.long), j] = 1.0
+                n_pos_spurious_nodes[j] += len(spur_nodes)
+                n_graphs_with_spurious[j] += 1
 
         # Family GT: atoms of motifs that structurally CONTAIN or are CONTAINED IN a causal motif
         # (carbonyl<->acid/ester/amide) — the "right chemistry, wrong granularity" class. Marked on
@@ -393,32 +368,24 @@ def annotate_split(data_list: List,
                 node_label_family[torch.tensor(fam_nodes, dtype=torch.long)] = 1.0
 
         if rule_fires and node_map:
-            # TWO GT views (both attached; the evaluator picks one via compute_gt_roc(gt_attr=...)):
-            #  Mode 1 — whole-rule / instance-agnostic: atoms of ANY motif in ANY clause.
-            all_rule_motifs = {m for cl in rule_clauses for m in cl}
-            #  Mode 2 — per-instance / OR-aware: atoms of motifs in the clause(s) that ACTUALLY FIRED
-            #  here (a clause fires when ALL its motifs are present). A DNF needs only one fired
-            #  clause, not all — so this excludes present-but-not-fired clauses' motifs.
+            # THE node-GT: atoms of motifs in the clause(s) that ACTUALLY FIRED here (a clause
+            # fires when ALL its motifs are present). A DNF needs only ONE fired clause, so a
+            # present-but-not-fired clause's motifs caused nothing here and are NOT ground truth.
             fired_motifs = {m for cl in rule_clauses
                             if cl and cl.issubset(frag_set) for m in cl}
-            rule_nodes = [idx for idx, (smarts, _mid) in node_map.items()
-                          if smarts in all_rule_motifs]
             fired_nodes = [idx for idx, (smarts, _mid) in node_map.items()
                            if smarts in fired_motifs]
-            if rule_nodes:
-                rule_nodes = _validate_rule_nodes(rule_nodes, n_nodes, smi or '?')
+            if fired_nodes:
+                fired_nodes = _validate_rule_nodes(fired_nodes, n_nodes, smi or '?')
                 active = torch.zeros(n_nodes, dtype=torch.bool)
-                active[torch.tensor(rule_nodes, dtype=torch.long)] = True
+                active[torch.tensor(fired_nodes, dtype=torch.long)] = True
                 node_label[active] = 1.0
                 n_pos_nodes += int(active.sum().item())
                 if n_edges > 0:
                     src, dst = data.edge_index
-                    pos = active[src] & active[dst]   # AND of both endpoints
+                    pos = active[src] & active[dst]   # AND of both endpoints (fired atoms only)
                     edge_label[pos] = 1.0
                     n_pos_edges += int(pos.sum().item())
-            if fired_nodes:
-                fired_nodes = _validate_rule_nodes(fired_nodes, n_nodes, smi or '?')
-                node_label_fired[torch.tensor(fired_nodes, dtype=torch.long)] = 1.0
             # Per-clause masks: mark clause j's atoms iff clause j fired (all its motifs present).
             for j, cl in enumerate(rule_clauses):
                 if not cl or not cl.issubset(frag_set):
@@ -428,10 +395,13 @@ def annotate_split(data_list: List,
                 if cj:
                     node_label_clauses[torch.tensor(cj, dtype=torch.long), j] = 1.0
 
-        data.node_label = node_label               # Mode 1 (whole-rule) — the default GT
-        data.node_label_fired = node_label_fired   # Mode 2 (per-instance fired-clause / OR-aware)
+        data.node_label = node_label               # THE node-GT: fired-clause atoms only
         data.node_label_clauses = node_label_clauses  # [N,K] per-fired-clause (Instance vs Global GT-ROC)
-        data.node_label_spurious = node_label_spurious  # strongest non-GT shortcut motif
+        data.node_label_spurious = node_label_spurious  # [N,S] one column per class-1 correlate
+        # Column names travel WITH the graphs (tab-joined str, the same shape of attribute as
+        # data.smiles, so DataLoader collation handles it) — the eval names each per-motif
+        # spurious-ROC without needing the rule_tiers.json path plumbed through.
+        data.spurious_motif_keys = '\t'.join(spurious_motifs)
         data.node_label_family = node_label_family      # super/sub-structure of the cause (granularity)
         data.edge_label = edge_label
         out.append(data)
@@ -448,6 +418,8 @@ def annotate_split(data_list: List,
         'n_total_edges':  n_total_edges,
         'edge_pos_frac':  (n_pos_edges / n_total_edges
                            if n_total_edges > 0 else 0.0),
+        # per-motif (aligned with spurious_motifs / rule['spurious_pos'] order)
+        'spurious_motifs':         list(spurious_motifs),
         'n_pos_spurious_nodes':    n_pos_spurious_nodes,
         'n_graphs_with_spurious':  n_graphs_with_spurious,
     }
@@ -622,14 +594,24 @@ Examples
                 / _relabel_dir)
     out_base.mkdir(parents=True, exist_ok=True)
 
-    # Choose the strongest spurious (non-GT) shortcut motif ONCE over all splits so
-    # node_label_spurious (→ eval spurious_roc) marks the same motif everywhere.
+    # Spurious shortcuts come STRAIGHT FROM THE RULE RECORD (rule_dnf's spurious_pos): every
+    # non-rule motif with corr >= spur_corr against the planted label, corr-descending. They are
+    # NOT recomputed here — rule_dnf already computed them over the same corpus, and recomputing
+    # risked disagreeing with the rule the record documents. Column j of node_label_spurious is
+    # spurious_motifs[j], so the eval can name each per-motif ROC from rule_tiers.json.
+    # No threshold/vocab filtering applies: annotation_lookup is the PRE-threshold pool and
+    # marking matches on SMARTS, so every recorded correlate is markable on every variant.
     _all_split_lists = [[ds[i] for i in range(len(ds))]
                         for _sn, ds, _lk in split_configs]
-    spurious_motif, spurious_corr = choose_spurious_motif(
-        _all_split_lists, rule_clauses, lookup)
-    print(f'\n  Spurious shortcut motif: {spurious_motif!r} '
-          f'(corr with label = {spurious_corr})')
+    _spur_pos = rule.get('spurious_pos') or []
+    spurious_motifs = [e['motif'] for e in _spur_pos]
+    if spurious_motifs:
+        print(f'\n  Spurious shortcut motifs ({len(spurious_motifs)}, class-1, corr-desc):')
+        for e in _spur_pos:
+            print(f"    corr={e.get('corr')!s:>8}  sep={e.get('sep')!s:>6}  "
+                  f"supp={e.get('supp')!s:>6}  {e['motif']}")
+    else:
+        print('\n  Spurious shortcut motifs: none (no non-rule motif reached spur_corr)')
 
     # family motifs (right-chemistry-wrong-granularity) come from the DNF rule record (rule_dnf);
     # empty for legacy tier/index rules that carry none.
@@ -641,7 +623,7 @@ Examples
     for (split_name, ds, lookup), data_list in zip(split_configs, _all_split_lists):
         annotated, stats = annotate_split(data_list, rule_clauses, lookup,
                                           relabel=relabel,
-                                          spurious_motif=spurious_motif,
+                                          spurious_motifs=spurious_motifs,
                                           family_motifs=family_motifs)
         pt_path = out_base / f'{split_name}_with_gt.pt'
         torch.save(annotated, pt_path)
@@ -677,8 +659,9 @@ Examples
         'cov':         rule.get('cov'),
         'foolability': rule.get('foolability'),
         # spurious shortcut motif whose atoms → node_label_spurious → eval spurious_roc
-        'spurious_motif':      spurious_motif,
-        'spurious_motif_corr': spurious_corr,
+        # ordered class-1 correlates == node_label_spurious column order == per-motif spurious-ROC
+        'spurious_motifs':     spurious_motifs,
+        'spurious_pos':        _spur_pos,
     }
     rule_path = out_base / 'selected_rule.json'
     with open(rule_path, 'w') as f:

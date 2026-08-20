@@ -427,7 +427,7 @@ GROUPED_VARIANTS = [('w', 'exclunk', 'weighted, UNK excl. (incl-UNK identical)')
 INSTANCE_METRICS = [('instance_pearson_agnostic', 'Per-instance faithfulness (Pearson)', True),
                     ('instance_spearman_agnostic', 'Per-instance faithfulness (Spearman)', True)]
 GTROC_METRICS = [('grouped_gtroc_fired', 'Grouped GT-ROC (fired clauses)', True),
-                 ('instance_gtroc_fired', 'Per-instance GT-ROC (fired disjuncts)', True)]
+                 ('instance_gtroc_dnf', 'Per-instance GT-ROC (fired disjuncts)', True)]
 DIAG_METRICS = [('spurious_roc', 'Spurious-motif ROC (lower better)', False),
                 ('family_roc', 'Family-motif ROC (lower better)', False)]
 # predictive (prefix <split>_): (col-suffix, TeX, higher_is_better)

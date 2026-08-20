@@ -356,15 +356,41 @@ def _graph_auc(att, labels, keep):
     return _auc(att, pos, neg)
 
 
-def _per_graph_mean_auc(att_by_i, gl, attr, keep_fn):
+def _spurious_names(gl):
+    """Ordered class-1 correlate names for node_label_spurious's columns — mirrors
+    motif_eval.spurious_motif_names (apply_gt ships them as a tab-joined per-graph string)."""
+    n_cols = 0
+    for g in gl:
+        nl = getattr(g, 'node_label_spurious', None)
+        if nl is not None and getattr(nl, 'ndim', 1) > 1:
+            n_cols = int(nl.shape[-1]); break
+    if not n_cols:
+        return []
+    for g in gl:
+        keys = getattr(g, 'spurious_motif_keys', None)
+        if isinstance(keys, str) and keys:
+            names = keys.split('\t')
+            if len(names) == n_cols:
+                return names
+    return [f'spur{j}' for j in range(n_cols)]
+
+
+def _per_graph_mean_auc(att_by_i, gl, attr, keep_fn, col=None):
     """Mean over graphs of per-graph AUC(atts, graph.<attr>) — the 'auc_mean' the driver's
-    compute_gt_roc produces for a single node-label attribute (whole/fired/spurious/family)."""
+    compute_gt_roc produces for a single node-label attribute (cause/spurious/family).
+    ``col`` selects one column of a 2-D mask (node_label_spurious [N,S]); a 2-D mask without
+    ``col`` is a bug, not something to flatten, so it raises."""
     vals = []
     for i, g in enumerate(gl):
         a = att_by_i.get(i)
         lab = getattr(g, attr, None)
         if a is None or lab is None:
             continue
+        if getattr(lab, 'ndim', 1) > 1 and lab.shape[-1] != 1:
+            if col is None:
+                raise ValueError(f"_per_graph_mean_auc: {attr} is 2-D {tuple(lab.shape)}; "
+                                 f"pass col= to select one column.")
+            lab = lab[:, col]
         v = _graph_auc(_np1(a), _np1(lab).astype(bool), keep_fn(g))
         if v == v:
             vals.append(v)
@@ -403,12 +429,39 @@ def gtroc_all(att_by_i, gl, keep_fn):
     which the tables don't read): whole / fired / spurious / family + DNF instance/global.
     Every AUC is per-graph-mean; keep_fn drops UNK atoms for --unk exclude."""
     out = {}
-    for key, attr in (('gt_roc_node_auc_mean', 'node_label'),
-                      ('gt_roc_node_fired_auc_mean', 'node_label_fired'),
-                      ('spurious_roc_node_auc_mean', 'node_label_spurious'),
-                      ('family_roc_node_auc_mean', 'node_label_family')):
-        if any(getattr(g, attr, None) is not None for g in gl):
-            out[key] = _per_graph_mean_auc(att_by_i, gl, attr, keep_fn)
+
+    # Require a POSITIVE entry, not merely a present tensor. apply_gt attaches
+    # node_label_spurious AND node_label_family on EVERY graph, all-zero when the rule has no
+    # class-1 correlate / no look-alikes, so an is-not-None guard emits a junk all-NaN column.
+    # Mirrors pipeline._has_node_attr, which is what the training-time paths use.
+    def _has_pos(attr):
+        for g in gl:
+            v = getattr(g, attr, None)
+            if v is not None and float(_np1(v).sum()) > 0:
+                return True
+        return False
+
+    # node_label IS the fired-clause cause (2026-08); there is no separate 'fired' metric.
+    # It stays on is-not-None DELIBERATELY: it always carries positives on rule-positive graphs,
+    # so an all-zero cause mask means the cell is broken and a NaN here is the honest signal.
+    if any(getattr(g, 'node_label', None) is not None for g in gl):
+        out['gt_roc_node_auc_mean'] = _per_graph_mean_auc(att_by_i, gl, 'node_label', keep_fn)
+    # family, unlike the cause, is legitimately empty for many rules -> positive-entry guard.
+    if _has_pos('node_label_family'):
+        out['family_roc_node_auc_mean'] = _per_graph_mean_auc(
+            att_by_i, gl, 'node_label_family', keep_fn)
+    # SPURIOUS is [N,S]: one AUC per class-1 correlate, keyed by its motif. Never collapsed —
+    # spurious_roc_node_auc_mean is only the max, kept so legacy one-column tables resolve.
+    if _has_pos('node_label_spurious'):
+        names = _spurious_names(gl)
+        finite = []
+        for j, nm in enumerate(names):
+            v = _per_graph_mean_auc(att_by_i, gl, 'node_label_spurious', keep_fn, col=j)
+            out[f'spurious_roc_node_auc_mean__{nm}'] = v
+            if v == v:
+                finite.append(v)
+        out['spurious_roc_node_auc_mean'] = max(finite) if finite else float('nan')
+        out['spurious_motifs'] = list(names)
     inst, glob, n = _dnf_gtroc(att_by_i, gl, keep_fn)
     if n > 0:                                          # planted DNF
         out['instance_gt_roc_node_auc_mean'] = inst

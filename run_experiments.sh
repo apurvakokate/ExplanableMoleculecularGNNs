@@ -114,14 +114,20 @@ _gt_tier_list()   {
                 python3 -c "$_py" "$_f" 2>/dev/null && return
             done
         done
-        # 3) fallback grid (phase1 not run yet): MATCH the real key scheme exactly —
-        #    dnf_k{k}_r{i} for k in [MIN_K..MAX_K], i in [1..N]. No bare dnf_k{k} and
-        #    no k=1 (min_k=2 is never emitted), so it can't KeyError phase4 at N=1.
-        local _n="${RULE_DNF_N:-5}" _k="${RULE_DNF_MAXK:-3}" _mink="${RULE_DNF_MINK:-2}" _out="" _i _j
-        case "$_n" in ''|*[!0-9]*) _n=5 ;; esac      # 'all'/typo -> a sane grid
-        [ "$_n" -lt 1 ] && _n=1
-        for _i in $(seq 1 "$_n"); do for _j in $(seq "$_mink" "$_k"); do _out="$_out dnf_k${_j}_r${_i}"; done; done
-        echo $_out
+        # 3) NO synthetic fallback. The old code invented a regular dnf_k{2..3}_r{1..N} grid
+        #    here, which CANNOT match sample_dnf's output: k is drawn ~U{1..k_max}, so k=1 rules
+        #    exist (the grid's min_k=2 silently DROPPED them) and the per-k counts are irregular
+        #    (measured BBBP n_rules=50: 2 x k1, 19 x k2, 29 x k3), so a full cross-product invents
+        #    cells that were never planted — the phantom-cell failure seen in an earlier campaign.
+        #    Tier names are a property of the SAMPLE and are not derivable without the rule file.
+        #    Every caller of this function is a GT phase that runs after phase 1/3, so a missing
+        #    rule file means the run is misconfigured: stop loudly instead of fabricating tiers.
+        echo "ERROR: RULE_ENGINE=dnf but no rule_tiers.json found for dataset='$_ds'" >&2
+        echo "       variant='${_v:-<any>}' under VOCAB_ROOT='$VOCAB_ROOT'." >&2
+        echo "       DNF tier names come from the sampled rules and cannot be guessed." >&2
+        echo "       Run phase 1/3 first (RULE_TIERS=1) to write rule_tiers.json," >&2
+        echo "       or scope this invocation to one known tier with GT_TIER_ONLY=<tier>." >&2
+        return 1
     elif [ "$RULE_TIERS" = "1" ]; then echo "easy medium hard"
     else echo "-"; fi
 }
@@ -1037,11 +1043,17 @@ apply_gt() {
         echo "  [skip] no GT-supported dataset in DATASETS=$DATASETS"
         return 0
     fi
-    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx tiers=$(_gt_tier_list "$variant") datasets:$gt_ds"
+    # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+    # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+    local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+    echo "  [SyntheticGT] vocab=$variant rule=$rule_idx tiers=$_tiers datasets:$gt_ds"
     for ds in $gt_ds; do
         for fold in $FOLDS; do
             # One iteration per tier (RULE_TIERS=1) or one single-rule pass ("-").
-            for _t in $(_gt_tier_list "$variant" "$ds"); do
+            # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+            # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+            local _tiers; _tiers=$(_gt_tier_list "$variant" "$ds") || exit 1
+            for _t in $_tiers; do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 if _should_skip_existing && _phase4_done "$variant" "$ds" "$fold"; then
                     echo "  [skip] $ds fold$fold / $variant / $(_gt_relabel_dir) — gt_cache exists"
@@ -1535,7 +1547,10 @@ phase5_mose() {
             echo "  [skip] MOSE+GT — synthetic GT MOSE uses filtered vocabs (MOSE_BASE=0)"
         else
             for variant in $(_vocab_focus_filtered_variants); do
-                for _t in $(_gt_tier_list "$variant"); do
+                # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+                # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+                local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+                for _t in $_tiers; do
                     GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                     run_mose_gt "$variant"
                 done; GT_TIER=""
@@ -1578,7 +1593,10 @@ phase5_gsat() {
         echo "  [skip] +GT training — REAL_ONLY=1 (original-labels cell)"
     elif _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            for _t in $(_gt_tier_list "$variant"); do
+            # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+            # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+            local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+            for _t in $_tiers; do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 run_gsat_gt "$variant"
             done; GT_TIER=""
@@ -1648,7 +1666,10 @@ phase5_vanilla_gt() {
 
     local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        for _t in $(_gt_tier_list "$variant"); do
+        # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+        # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+        local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+        for _t in $_tiers; do
             GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
             run_vanilla_gt "$variant"
         done; GT_TIER=""
@@ -1675,7 +1696,10 @@ phase5_baselines_gt() {
 
     local variant _t
     for variant in $(_vocab_focus_base_variants); do
-        for _t in $(_gt_tier_list "$variant"); do
+        # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+        # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+        local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+        for _t in $_tiers; do
             GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
             run_baselines_gt "$variant"
         done; GT_TIER=""
@@ -1710,7 +1734,10 @@ phase5_motifsat() {
         echo "  [skip] +GT training — REAL_ONLY=1 (original-labels cell)"
     elif _phase5_has_gt_training && [ -d "$OUT_ROOT/gt_cache" ]; then
         for variant in $(_vocab_focus_base_variants); do
-            for _t in $(_gt_tier_list "$variant"); do
+            # resolve tiers up-front: `for t in $(cmd)` throws away cmd's exit status, so a failed
+            # tier resolution would silently iterate ZERO times. `local v=$(cmd)` masks it too.
+            local _tiers; _tiers=$(_gt_tier_list "$variant") || exit 1
+            for _t in $_tiers; do
                 GT_TIER=""; [ "$_t" != "-" ] && GT_TIER="$_t"
                 run_motifsat_gt "$variant"
             done; GT_TIER=""

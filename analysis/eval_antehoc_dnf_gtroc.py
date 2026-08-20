@@ -9,7 +9,7 @@ the model's NATIVE node attention, and writes the metric into that run's summary
 the exact unprefixed key build_workbook.py reads for Instance GTROC.
 
 Writes (does NOT overwrite the whole-rule gt_roc_node_auc_mean = Grouped GTROC):
-    gt_roc_node_fired_auc_mean  <- dnf['instance_auc_mean']   # Instance GTROC (ante-hoc column)
+    instance_gt_roc_node_auc_mean <- dnf['instance_auc_mean'] # Instance GTROC (ante-hoc column)
     dnf_instance_auc_mean / dnf_global_auc_mean / dnf_n_graphs   # provenance
 
 Only touches ante-hoc runs with use_gt=True and gt_tier starting 'dnf' (source_gt has no
@@ -93,7 +93,8 @@ def _load_clause_gt_test(meta, data_root, vocab_root, batch_size=128):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out_root", default="final_v2")
+    ap.add_argument("--out_root", required=True,
+                   help="results tree (no default: `final_v2` is the RETIRED greedy-engine tree whose gt_roc_node_auc_mean is the OLD whole-rule metric — defaulting to it silently merges pre/post-2026-08 numbers)")
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--vocab_root", required=True)
     ap.add_argument("--dataset", nargs="*", default=None, help="restrict to these datasets")
@@ -119,7 +120,7 @@ def main():
         if not dnf or dnf.get("n_graphs", 0) == 0:
             print(f"[skip] {tag}: n_graphs=0 (no fired clauses on test)"); n_skip += 1; continue
         upd = {
-            "gt_roc_node_fired_auc_mean": dnf["instance_auc_mean"],   # -> Instance GTROC
+            "instance_gt_roc_node_auc_mean": dnf["instance_auc_mean"],   # -> Instance GTROC
             "dnf_instance_auc_mean": dnf["instance_auc_mean"],
             "dnf_global_auc_mean": dnf["global_auc_mean"],
             "dnf_n_graphs": dnf["n_graphs"],

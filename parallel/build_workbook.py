@@ -83,7 +83,7 @@ for regime, rdf in df.groupby("regime"):
     }
     if regime == "relabelled":
         sheets["Grouped GTROC"] = per_method(rdf, "gt_roc_node_auc_mean", "max_gt_roc_node_auc_mean")
-        sheets["Instance GTROC"] = per_method(rdf, "gt_roc_node_fired_auc_mean", "max_gt_roc_node_fired_auc_mean")
+        sheets["Instance GTROC"] = per_method(rdf, "instance_gt_roc_node_auc_mean", "max_instance_gt_roc_node_auc_mean")
     # Explicit single-string config id as the first column of every sheet, so each
     # row is self-identifying (backbone·fragmentation·filtered·tier) rather than the
     # reader stitching the 6 index columns together.
@@ -101,7 +101,7 @@ for regime, rdf in df.groupby("regime"):
         "Post-hoc columns (gnnexplainer/pgexplainer/mage_official/motif_occlusion) fill in as CPU posthoc lands.",
         "KNOWN: PGExplainer NaN on high-dynamic-range backbones (mask collapse: PNA 100%, GAT/GCN/SAGE partial, GIN 0%). Honest limitation, not a gap.",
         "Top 10 / Bottom 10 + node_mask_probe: PENDING (need per-motif rank export + probe pass) — for ALL regimes.",
-        "GTROC uses gt_roc_node_auc_mean (grouped) / gt_roc_node_fired_auc_mean (instance proxy).",
+        "GTROC uses gt_roc_node_auc_mean (fired-clause cause) / instance_gt_roc_node_auc_mean (max over fired clauses).",
         "source-GT datasets (gt_tier=source): whole-rule Grouped GTROC populated (all 7 methods via node_label); Instance GTROC blank by design (no per-clause GT). gt_rule = planted SMARTS.",
         "KNOWN gap: MOSE/GSAT/MotifSAT emit only whole-rule GT-ROC — for planted (dnf) tiers their Instance GTROC (fired-clause) is unavailable from the trainers.",
     ]})

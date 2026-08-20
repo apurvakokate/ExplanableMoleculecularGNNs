@@ -2,7 +2,7 @@
 
 Logs, every ``every`` epochs, to CSV (via EpochLogger) for an ante-hoc model
 (MOSE / MotifSAT / GSAT):
-  epoch_scalars.csv : gt_roc_node_auc (synthetic GT-ROC, Mode 1), gt_roc_node_fired_auc
+  epoch_scalars.csv : gt_roc_node_auc (GT-ROC vs the fired-clause planted cause)
                       (Mode 2), spurious_roc_node_auc — all from the model's OWN attention.
   epoch_motifs.csv  : per-motif importance (the model's learned motif score) and impact
                       (faithful leave-one-out |Δp|), reusing the exact eval-time helpers.
@@ -12,7 +12,7 @@ long training run (unlike the coherence metric, which is a correctness gate). Co
 bounded by ``max_graphs`` (a sample of the eval split) and the ``every`` interval; the
 GT-ROC snapshots are one forward pass per graph, the motif impact is LOO over that sample.
 Evaluated on the VALIDATION split (no test peeking); the split's Data must carry
-``node_label`` (and, for synthetic GT, ``node_label_fired`` / ``node_label_spurious``).
+``node_label`` (and, for synthetic GT, ``node_label_spurious`` [N,S]).
 """
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def build_from_loaders(loaders, vocab, device, run_dir: str, task_type: str,
       TRACK_EXPL_EVERY      snapshot interval in epochs (default 25; 0 disables).
       TRACK_EXPL_MAX_GRAPHS eval-split sample cap per snapshot (default 128).
     Tracks on the ``split`` loader (default 'valid' — no test peeking). The split's
-    Data must carry node_label; synthetic-GT splits also carry node_label_fired /
-    node_label_spurious (source-GT tracks Mode-1 gt_roc only)."""
+    Data must carry node_label (the fired-clause cause); synthetic-GT splits also carry
+    node_label_spurious [N,S] (source-GT tracks gt_roc only)."""
     every = int(os.environ.get('TRACK_EXPL_EVERY', '25'))
     if every <= 0:
         return None, None
@@ -75,8 +75,9 @@ class TrainingExplTracker:
         self._log = logging.getLogger(__name__)
         # which synthetic-GT attrs are available (source-GT sets only node_label)
         from .pipeline import _has_node_attr
-        self._has_fired = _has_node_attr(self.graphs, 'node_label_fired')
+        from .motif_eval import spurious_motif_names
         self._has_spur = _has_node_attr(self.graphs, 'node_label_spurious')
+        self._spur_names = spurious_motif_names(self.graphs) if self._has_spur else []
 
     def __call__(self, model, epoch: int,
                  val_auc: Optional[float] = None) -> None:
@@ -98,16 +99,18 @@ class TrainingExplTracker:
             g = compute_gt_roc(model, self.graphs, self.device,
                                node_att_fn=att, level='node')
             scal['gt_roc_node_auc'] = g['auc_mean']
-            if self._has_fired:
-                gf = compute_gt_roc(model, self.graphs, self.device,
-                                    node_att_fn=att, level='node',
-                                    gt_attr='node_label_fired')
-                scal['gt_roc_node_fired_auc'] = gf['auc_mean']
+            # node_label IS the fired-clause cause now — no separate 'fired' curve to track.
             if self._has_spur:
-                gs = compute_gt_roc(model, self.graphs, self.device,
-                                    node_att_fn=att, level='node',
-                                    gt_attr='node_label_spurious')
-                scal['spurious_roc_node_auc'] = gs['auc_mean']
+                # one curve per class-1 correlate; the max is kept as the single legacy series
+                _f = []
+                for j, nm in enumerate(self._spur_names):
+                    v = compute_gt_roc(model, self.graphs, self.device,
+                                       node_att_fn=att, level='node',
+                                       gt_attr='node_label_spurious', gt_col=j)['auc_mean']
+                    scal[f'spurious_roc_node_auc__{nm}'] = v
+                    if v == v:
+                        _f.append(v)
+                scal['spurious_roc_node_auc'] = max(_f) if _f else float('nan')
             self.logger.log_scalars(epoch, **scal)
 
             # per-motif importance + impact — from compute_motif_impact, which works

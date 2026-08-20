@@ -8,7 +8,7 @@ Covers the PURE, unit-testable metric layer:
 
 NOTE (surfaced separately in chat): the corrected #4 *Instance GT-ROC* (max over fired
 disjuncts, per-disjunct AUC, others excluded from the negative set) is NOT yet implemented
-— the pipeline stores a single union mask (node_label_fired = your *Global*). Tests for
+— the pipeline stores a single union mask (node_label = the fired-clause union, your *Global*). Tests for
 Instance GT-ROC are deliberately absent until that metric exists.
 """
 import os

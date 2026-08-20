@@ -372,8 +372,8 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         # Three-way attribution channels (DNF engine): Mode-2 fired-clause GT-ROC
         # plus the spurious-shortcut and family-granularity ROCs. run_vanilla emits
         # these per explainer as {ex}_{agg}_<name>_auc_mean[_all].
-        ('gt_roc_node_fired_auc_mean', 'gt_roc_node_fired_auc_mean'),
-        ('gt_roc_node_fired_auc_mean_all', 'gt_roc_node_fired_auc_mean_all'),
+        # (gt_roc_node_fired_* removed 2026-08 — node_label IS the fired-clause cause,
+        #  so gt_roc_node_auc_mean above already carries those semantics.)
         ('spurious_roc_node_auc_mean', 'spurious_roc_node_auc_mean'),
         ('spurious_roc_node_auc_mean_all', 'spurious_roc_node_auc_mean_all'),
         ('family_roc_node_auc_mean', 'family_roc_node_auc_mean'),

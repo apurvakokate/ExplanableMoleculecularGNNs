@@ -11,7 +11,7 @@ Input: the results_tidy.csv emitted by aggregate_experiments.py (which already c
 `fragmentation`, `tier`, `synthetic` and `family` columns). Example:
 
     python analysis/aggregate_experiments.py --out_root <results> --save_dir <tables> \
-        --metrics gt_roc_node_fired_auc_mean pearson_motif spurious_roc_node_auc_mean
+        --metrics gt_roc_node_auc_mean pearson_motif spurious_roc_node_auc_mean
     python analysis/ranking_stability.py --tidy <tables>/results_tidy.csv
 """
 import argparse
@@ -42,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--tidy', required=True, help='results_tidy.csv from aggregate_experiments.py')
-    ap.add_argument('--metric', default='gt_roc_node_fired_auc_mean__mean',
+    ap.add_argument('--metric', default='gt_roc_node_auc_mean__mean',
                     help='column to rank explainers by (default: Mode-2 node GT-ROC)')
     ap.add_argument('--explainer_col', default='family')
     ap.add_argument('--frag_col', default='fragmentation')

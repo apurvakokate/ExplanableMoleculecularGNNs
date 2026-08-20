@@ -1919,11 +1919,16 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             # RETIRED and raise if invoked — set RULE_ENGINE only to 'dnf'.
             if _os.environ.get('RULE_ENGINE', 'dnf') == 'dnf':
                 import rule_dnf as _rd
-                # RULE_DNF_N caps the anchor count: unset => module default (20, top by coverage);
-                # 'all' => full population; int => that many.
+                # RULE_DNF_N sets how many rules to SAMPLE: unset => 50 (the settled campaign
+                # default); 'all' => full population; int => that many.
                 _nr = _os.environ.get('RULE_DNF_N')
                 if _nr in (None, ''):
-                    _nr = 10                        # sample_dnf default (N_RULES constant retired)
+                    _nr = 50                        # settled campaign default (2026-08): 50 rules
+                                                    # per (dataset, variant). Sampling is
+                                                    # deterministic under `seed`, so raising this
+                                                    # only APPENDS — rules 1..N keep their keys,
+                                                    # labels and trained checkpoints (VERIFIED
+                                                    # key-for-key at 10 -> 50).
                 elif _nr == 'all':
                     _nr = None
                 else:

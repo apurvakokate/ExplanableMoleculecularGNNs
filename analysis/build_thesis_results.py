@@ -52,7 +52,7 @@ METRICS = ["auc", "val_auc", "train_auc", "rmse", "rmse_orig", "mae", "mae_orig"
            "grouped_pearson", "grouped_pearson_agnostic",
            "instance_pearson_own", "instance_pearson_agnostic",
            "grouped_spearman", "instance_spearman_own", "instance_spearman_agnostic",
-           "grouped_gtroc", "instance_gtroc_fired", "global_gtroc_dnf",
+           "grouped_gtroc", "global_gtroc_dnf",
            "instance_gtroc_dnf", "gtroc_edge", "spurious_roc"]
 # Requested but NOT present in any summary -> require model RE-EVALUATION (forward passes).
 NEEDS_REEVAL = ["train_rmse", "val_rmse", "train_mae", "val_mae",

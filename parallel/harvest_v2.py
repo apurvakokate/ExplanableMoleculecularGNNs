@@ -12,7 +12,8 @@ Usage: harvest_v2.py [--out-root final_v2]
 import os, sys, glob, json, csv, subprocess, argparse, statistics as st
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--out-root", default="final_v2")
+ap.add_argument("--out-root", required=True,
+                help="results tree to harvest (no default: `final_v2` is the RETIRED greedy-engine tree whose gt_roc_node_auc_mean is the OLD whole-rule metric — defaulting to it silently merges pre/post-2026-08 numbers)")
 args = ap.parse_args()
 PROJ = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.join(PROJ, args.out_root) if not os.path.isabs(args.out_root) else args.out_root

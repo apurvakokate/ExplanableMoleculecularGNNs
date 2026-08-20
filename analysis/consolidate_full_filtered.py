@@ -95,7 +95,7 @@ def coverage(df: pd.DataFrame):
         'grouped_pearson': ['grouped_pearson_agnostic_w_exclunk'],
         'instance_pearson': [f'instance_pearson_agnostic_{s}' for s in ('train', 'valid', 'test')],
         'gtroc_global': [f'grouped_gtroc_fired_{s}' for s in ('train', 'valid', 'test')],
-        'gtroc_instance': [f'instance_gtroc_fired_{s}' for s in ('train', 'valid', 'test')],
+        'gtroc_instance': [f'instance_gtroc_dnf_{s}' for s in ('train', 'valid', 'test')],
     }
     rows = []
     for model in ['GNNExplainer', 'PGExplainer', 'MAGE', 'MotifOcclusion',

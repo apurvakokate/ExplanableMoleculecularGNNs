@@ -66,7 +66,7 @@ class Stage5MetricMapCompleteness(unittest.TestCase):
 
     def test_three_way_and_dnf_metrics_mapped(self):
         cols = {f'gnnexplainer_mean_{m}_auc_mean': 0.8 for m in
-                ('gt_roc_node', 'gt_roc_node_fired', 'spurious_roc_node',
+                ('gt_roc_node', 'spurious_roc_node',
                  'family_roc_node', 'instance_gt_roc_node', 'global_gt_roc_node')}
         df = pd.DataFrame([{'family': 'baselines', 'dataset': 'BBBP', **cols}])
         out = expand_posthoc_explainer_rows(df)

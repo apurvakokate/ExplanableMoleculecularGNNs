@@ -151,12 +151,22 @@ def _pred_and_gtroc(method_split: dict) -> dict:
         out[f'{s}_rmse'] = _num(d.get('rmse'))
         out[f'{s}_mae'] = _num(d.get('mae'))
         # GT-ROC (present only when the graphs carry GT node labels)
-        out[f'grouped_gtroc_fired_{s}'] = _num(
-            d.get('global_gt_roc_node_auc_mean', d.get('gt_roc_node_fired_auc_mean')))
-        out[f'instance_gtroc_fired_{s}'] = _num(d.get('instance_gt_roc_node_auc_mean'))
+        out[f'grouped_gtroc_fired_{s}'] = _num(d.get('global_gt_roc_node_auc_mean'))
+        # max over fired disjuncts. Renamed from instance_gtroc_fired_* (2026-08): that name
+        # meant fired-UNION in the harvesters and max-over-clauses here, and post-Mode-1-removal
+        # the union collapses onto grouped_gtroc, leaving the old name with nothing of its own.
+        out[f'instance_gtroc_dnf_{s}'] = _num(d.get('instance_gt_roc_node_auc_mean'))
+        # spurious_roc_{s} is the MAX over class-1 correlates (single comparable scalar);
+        # the per-motif audit lives in spurious_roc__<motif>_{s} below.
         out[f'spurious_roc_{s}'] = _num(d.get('spurious_roc_node_auc_mean'))
+        for _k, _v in d.items():
+            if _k.startswith('spurious_roc_node_auc_mean__'):
+                out[f"spurious_roc__{_k[len('spurious_roc_node_auc_mean__'):]}_{s}"] = _num(_v)
         out[f'family_roc_{s}'] = _num(d.get('family_roc_node_auc_mean'))
-        out[f'gt_roc_whole_{s}'] = _num(d.get('gt_roc_node_auc_mean'))
+        # gt_roc_cause: node_label = the FIRED-CLAUSE cause. Was `gt_roc_whole_{s}` when
+        # node_label meant whole-rule; renamed so the old (wrong) semantics can't be read
+        # into new numbers, and so a stale archive column can't silently line up with it.
+        out[f'gt_roc_cause_{s}'] = _num(d.get('gt_roc_node_auc_mean'))
     return out
 
 
