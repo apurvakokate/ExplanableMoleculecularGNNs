@@ -122,6 +122,12 @@ def explainability_summary_fields(
     gt     = results.get(f'gt_roc_{tag}' if tag else 'gt_roc', {})
     gt_node = results.get(f'gt_roc_node_{tag}' if tag else 'gt_roc_node', {})
     gt_edge = results.get(f'gt_roc_edge_{tag}' if tag else 'gt_roc_edge', {})
+    # DNF clause-decomposed AUCs. _compute_explainability has always COMPUTED these into the
+    # block, but this flatten never emitted them -- so for ante-hoc families (which write
+    # summary.json via this function and no summary_splits.json) instance/global were silently
+    # absent from every run, old and new. They are the metrics the paper tables read.
+    gt_inst = results.get(f'instance_gt_roc_node_{tag}' if tag else 'instance_gt_roc_node', {})
+    gt_glob = results.get(f'global_gt_roc_node_{tag}' if tag else 'global_gt_roc_node', {})
     # Per-motif spurious blocks. BOTH scopes live in ONE results dict: the pooled pass stores
     # every key again with an '_all' suffix (see `results[f'{key}_all']` in the producer). Every
     # other field in this function is fetched by EXACT name, so only this prefix-matched block can
@@ -157,6 +163,10 @@ def explainability_summary_fields(
         # and is NOT comparable with the same key in pre-2026-08 archives.
         f'gt_roc_node_auc_mean{suffix}':       gt_node.get('auc_mean', nan),
         f'gt_roc_edge_auc_mean{suffix}':       gt_edge.get('auc_mean', nan),
+        # Instance = best FIRED disjunct; Global = union of fired disjuncts.
+        f'instance_gt_roc_node_auc_mean{suffix}': gt_inst.get('auc_mean', nan),
+        f'instance_gt_roc_node_n_graphs{suffix}': gt_inst.get('n_graphs', 0),
+        f'global_gt_roc_node_auc_mean{suffix}':   gt_glob.get('auc_mean', nan),
         # Family ROC — explanation vs super/sub-structures of the cause (high = right-chem-wrong-granularity)
         f'family_roc_node_auc_mean{suffix}': fam.get('auc_mean', nan),
         f'family_roc_node_n_graphs{suffix}': fam.get('n_graphs', 0),
@@ -332,9 +342,20 @@ class EvalPipeline:
                 # PLANTED / DNF: the paper node metric is the DNF clause-decomposed AUC —
                 #   Instance — did the model recover ANY one complete FIRED disjunct (best clause)?
                 #   Global   — did it recover the UNION of all fired clauses?
-                # The whole-rule Mode-1 GT-ROC (gt_roc_node/edge/gt_roc: ALL clauses' atoms as
-                # positives, firing ignored) is DELIBERATELY NOT computed for planted — it is a
-                # different, easily-misused value. Whole-rule is SOURCE-GT-ONLY (else branch).
+                # PLUS the per-node cause AUC against node_label. Pre-2026-08 that key held the
+                # whole-rule Mode-1 mask and was deliberately skipped here as "easily misused";
+                # node_label is now FIRED-CLAUSE ONLY, so it is the plain per-node correctness
+                # metric and MUST be computed. Omitting it is what left gt_roc_node_auc_mean=nan
+                # on planted ante-hoc runs once gt_roc_node_fired was retired — i.e. no
+                # correctness number at all for MoSE/GSAT.
+                block['gt_roc_node'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='node')
+                block['gt_roc_edge'] = compute_gt_roc(
+                    self.model, gt_graphs, self.device,
+                    node_att_fn=self.node_att_fn, level='edge')
+                block['gt_roc'] = (block['gt_roc_node'] if self.gt_level == 'node'
+                                   else block['gt_roc_edge'])
                 _dnf_fn = self.node_att_fn or model_node_att_fn(self.model, self.device)
                 _dnf = compute_dnf_gt_roc(self.model, gt_graphs, self.device, _dnf_fn)
                 if _dnf['n_graphs'] > 0:
