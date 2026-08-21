@@ -874,6 +874,11 @@ def main():
           f'gt_tier={args.gt_tier} unk={args.unk} device={device}')
 
     out_rows, ok, failed = [], 0, 0
+    # The per-cell write below is append-mode, so clear any prior rollup ONCE up front —
+    # otherwise a re-run duplicates every row instead of replacing them.
+    if args.dest:
+        Path(args.dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.dest).unlink(missing_ok=True)
     for run_dir, meta in _iter_runs(args.ckpt_root, FAMILY_DIR[args.method], args.dataset):
         v = str(meta.get('vocab_variant', ''))
         if _base_vocab(v) != want_base or v.endswith('_filter') != want_filter:
@@ -897,13 +902,20 @@ def main():
                 run_path=str(run_dir.relative_to(args.ckpt_root))))
             print(f'  [ok] {tag}')
             ok += 1
+            # INCREMENTAL WRITE: append this cell to the rollup NOW rather than accumulating
+            # and writing once at the end. A single evaluate.py run scores hundreds of cells;
+            # with an end-only write a preempted or still-running task contributes NOTHING --
+            # MEASURED: a MoSE task 86/172 cells in had produced no output at all, which reads
+            # as "the method is missing" rather than "the task is halfway". Appending makes the
+            # run both OBSERVABLE (partial results are usable) and RESUMABLE-friendly.
+            if args.dest:
+                _dp = Path(args.dest); _dp.parent.mkdir(parents=True, exist_ok=True)
+                _hdr = not _dp.exists() or _dp.stat().st_size == 0
+                pd.DataFrame([out_rows[-1]]).to_csv(_dp, mode='a', header=_hdr, index=False)
         except Exception as e:
             print(f'  [FAIL] {tag}: {type(e).__name__}: {e}')
             failed += 1
 
-    if args.dest and out_rows:
-        Path(args.dest).parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(out_rows).to_csv(args.dest, index=False)
     print(f'\nDONE ok={ok} failed={failed}  artifacts -> {args.dest_root}'
           + (f'  rollup -> {args.dest}' if args.dest else ''))
     if out_rows:
