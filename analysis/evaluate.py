@@ -178,10 +178,35 @@ def _flatten_mose_scores(ms):
     return {int(m): float(s) for m, s in (ms or {}).items()}
 
 
+def _torch_load_retry(path, *, tries: int = 4, base_delay: float = 1.5, **kw):
+    """torch.load with retry on TRANSIENT read failures.
+
+    Checkpoints live on NFS and this driver runs while hundreds of workers hammer the same
+    filesystem. A contended read surfaces as ``PytorchStreamReader failed reading zip archive``
+    or an OSError, which is indistinguishable from real corruption at the call site -- MEASURED:
+    4 cells reported "corrupt", then loaded fine on retry with the bytes unchanged. Without a
+    retry those become silent holes in the results tables that look like missing configs.
+    Genuine corruption still fails, just after the retries are exhausted.
+    """
+    import time
+    last = None
+    for i in range(tries):
+        try:
+            return torch.load(path, **kw)
+        except (RuntimeError, OSError, EOFError) as e:
+            last = e
+            if i == tries - 1:
+                break
+            time.sleep(base_delay * (2 ** i))          # 1.5s, 3s, 6s
+    raise RuntimeError(
+        f"failed to load {path} after {tries} attempts (last: {type(last).__name__}: {last}). "
+        f"If this persists the checkpoint is genuinely unreadable.") from last
+
+
 def load_native_model_and_scores(run_dir, meta, fam, loaders, vocab, dmeta, device, task_type):
     run_mod, Config = _family_module(fam)
     cfg = _cfg_from_meta(Config, meta)
-    sd = torch.load(run_dir / 'best_model.pt', map_location='cpu', weights_only=False)
+    sd = _torch_load_retry(run_dir / 'best_model.pt', map_location='cpu', weights_only=False)
     sd = sd.get('model_state_dict', sd) if isinstance(sd, dict) else sd
     if fam == 'mose':
         kept = (getattr(dmeta, 'kept_motif_ids', None)
@@ -611,8 +636,8 @@ def _load_vanilla(run_dir, meta, dmeta, device):
         graph_pool=meta.get('graph_pool', 'add'),
         gin_inner_bn=bool(meta.get('gin_inner_bn', True)),
         num_classes=NUM_CLASSES.get(meta['dataset'], 1), deg=getattr(dmeta, 'deg', None))
-    model.load_state_dict(torch.load(Path(run_dir) / 'best_model.pt',
-                                     map_location='cpu', weights_only=False))
+    model.load_state_dict(_torch_load_retry(Path(run_dir) / 'best_model.pt',
+                                            map_location='cpu', weights_only=False))
     return model.to(device).eval()
 
 
@@ -625,7 +650,7 @@ def mage_reload_atts(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, 
     p = Path(art_dir) / 'mage_attention.pt'
     if not p.exists():
         return {s: {} for s in SPLITS}
-    sd = torch.load(p, map_location='cpu', weights_only=False)
+    sd = _torch_load_retry(p, map_location='cpu', weights_only=False)
     attn = _MotifAttention(sd['W.weight'].shape[0])
     attn.load_state_dict(sd)
     attn = attn.to(device).eval()
