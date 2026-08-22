@@ -708,8 +708,28 @@ def evaluate_posthoc_all_splits(
         write_instance(out_dir, ex, inst_by_ex[ex])
     write_global_pooled(out_dir, 'importance', rows_by_ex)
     write_global_pooled(out_dir, 'impact', rows_by_ex)
-    (out_dir / 'explainer_importances.json').write_text(
-        json.dumps({'importances_by_split': importances_json}))
+    # MERGED (read-modify-write), like write_summary_splits below — NOT a plain
+    # overwrite. This one file holds the per-ATOM attributions of EVERY method
+    # (split -> method -> graph -> [values]), while every other artifact is
+    # per-method by filename. A wholesale write therefore destroyed the other
+    # methods' attributions whenever a run scored a subset of method_names, which
+    # is exactly what a per-method scheduler does: scoring gnnexplainer on a cell
+    # that already had pgexplainer erased pgexplainer's atom-level scores (its
+    # CSVs survived, so it looked complete while GT-ROC had nothing to read).
+    # Measured: 224 cells lost this way before it was caught.
+    _ei = out_dir / 'explainer_importances.json'
+    _prev = {}
+    if _ei.exists():
+        try:
+            _prev = (json.loads(_ei.read_text()) or {}).get('importances_by_split') or {}
+        except Exception:
+            _prev = {}
+    for _s, _by_ex in importances_json.items():
+        _prev.setdefault(_s, {}).update(_by_ex)
+    import os as _os                             # not imported at module scope here
+    _tmp = _ei.with_suffix('.json.tmp')           # atomic: a kill must not truncate it
+    _tmp.write_text(json.dumps({'importances_by_split': _prev}))
+    _os.replace(_tmp, _ei)
     # summary_splits.json is written LAST + atomically — it is the completion
     # marker (poll/skip_done key on it), so it must land only after every other
     # artifact is on disk. A run killed anywhere before this has no summary → redone.
