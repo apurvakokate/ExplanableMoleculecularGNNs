@@ -30,6 +30,7 @@ if str(_REPO) not in sys.path:
 
 from analysis.eval_driver_common import (
     build_gt_loaders, split_lists_and_gt, denorm_of, iter_runs, out_dir_for)
+from analysis.posthoc_complete import methods_complete, method_state
 from SharedModules.evaluation.split_eval import evaluate_posthoc_all_splits
 
 FAMILIES = ('vanilla', 'baselines')
@@ -110,6 +111,12 @@ def main():
                          'model-side y-axis for Pearson, not an explainer). Shorthand for '
                          '--methods mage_v2.')
     ap.add_argument('--shard', default=None, help='i/N: process runs[i::N]')
+    ap.add_argument('--only', default=None,
+                    help='absolute path of ONE run directory to process; every other '
+                         'run under --out_root is skipped. Lets a queue worker claim a '
+                         'single cell (so a slow PGExplainer unit fits inside the wall '
+                         'limit) without depending on iter_runs ordering the way '
+                         '--shard does.')
     ap.add_argument('--families', nargs='*', default=None,
                     help="model families to include (default: baselines ONLY). This is "
                          "the post-hoc/baselines re-eval; vanilla is excluded unless "
@@ -140,9 +147,25 @@ def main():
         raise SystemExit(f'--families must be subset of {FAMILIES}, got {sorted(fams)}')
     print(f'device: {device}  (post-hoc driver, families={sorted(fams)})')
 
-    ok = failed = 0
+    # Resolve the method set ONCE, here, so the per-method skip below and process()
+    # below agree on exactly which methods this invocation is responsible for.
+    method_names = tuple(args.methods) if args.methods else DEFAULT_POSTHOC_METHODS
+    print(f'methods: {list(method_names)}')
+
+    # --only: address exactly one run directory by absolute path. Used by the queue
+    # worker so a task is one cell, which keeps a PGExplainer unit inside the wall
+    # limit and makes the claim boundary exact. Resolved to a canonical path so a
+    # trailing slash or symlink cannot silently miss.
+    only = Path(args.only).resolve() if args.only else None
+    if only is not None and not only.is_dir():
+        raise SystemExit(f'--only: not a directory: {only}')
+
+    ok = failed = skipped_only = 0
     for run_dir, meta, fam in iter_runs(args.out_root, fams,
                                         args.dataset, args.shard):
+        if only is not None and Path(run_dir).resolve() != only:
+            skipped_only += 1
+            continue
         if args.limit and (ok + failed) >= args.limit:
             break
         tag = f"{meta.get('dataset')}/{fam}/{meta.get('backbone')}/{meta.get('vocab_variant')}/fold{meta.get('fold')}"
@@ -155,12 +178,22 @@ def main():
             print(f'  [skip:filter-refit] {tag} -> filtered view is analysis/evaluate.py '
                   f'--unk exclude on the FULL run; re-fit here only with --allow_filter_refit')
             continue
-        # skip runs already finished (non-empty summary_splits) — resumable + lets
-        # extra workers be added onto freed cores without redoing completed runs.
+        # Skip only what is ACTUALLY done, PER METHOD.
+        #
+        # This used to key on `summary_splits.json` existing, which is written once per
+        # run dir as a whole-directory completion marker. That made the skip blind to
+        # WHICH methods are inside: once any pass stamped a directory, every later pass
+        # skipped it wholesale. Measured consequence: GNNExplainer and PGExplainer ended
+        # up covering nearly disjoint cell sets, and a corrected MAGE pass would have
+        # skipped all 1,337 directories GNNExplainer had already touched.
+        #
+        # methods_complete() re-derives completion from the artifacts themselves — the
+        # 11 output files non-empty, the fitted checkpoint present, non-constant
+        # importances, and non-degenerate per-atom attributions. Same function the
+        # runner's post-flight assertion and the tracker use, so they cannot disagree.
         _dest = (Path(args.dest_root) / run_dir.relative_to(args.out_root)
                  if args.dest_root else run_dir)
-        _ss = Path(_dest) / 'summary_splits.json'
-        if args.skip_done and _ss.exists() and _ss.stat().st_size > 2:
+        if args.skip_done and methods_complete(_dest, method_names):
             continue
         if args.dry_run:
             print(f'  [dry] {tag}')
