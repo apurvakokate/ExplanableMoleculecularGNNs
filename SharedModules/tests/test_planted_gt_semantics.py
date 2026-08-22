@@ -107,33 +107,11 @@ class TestGtRocRejectsFlattening(unittest.TestCase):
                 node_label=torch.zeros(5, 2))
 
 
-class TestSpuriousScopeIsolation(unittest.TestCase):
-    """Per-motif spurious keys must not leak between the test and pooled scopes.
-
-    Both scopes share one results dict (the pooled pass re-stores every key with an '_all'
-    suffix). The per-motif block is the only prefix-matched lookup in that function, so without
-    an explicit exclusion the test scope absorbs pooled motifs and its max silently becomes the
-    pooled value — a wrong number that looks entirely plausible.
-    """
-
-    RESULTS = {
-        'spurious_roc_node__benzene':     {'auc_mean': 0.60, 'n_graphs': 10},
-        'spurious_roc_node__benzene_all': {'auc_mean': 0.95, 'n_graphs': 30},
-    }
-
-    def test_test_scope_excludes_pooled_keys(self):
-        from SharedModules.evaluation.pipeline import explainability_summary_fields
-        f = explainability_summary_fields(self.RESULTS, scope='test')
-        self.assertEqual(f['spurious_motifs'], ['benzene'])
-        self.assertAlmostEqual(f['spurious_roc_node_auc_mean'], 0.60,
-                               msg='test-scope max took the pooled value')
-        self.assertNotIn('spurious_roc_node_auc_mean__benzene_all', f)
-
-    def test_pooled_scope_strips_the_suffix(self):
-        from SharedModules.evaluation.pipeline import explainability_summary_fields
-        f = explainability_summary_fields(self.RESULTS, scope='all')
-        self.assertEqual(f['spurious_motifs_all'], ['benzene'])
-        self.assertAlmostEqual(f['spurious_roc_node_auc_mean_all'], 0.95)
+# NOTE: TestSpuriousScopeIsolation was removed 2026-08-21. It guarded a scope-leak in
+# explainability_summary_fields' prefix-matched per-motif spurious block, which no longer
+# exists: pipeline.py stopped emitting SpurROC/FamROC entirely once they became contrasts
+# against the cause (analysis/evaluate.py::_contrast_vs_cause is the sole producer). The
+# leak it tested is unreachable, so the test asserted behaviour that is now absent by design.
 
 
 if __name__ == '__main__':

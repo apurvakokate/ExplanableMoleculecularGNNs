@@ -65,6 +65,15 @@ class Stage5MetricMapCompleteness(unittest.TestCase):
     a metric computed and saved but absent from the map is silently dropped."""
 
     def test_three_way_and_dnf_metrics_mapped(self):
+        """GT-ROC and the DNF pair must map; spurious/family must NOT.
+
+        spurious_roc_node_auc_mean and family_roc_node_auc_mean were removed from this
+        mapping on 2026-08-21. They are contrasts against the cause, produced only by
+        analysis/evaluate.py; summary.json has not carried them since pipeline.py stopped
+        emitting the complement-based version. Mapping them here would surface an all-NaN
+        column under a name that means something different in the build_metric_set path,
+        so their absence is asserted rather than merely tolerated.
+        """
         cols = {f'gnnexplainer_mean_{m}_auc_mean': 0.8 for m in
                 ('gt_roc_node', 'spurious_roc_node',
                  'family_roc_node', 'instance_gt_roc_node', 'global_gt_roc_node')}
@@ -72,9 +81,12 @@ class Stage5MetricMapCompleteness(unittest.TestCase):
         out = expand_posthoc_explainer_rows(df)
         row = out[(out['family'] == 'gnnexplainer') & (out['explainer_agg'] == 'mean')]
         self.assertEqual(len(row), 1)
-        for m in ('spurious_roc_node_auc_mean', 'family_roc_node_auc_mean',
-                  'instance_gt_roc_node_auc_mean', 'global_gt_roc_node_auc_mean'):
+        for m in ('gt_roc_node_auc_mean', 'instance_gt_roc_node_auc_mean',
+                  'global_gt_roc_node_auc_mean'):
             self.assertAlmostEqual(row[m].iloc[0], 0.8, msg=f'{m} not mapped (silent drop)')
+        for m in ('spurious_roc_node_auc_mean', 'family_roc_node_auc_mean'):
+            self.assertNotIn(m, row.columns,
+                             msg=f'{m} must not come from the summary.json path')
 
 
 if __name__ == '__main__':

@@ -226,3 +226,59 @@ cd SharedModules && python3 tests/test_shared_modules.py
 cd MOSE-GNN && python3 tests/test_mose_gnn.py
 cd MotifSAT && python3 tests/test_motifsat.py
 ```
+
+---
+
+## ⚠️ SLURM SIZING — HARD RULE (added 2026-08-20 after a self-inflicted stall)
+
+**A GPU job requests exactly 2 CPU cores per GPU. Never more.**
+
+```
+--gres=gpu:N  -c $((2*N))        #  8 GPUs -> -c 16.   NOT -c 32.
+--gres=gpu:0  -c 2               #  CPU-only unit
+```
+
+**What went wrong.** GPU training holders were sized at 4-6 cores/GPU (`gpu:8 -c 32`,
+`gpu:4 -c 24`, `gpu:2 -c 12`). MEASURED at peak: **192 cores for 32 GPUs = 6.0 cores/GPU**;
+336 of the 368 cores held campaign-wide were reserved by GPU jobs. Consequences:
+
+1. **CPU-only work became unschedulable.** Post-hoc baseline arrays sat in `QOSGrpCpuLimit`
+   (a GROUP cap) because our own GPU jobs had eaten the allowance — while preempt had
+   **1,161 idle cores / 555 free 2-core slots**. The capacity existed; the quota did not.
+   We were competing with ourselves.
+2. **The reserved cores do nothing.** These are 3-layer GNNs (hidden 64) on 1.8k-9.9k molecule
+   datasets — one mostly-single-threaded process per GPU. Extra cores idle while blocking
+   placement and starving our own CPU jobs.
+
+**Smaller requests place far better** — same hour, same cluster:
+`-c 64` UNSCHEDULABLE (no node had 64 free) -> `-c 16` Priority -> `-c 4` ran -> `-c 2` fits 555x.
+
+**Also:** GPU partitions (`dgx2`, `gpu`, `dgxh`) accept `--gres=gpu:0` CPU-only jobs and sit
+under DIFFERENT quotas than `preempt`/`share`/`eecs`. Use them for CPU fan-out.
+(`ampere` rejects: `QOSMinGRES`. `athena` rejects the account.)
+
+**Before blaming the cluster for PENDING, check what WE hold:**
+`squeue -u $USER -h -t RUNNING -o '%C %b'` — `QOSGrpCpuLimit` almost always means us.
+
+### STANDING RESOURCE POLICY (2026-08-20)
+
+**Always request BOTH: 64 GPUs and ~300 INDEPENDENT CPU cores.**
+"300 CPUs" = 300 cores on **CPU-only machines** (`--gres=gpu:0 -c 2`, many units) — a SEPARATE
+pool from the cores attached to GPU nodes. NEVER satisfy a CPU request by raising `-c` on GPU
+jobs: that consumes the group CPU quota, blocks our own CPU-only work with `QOSGrpCpuLimit`,
+and yields FEWER total resources. GPU jobs stay at **2 cores per GPU**.
+
+**Route by dataset size.** Bigger datasets train on GPU, smaller on CPU, concurrently.
+(hERG 9,875 > Mutagenicity 7,672 > BBBP 1,859 molecules => hERG/Mutagenicity on GPU, BBBP on CPU.)
+
+**Backfill at the tail.** As GPU-side work nears completion, schedule remaining tasks across the
+GPUs too so nothing idles at the end.
+
+**Evaluation runs entirely on parallel CPUs** — GT-ROC, spurious-ROC, Pearson, harvesting,
+`analysis/evaluate.py`. **EXCEPTION:** PGExplainer, GNNExplainer and MAGE *train* (fit parameters
+or optimise per-graph masks), so they belong on GPU despite being called "post-hoc".
+Motif-occlusion is training-free and is genuine CPU evaluation work.
+
+**All families are GPU-capable** (vanilla, MoSE, MotifSAT, GSAT, GNNExplainer, PGExplainer).
+Do not conclude otherwise from a single `nvidia-smi` sample — a 0%-utilisation reading was taken
+on a node running only `base`-stream work and did not generalise.

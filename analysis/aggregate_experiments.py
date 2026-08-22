@@ -374,10 +374,10 @@ def expand_posthoc_explainer_rows(df: pd.DataFrame) -> pd.DataFrame:
         # these per explainer as {ex}_{agg}_<name>_auc_mean[_all].
         # (gt_roc_node_fired_* removed 2026-08 — node_label IS the fired-clause cause,
         #  so gt_roc_node_auc_mean above already carries those semantics.)
-        ('spurious_roc_node_auc_mean', 'spurious_roc_node_auc_mean'),
-        ('spurious_roc_node_auc_mean_all', 'spurious_roc_node_auc_mean_all'),
-        ('family_roc_node_auc_mean', 'family_roc_node_auc_mean'),
-        ('family_roc_node_auc_mean_all', 'family_roc_node_auc_mean_all'),
+        # spurious_/family_roc no longer originate in summary.json: they are contrasts
+        # against the cause, produced only by analysis/evaluate.py and surfaced through
+        # summary_splits.json -> build_metric_set.py. Reading them here would emit an
+        # empty column under a name that means something else in the other table path.
         # DNF granularity: Instance (any clause) + Global (all clauses) GT-ROC.
         ('instance_gt_roc_node_auc_mean', 'instance_gt_roc_node_auc_mean'),
         ('global_gt_roc_node_auc_mean', 'global_gt_roc_node_auc_mean'),

@@ -39,7 +39,6 @@ from .motif_eval import (
     compute_motif_impact,
     compute_gt_roc,
     compute_dnf_gt_roc,
-    spurious_motif_names,
     caches_from_motif_impact,
     per_instance_correlation_from_caches,
     build_graph_mask_cache,
@@ -131,25 +130,14 @@ def gt_roc_block(model, gt_list, device, node_att_fn) -> Dict[str, float]:
                                                node_att_fn=node_att_fn, level='node')['auc_mean']
     b['gt_roc_edge_auc_mean'] = compute_gt_roc(model, gt_list, device,
                                                node_att_fn=node_att_fn, level='edge')['auc_mean']
-    if _has_node_attr(gt_list, 'node_label_family'):
-        b['family_roc_node_auc_mean'] = compute_gt_roc(
-            model, gt_list, device, node_att_fn=node_att_fn,
-            level='node', gt_attr='node_label_family')['auc_mean']
-    # SPURIOUS: node_label_spurious is [N,S] — ONE AUC PER CLASS-1 CORRELATE, each keyed by its
-    # motif. Never collapsed: 'did the explainer follow THIS shortcut' is a per-motif question.
-    # spurious_roc_node_auc_mean is kept as the max over motifs, purely so the single legacy
-    # column has a successor; read the per-motif keys for anything interpreted.
-    if _has_node_attr(gt_list, 'node_label_spurious'):
-        names = spurious_motif_names(gt_list)
-        per = {}
-        for j, nm in enumerate(names):
-            per[nm] = compute_gt_roc(model, gt_list, device, node_att_fn=node_att_fn,
-                                     level='node', gt_attr='node_label_spurious',
-                                     gt_col=j)['auc_mean']
-            b[f'spurious_roc_node_auc_mean__{nm}'] = per[nm]
-        finite = [v for v in per.values() if v == v]
-        b['spurious_roc_node_auc_mean'] = max(finite) if finite else float('nan')
-        b['spurious_motifs'] = list(names)
+    # SpurROC / FamROC are NOT emitted here. They are contrasts of a competing motif
+    # against THE CAUSE (negatives = union of fired clauses), which this training-time
+    # path cannot express: compute_gt_roc scores a single mask against its complement,
+    # so the causal atoms would sit in the negative set and a correct attribution would
+    # score below 0.5 mechanically. Emitting them here under the same names as the
+    # phase-6 metric would put two different quantities behind one column. They are
+    # produced solely by analysis/evaluate.py::_contrast_vs_cause, which is the single
+    # source of truth for every number that reaches a table.
     # DNF clause-decomposed (Instance = any one fired disjunct; Global = union).
     try:
         dnf = compute_dnf_gt_roc(model, gt_list, device, node_att_fn)
@@ -348,8 +336,8 @@ def _gtroc_scalars_from_block(block: dict) -> Dict[str, float]:
     for src, key in (
         ('gt_roc_node', 'gt_roc_node_auc_mean'),
         ('gt_roc_edge', 'gt_roc_edge_auc_mean'),
-        ('spurious_roc_node', 'spurious_roc_node_auc_mean'),
-        ('family_roc_node', 'family_roc_node_auc_mean'),
+        # spurious_roc_node / family_roc_node deliberately absent: see gt_roc_block --
+        # those are contrasts against the cause, produced only by analysis/evaluate.py
         ('instance_gt_roc_node', 'instance_gt_roc_node_auc_mean'),
         ('global_gt_roc_node', 'global_gt_roc_node_auc_mean'),
     ):

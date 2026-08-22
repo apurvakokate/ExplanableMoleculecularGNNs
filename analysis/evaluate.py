@@ -60,7 +60,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from SharedModules.evaluation.metrics import _model_forward, evaluate_predictions
-from SharedModules.evaluation.motif_eval import model_node_att_fn
+from SharedModules.evaluation.motif_eval import model_node_att_fn, spurious_motif_names
 
 SPLITS = ('train', 'valid', 'test')
 UNK_ID = -1
@@ -381,25 +381,6 @@ def _graph_auc(att, labels, keep):
     return _auc(att, pos, neg)
 
 
-def _spurious_names(gl):
-    """Ordered class-1 correlate names for node_label_spurious's columns — mirrors
-    motif_eval.spurious_motif_names (apply_gt ships them as a tab-joined per-graph string)."""
-    n_cols = 0
-    for g in gl:
-        nl = getattr(g, 'node_label_spurious', None)
-        if nl is not None and getattr(nl, 'ndim', 1) > 1:
-            n_cols = int(nl.shape[-1]); break
-    if not n_cols:
-        return []
-    for g in gl:
-        keys = getattr(g, 'spurious_motif_keys', None)
-        if isinstance(keys, str) and keys:
-            names = keys.split('\t')
-            if len(names) == n_cols:
-                return names
-    return [f'spur{j}' for j in range(n_cols)]
-
-
 def _per_graph_mean_auc(att_by_i, gl, attr, keep_fn, col=None):
     """Mean over graphs of per-graph AUC(atts, graph.<attr>) — the 'auc_mean' the driver's
     compute_gt_roc produces for a single node-label attribute (cause/spurious/family).
@@ -417,6 +398,58 @@ def _per_graph_mean_auc(att_by_i, gl, attr, keep_fn, col=None):
                                  f"pass col= to select one column.")
             lab = lab[:, col]
         v = _graph_auc(_np1(a), _np1(lab).astype(bool), keep_fn(g))
+        if v == v:
+            vals.append(v)
+    return float(np.mean(vals)) if vals else float('nan')
+
+
+def _contrast_vs_cause(att_by_i, gl, keep_fn, attr, col=None):
+    """Per-graph AUC of a diagnostic motif's atoms against THE ANNOTATED CAUSE.
+
+    SpurROC/FamROC ask whether an attribution ranks a competing motif above the cause
+    it should have found. That is a contrast between two designated sets, so the
+    negatives are the causal atoms -- NOT the molecule's complement (which contains
+    the cause, so a correct attribution scores below 0.5 mechanically) and NOT the
+    background with the cause removed (which deletes the reference the question is
+    about, reducing it to "prefers the motif to inert carbon").
+
+    Negatives are the UNION of all fired clauses, so the score asks whether the
+    competitor outranks ANY part of the cause. Scoring against a single clause would
+    make the diagnostic depend on which clause the correctness score happened to
+    select; the union lets it stand on its own and surfaces partial substitution.
+
+      > 0.5  the competing motif outranks the cause   -> substitution
+      = 0.5  no preference between them
+      < 0.5  the cause outranks the competitor        -> correct
+
+    Undefined, and skipped, where no clause fired: the contrast has no meaning
+    without a cause present.
+    """
+    vals = []
+    for i, g in enumerate(gl):
+        a = att_by_i.get(i)
+        nlc = getattr(g, 'node_label_clauses', None)
+        lab = getattr(g, attr, None)
+        if a is None or nlc is None or lab is None:
+            continue
+        nlc = nlc.detach().cpu().numpy() if torch.is_tensor(nlc) else np.asarray(nlc)
+        if getattr(lab, 'ndim', 1) > 1 and lab.shape[-1] != 1:
+            if col is None:
+                raise ValueError(f'_contrast_vs_cause: {attr} is 2-D; pass col=')
+            lab = lab[:, col]
+        att, keep = _np1(a), keep_fn(g)
+
+        clauses = [c for c in (np.where(nlc[:, j] > 0)[0].tolist()
+                               for j in range(nlc.shape[1])) if c]
+        if not clauses:
+            continue                                    # no cause -> contrast undefined
+        U = set().union(*[set(c) for c in clauses])     # the annotated cause
+        neg = [k for k in sorted(U) if keep[k]]
+        # fragmentation is atom-disjoint so these should not overlap; enforce it anyway
+        pos = [k for k in np.where(_np1(lab) > 0)[0].tolist() if keep[k] and k not in U]
+        if not pos or not neg:
+            continue                                    # molecule lacks the motif
+        v = _auc(att, pos, neg)                         # positives=motif, negatives=cause
         if v == v:
             vals.append(v)
     return float(np.mean(vals)) if vals else float('nan')
@@ -472,16 +505,17 @@ def gtroc_all(att_by_i, gl, keep_fn):
     if any(getattr(g, 'node_label', None) is not None for g in gl):
         out['gt_roc_node_auc_mean'] = _per_graph_mean_auc(att_by_i, gl, 'node_label', keep_fn)
     # family, unlike the cause, is legitimately empty for many rules -> positive-entry guard.
+    # family / spurious are CONTRASTS AGAINST THE CAUSE, not against the complement
     if _has_pos('node_label_family'):
-        out['family_roc_node_auc_mean'] = _per_graph_mean_auc(
-            att_by_i, gl, 'node_label_family', keep_fn)
+        out['family_roc_node_auc_mean'] = _contrast_vs_cause(
+            att_by_i, gl, keep_fn, 'node_label_family')
     # SPURIOUS is [N,S]: one AUC per class-1 correlate, keyed by its motif. Never collapsed —
     # spurious_roc_node_auc_mean is only the max, kept so legacy one-column tables resolve.
     if _has_pos('node_label_spurious'):
-        names = _spurious_names(gl)
+        names = spurious_motif_names(gl)
         finite = []
         for j, nm in enumerate(names):
-            v = _per_graph_mean_auc(att_by_i, gl, 'node_label_spurious', keep_fn, col=j)
+            v = _contrast_vs_cause(att_by_i, gl, keep_fn, 'node_label_spurious', col=j)
             out[f'spurious_roc_node_auc_mean__{nm}'] = v
             if v == v:
                 finite.append(v)
@@ -773,11 +807,21 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
 
     g_all = grouped_corr_variants([dict(r) for s in SPLITS for r in rows_by_split.get(s, [])])
     tsum = summary.get('test', {})
+    # SpurROC / FamROC are surfaced in the ROLLUP as well as summary_splits.json. Without
+    # this they existed only inside per-run JSON, so no tabular path carried them: the three
+    # summary.json harvesters lost them when pipeline.py stopped emitting the (differently
+    # defined) complement-based version, and this rollup never had them. spurious_roc is the
+    # MAX over class-1 correlates; the per-motif values stay in summary_splits.json.
+    _spur = [v for k, v in tsum.items()
+             if k.startswith('spurious_roc_node_auc_mean__') and isinstance(v, float) and v == v]
     return dict(grouped_pearson_u=g_all['pearson_u_exclunk'],
                 grouped_pearson_w=g_all['pearson_w_exclunk'],
                 n_motifs=g_all['n_motifs_exclunk'],
                 gtroc_global=tsum.get('global_gt_roc_node_auc_mean', float('nan')),
                 gtroc_instance=tsum.get('instance_gt_roc_node_auc_mean', float('nan')),
+                spurious_roc=(max(_spur) if _spur else float('nan')),
+                n_spurious=len(_spur),
+                family_roc=tsum.get('family_roc_node_auc_mean', float('nan')),
                 pred_auc=tsum.get('auc', float('nan')))
 
 

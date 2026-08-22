@@ -1050,8 +1050,8 @@ def spurious_motif_names(gt_list) -> List[str]:
     n_cols = 0
     for d in gt_list:
         nl = getattr(d, 'node_label_spurious', None)
-        if nl is not None and nl.dim() > 1:
-            n_cols = int(nl.size(-1))
+        if nl is not None and getattr(nl, 'ndim', 1) > 1:   # ndim: works for tensor AND ndarray
+            n_cols = int(nl.shape[-1])
             break
     if not n_cols:
         return []

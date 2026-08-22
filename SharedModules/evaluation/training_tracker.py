@@ -73,11 +73,6 @@ class TrainingExplTracker:
         self.max_motifs = max_motifs
         self.task_type = task_type
         self._log = logging.getLogger(__name__)
-        # which synthetic-GT attrs are available (source-GT sets only node_label)
-        from .pipeline import _has_node_attr
-        from .motif_eval import spurious_motif_names
-        self._has_spur = _has_node_attr(self.graphs, 'node_label_spurious')
-        self._spur_names = spurious_motif_names(self.graphs) if self._has_spur else []
 
     def __call__(self, model, epoch: int,
                  val_auc: Optional[float] = None) -> None:
@@ -100,17 +95,10 @@ class TrainingExplTracker:
                                node_att_fn=att, level='node')
             scal['gt_roc_node_auc'] = g['auc_mean']
             # node_label IS the fired-clause cause now — no separate 'fired' curve to track.
-            if self._has_spur:
-                # one curve per class-1 correlate; the max is kept as the single legacy series
-                _f = []
-                for j, nm in enumerate(self._spur_names):
-                    v = compute_gt_roc(model, self.graphs, self.device,
-                                       node_att_fn=att, level='node',
-                                       gt_attr='node_label_spurious', gt_col=j)['auc_mean']
-                    scal[f'spurious_roc_node_auc__{nm}'] = v
-                    if v == v:
-                        _f.append(v)
-                scal['spurious_roc_node_auc'] = max(_f) if _f else float('nan')
+            # No spurious curve either: SpurROC is a contrast against the cause and
+            # compute_gt_roc cannot express it (it scores one mask against its complement).
+            # Logging a complement-based value under the name spurious_roc_node_auc would
+            # mean something different from the phase-6 metric of that name.
             self.logger.log_scalars(epoch, **scal)
 
             # per-motif importance + impact — from compute_motif_impact, which works

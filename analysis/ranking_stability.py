@@ -11,8 +11,16 @@ Input: the results_tidy.csv emitted by aggregate_experiments.py (which already c
 `fragmentation`, `tier`, `synthetic` and `family` columns). Example:
 
     python analysis/aggregate_experiments.py --out_root <results> --save_dir <tables> \
-        --metrics gt_roc_node_auc_mean pearson_motif spurious_roc_node_auc_mean
+        --metrics gt_roc_node_auc_mean pearson_motif
     python analysis/ranking_stability.py --tidy <tables>/results_tidy.csv
+
+NOTE on SpurROC/FamROC: they are NOT available through this path. aggregate_experiments.py
+reads summary.json, which has not carried them since they became contrasts of a competing
+motif against the CAUSE (negatives = union of fired clauses) rather than against the
+molecule's complement. They are produced only by analysis/evaluate.py, and reach tables via
+its rollup CSV (columns `spurious_roc`, `family_roc`) and summary_splits.json ->
+build_metric_set.py (`spurious_roc_<split>`, `family_roc_<split>`). To rank explainers by
+SpurROC, point --tidy at a frame built from one of those sources.
 """
 import argparse
 from itertools import combinations
@@ -43,7 +51,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--tidy', required=True, help='results_tidy.csv from aggregate_experiments.py')
     ap.add_argument('--metric', default='gt_roc_node_auc_mean__mean',
-                    help='column to rank explainers by (default: Mode-2 node GT-ROC)')
+                    help='column to rank explainers by (default: node GT-ROC against the '
+                         'fired-clause cause)')
     ap.add_argument('--explainer_col', default='family')
     ap.add_argument('--frag_col', default='fragmentation')
     ap.add_argument('--dataset', default=None, help='restrict to one dataset (optional)')
@@ -52,7 +61,13 @@ def main():
 
     df = pd.read_csv(args.tidy)
     if args.metric not in df.columns:
-        raise SystemExit(f"metric '{args.metric}' not in tidy columns: {list(df.columns)}")
+        _hint = ''
+        if 'spurious' in args.metric or 'family_roc' in args.metric:
+            _hint = ("\n  SpurROC/FamROC are not produced by aggregate_experiments.py (it reads "
+                     "summary.json).\n  They come from analysis/evaluate.py only: rollup CSV "
+                     "columns `spurious_roc`/`family_roc`,\n  or summary_splits.json -> "
+                     "build_metric_set.py (`spurious_roc_<split>`/`family_roc_<split>`).")
+        raise SystemExit(f"metric '{args.metric}' not in tidy columns: {list(df.columns)}{_hint}")
     if 'synthetic' in df.columns:
         df = df[df['synthetic'].astype(str) == 'gt']          # GT-ROC only exists for planted runs
     if args.dataset and 'dataset' in df.columns:
