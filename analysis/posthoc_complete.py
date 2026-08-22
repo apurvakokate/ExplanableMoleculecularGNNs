@@ -50,50 +50,62 @@ def required_files(method):
     return f
 
 
-def method_state(dest_dir, method):
-    """-> 'VALID' | 'DEGENERATE' | 'PARTIAL' | 'MISSING'"""
+def method_state_detail(dest_dir, method):
+    """-> (state, reason, n_missing_files).
+
+    state  : 'VALID' | 'DEGENERATE' | 'PARTIAL' | 'MISSING'
+    reason : '' unless DEGENERATE/PARTIAL — the specific defect, so a collapsed cell
+             can be RECORDED with its cause instead of just being counted.
+    """
     d = str(dest_dir)
     if not os.path.isdir(d):
-        return 'MISSING'
+        return 'MISSING', '', 0
     need = required_files(method)
     got = [f for f in need
            if os.path.exists(os.path.join(d, f)) and os.path.getsize(os.path.join(d, f)) > 0]
     if not got:
-        return 'MISSING'
+        return 'MISSING', '', len(need)
     if len(got) != len(need):
-        return 'PARTIAL'
+        miss = [f for f in need if f not in got]
+        return 'PARTIAL', f'{len(miss)}/{len(need)} files absent or empty: ' + ','.join(miss[:3]), len(miss)
     stem = DISK_STEM.get(method, method)
     try:
         rows = list(csv.DictReader(open(os.path.join(d, f'{stem}_importance_test.csv'))))
-    except Exception:
-        return 'DEGENERATE'
+    except Exception as e:
+        return 'DEGENERATE', f'importance_test unreadable ({type(e).__name__})', 0
     if not rows:
-        return 'DEGENERATE'
+        return 'DEGENERATE', 'importance_test has no rows', 0
     vals = set()
     for r in rows:
         try:
             v = float(r.get('score'))
         except (TypeError, ValueError):
-            return 'DEGENERATE'
+            return 'DEGENERATE', 'non-numeric importance score', 0
         if math.isnan(v):
-            return 'DEGENERATE'
+            return 'DEGENERATE', 'NaN importance score', 0
         vals.add(round(v, 12))
     if len(vals) <= 1:
-        return 'DEGENERATE'
+        return 'DEGENERATE', f'constant importance ({vals.pop():.6g} across {len(rows)} motifs)', 0
     # Per-ATOM attributions are what GT-ROC consumes. A cell can have varying MOTIF
     # scores yet flat per-atom attributions -- measured on 7 PGExplainer cells -- and is
     # useless for the metric. Checked last so only candidate-VALID dirs pay the JSON read.
     atts = _test_atts(d, stem)
     if not atts:
-        return 'DEGENERATE'
+        return 'DEGENERATE', 'no test attributions in explainer_importances.json', 0
     const = 0
     for _, arr in atts.items():
         fin = [x for x in arr if x is not None and not (isinstance(x, float) and math.isnan(x))]
         if not fin or max(fin) == min(fin):
             const += 1
-    if const / len(atts) > 0.99:
-        return 'DEGENERATE'
-    return 'VALID'
+    frac = const / len(atts)
+    if frac > 0.99:
+        return 'DEGENERATE', f'flat per-atom attributions on {const}/{len(atts)} test graphs', 0
+    return 'VALID', '', 0
+
+
+def method_state(dest_dir, method):
+    """-> 'VALID' | 'DEGENERATE' | 'PARTIAL' | 'MISSING'"""
+    return method_state_detail(dest_dir, method)[0]
 
 
 def methods_complete(dest_dir, methods):
