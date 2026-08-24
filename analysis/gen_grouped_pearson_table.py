@@ -38,6 +38,11 @@ COLUMNS = [('GNNExpl.','gnnexplainer',['Filt','Full']), ('PGExpl.','pgexplainer'
            ('MOSE$_U$','mose:learn',['Filt'])]
 UNK = {'Filt':'exclude', 'Full':'include'}
 METRIC = 'grouped_pearson_u'
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import table_sig as _ts                                        # significance highlighting
+ALPHA = float(os.environ.get('SIG_ALPHA', '0.05')); STYLE = os.environ.get('SIG_STYLE', 'bold_underline')
+SIG   = os.environ.get('SIG', '1') not in ('0', '', 'false', 'no')   # all current metrics are higher-better
 
 # ── PROVENANCE MAP: (metric, regime) -> per-method source of record ──────────────
 # via_ep=True means the tree was produced by analysis/evaluate.py; else the driver named.
@@ -154,12 +159,16 @@ def load(gat_paths, other_paths, vocab):
     if len(df): df['mkey'] = df.apply(method_key, axis=1)
     return df
 
-def cell(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
-    if not len(df) or metric not in df.columns: return '--'
+def agg_p(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
+    if not len(df) or metric not in df.columns: return (float('nan'),0.0,0)
     sel = df[(df.dataset==ds_id)&(df.backbone==bb)&(df.mkey==mkey)&(df.unk==unk_eval)]
     v = pd.to_numeric(sel[metric], errors='coerce').dropna().values
-    if len(v)==0: return '--'
-    m, s = float(np.mean(v)), float(np.std(v, ddof=1) if len(v)>1 else 0.0)
+    if len(v)==0: return (float('nan'),0.0,0)
+    return (float(np.mean(v)), float(np.std(v, ddof=1) if len(v)>1 else 0.0), len(v))
+
+def cell(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
+    m, s, n = agg_p(df, ds_id, bb, mkey, unk_eval, metric)
+    if n==0: return '--'
     sign = '-' if m<0 else ''
     return f'${sign}.{min(round(abs(m)*100),99):02d}_{{{min(round(s*100),99):02d}}}$'
 
@@ -173,9 +182,17 @@ def build(df, metric=METRIC):
     L.append(' & '.join(sub)+r' \\'); L.append(r'\midrule')
     for disp, ds_id in DATASETS:
         for i,bb in enumerate(BACKBONES):
+            # significance groups: methods compete WITHIN each unk condition (Filt vs Full)
+            tags={}
+            for sc in ('Filt','Full'):
+                members=[mk for _,mk,subs in COLUMNS if sc in subs]
+                grp=[dict(key=mk, **dict(zip(('mean','std','n'), agg_p(df,ds_id,bb,mk,UNK[sc],metric)))) for mk in members]
+                tags[sc]=_ts.decide(grp, higher_better=True, alpha=ALPHA) if SIG else {}
             cells=[rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
             for _,mkey,subs in COLUMNS:
-                for sc in subs: cells.append(cell(df, ds_id, bb, mkey, UNK[sc], metric))
+                for sc in subs:
+                    s=cell(df, ds_id, bb, mkey, UNK[sc], metric)
+                    cells.append(_ts.wrap(s, tags[sc].get(mkey,'plain'), STYLE) if SIG else s)
             L.append(' & '.join(cells)+r' \\')
         L.append(r'\midrule')
     L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')

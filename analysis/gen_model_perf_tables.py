@@ -7,6 +7,12 @@ Source = each model's own summary.json in the bundle. GAT from final_v2_gath1 (h
 import json, glob, os, numpy as np, pandas as pd
 B = os.environ.get('BUNDLE', '/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/mose_replication')
 OUTDIR = os.environ.get('OUTDIR', '/tmp/perf')
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import table_sig as _ts                                    # significance highlighting
+ALPHA = float(os.environ.get('SIG_ALPHA', '0.05'))
+STYLE = os.environ.get('SIG_STYLE', 'bold_underline')      # or 'bold_all'
+SIG   = os.environ.get('SIG', '1') not in ('0', '', 'false', 'no')
 CLS = ['BBBP','Mutagenicity','hERG','Benzene_Verified_GT','Fluoride_Carbonyl_Verified_GT','Alkane_Carbonyl_Verified_GT']
 REG = ['esol','Lipophilicity']
 DISP = {'Benzene_Verified_GT':'Benzene','Fluoride_Carbonyl_Verified_GT':'Fluoride-Carbonyl',
@@ -56,15 +62,20 @@ def cell(ds, bb, model, col, scale100=False, dec=2):
         return f'${m*100:.0f}_{{{s*100:.0f}}}$'.replace('.0','')
     return f'${m:.{dec}f}_{{{s:.{dec}f}}}$'
 
-def build(datasets, col, title, scale100=False, dec=2):
-    L = [f'% {title}  (bundle; mean_{{std}} over folds)',
+def build(datasets, col, title, scale100=False, dec=2, higher_better=True):
+    L = [f'% {title}  (bundle; mean_{{std}} over folds)'
+         + ('  [best=bold, tie=underline; Welch t, alpha=%g, Holm]'%ALPHA if SIG else ''),
          r'\begin{tabular}{ll'+'c'*len(MODELS)+'}', r'\toprule',
          'Dataset & BB & '+' & '.join(MODELS)+r' \\', r'\midrule']
     for ds in datasets:
         disp = DISP.get(ds, ds)
         for i,bb in enumerate(BB):
+            group = [dict(key=mo, **dict(zip(('mean','std','n'), agg(ds,bb,mo,col)))) for mo in MODELS]
+            tags = _ts.decide(group, higher_better=higher_better, alpha=ALPHA) if SIG else {}
             c = [rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
-            for mo in MODELS: c.append(cell(ds,bb,mo,col,scale100,dec))
+            for mo in MODELS:
+                s = cell(ds,bb,mo,col,scale100,dec)
+                c.append(_ts.wrap(s, tags.get(mo,'plain'), STYLE) if SIG else s)
             L.append(' & '.join(c)+r' \\')
         L.append(r'\midrule')
     L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')
@@ -83,9 +94,9 @@ def pretty(datasets, col, title, dec=3):
 
 import sys
 os.makedirs(OUTDIR, exist_ok=True)
-open(f'{OUTDIR}/classification_auc.tex','w').write(build(CLS,'auc','Classification — test ROC-AUC',scale100=True))
-open(f'{OUTDIR}/regression_rmse_orig.tex','w').write(build(REG,'rmse_orig','Regression — RMSE (original units)',dec=3))
-open(f'{OUTDIR}/regression_rmse_std.tex','w').write(build(REG,'rmse','Regression — RMSE (standardized)',dec=3))
+open(f'{OUTDIR}/classification_auc.tex','w').write(build(CLS,'auc','Classification — test ROC-AUC',scale100=True,higher_better=True))
+open(f'{OUTDIR}/regression_rmse_orig.tex','w').write(build(REG,'rmse_orig','Regression — RMSE (original units)',dec=3,higher_better=False))
+open(f'{OUTDIR}/regression_rmse_std.tex','w').write(build(REG,'rmse','Regression — RMSE (standardized)',dec=3,higher_better=False))
 print(pretty(CLS,'auc','CLASSIFICATION — test ROC-AUC'))
 print(); print(pretty(REG,'rmse_orig','REGRESSION — RMSE (original units)'))
 print(); print(pretty(REG,'rmse','REGRESSION — RMSE (standardized)'))

@@ -10,6 +10,11 @@ B=os.environ.get('ROOT','/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor')
 SRC=os.environ.get('SRCGT', f'{B}/eval_srcgt_gtroc_v1')
 FOLDS=os.environ.get('FOLDS','/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS')
 OUTDIR=os.environ.get('OUTDIR','/tmp/gtroc')
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import table_sig as _ts
+ALPHA=float(os.environ.get('SIG_ALPHA','0.05')); STYLE=os.environ.get('SIG_STYLE','bold_underline')
+SIG=os.environ.get('SIG','1') not in ('0','','false','no')
 DATASETS=[('Benzene','Benzene_Verified_GT'),
           ('Fluoride-Carbonyl','Fluoride_Carbonyl_Verified_GT'),
           ('Alkane-Carbonyl','Alkane_Carbonyl_Verified_GT')]
@@ -86,11 +91,15 @@ for unk in ('exclude','include'):
             rows.append(dict(method=disp_m, dataset=ds, backbone=bb, fold=fold, unk=unk, gtroc=val))
 df=pd.DataFrame(rows).drop_duplicates(['method','dataset','backbone','fold','unk'])
 
-def cell(ds, bb, mkey, unk):
+def agg_g(ds, bb, mkey, unk):
     s=df[(df.dataset==ds)&(df.backbone==bb)&(df.method==mkey)&(df.unk==unk)]
     v=pd.to_numeric(s['gtroc'],errors='coerce').dropna().values
-    if len(v)==0: return '--'
-    m,sd=float(np.mean(v)), float(np.std(v,ddof=1) if len(v)>1 else 0.0)
+    if len(v)==0: return (float('nan'),0.0,0)
+    return (float(np.mean(v)), float(np.std(v,ddof=1) if len(v)>1 else 0.0), len(v))
+
+def cell(ds, bb, mkey, unk):
+    m,sd,n=agg_g(ds,bb,mkey,unk)
+    if n==0: return '--'
     return f'${m*100:.0f}_{{{sd*100:.0f}}}$'.replace('.','')
 
 def build():
@@ -100,11 +109,18 @@ def build():
        ' & '.join(['','']+[rf'\multicolumn{{{len(s)}}}{{c}}{{{n}}}' for n,_,s in COLS])+r' \\',
        ' & '.join(['Dataset','BB']+[('Filt' if x=='filt' else 'Full') for _,_,s in COLS for x in s])+r' \\',
        r'\midrule']
+    methods=[mk for _,mk,_ in COLS]
     for disp,ds in DATASETS:
         for i,bb in enumerate(BB):
+            tags={}
+            for sc in ('filt','full'):
+                cells=[dict(key=mk, **dict(zip(('mean','std','n'), agg_g(ds,bb,mk,UNK[sc])))) for mk in methods]
+                tags[sc]=_ts.decide(cells, higher_better=True, alpha=ALPHA) if SIG else {}
             c=[rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
             for _,mk,subs in COLS:
-                for sc in subs: c.append(cell(ds,bb,mk,UNK[sc]))
+                for sc in subs:
+                    s=cell(ds,bb,mk,UNK[sc])
+                    c.append(_ts.wrap(s, tags[sc].get(mk,'plain'), STYLE) if SIG else s)
             L.append(' & '.join(c)+r' \\')
         L.append(r'\midrule')
     L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')

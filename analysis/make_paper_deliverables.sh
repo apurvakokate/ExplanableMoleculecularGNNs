@@ -23,6 +23,16 @@
 #
 #   Everything is EVALUATION on existing checkpoints — no retraining.
 #
+#   Significance highlighting (analysis/table_sig.py): per (dataset,backbone) row
+#   and within each unk condition, the best cell is \textbf{bold} and every cell
+#   not significantly worse than it (Welch's two-sided t-test on the per-fold
+#   mean/std, Holm-corrected) is \underline{underlined}. Toggle via env vars:
+#     SIG=0            disable highlighting
+#     SIG_ALPHA=0.10   significance level (default 0.05)
+#     SIG_STYLE=bold_all   bold best+ties instead of bold-best/underline-ties
+#   NOTE: Welch is a SUMMARY-ONLY (unpaired) test — it ignores the fold pairing;
+#   a paired t-test on the raw folds would be stronger. State the test in captions.
+#
 #   Override any path via env vars, e.g.:
 #     ROOT=/path/to/Claude+Cursor OUT=~/tables bash analysis/make_paper_deliverables.sh
 # =============================================================================
