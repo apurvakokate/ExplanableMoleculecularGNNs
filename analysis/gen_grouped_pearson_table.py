@@ -36,6 +36,11 @@ COLUMNS = [('GNNExpl.','gnnexplainer',['Filt','Full']), ('PGExpl.','pgexplainer'
            ('MAGE','mage',['Filt','Full']), ('Occlusion','motif_occlusion',['Filt','Full']),
            ('GSAT','gsat',['Filt','Full']), ('MOSE','mose:fixed',['Filt']),
            ('MOSE$_U$','mose:learn',['Filt'])]
+# MAIN table: kept-vocab (Filt) only for ALL methods — the fair, like-for-like comparison
+# (MoSE/MoSE_U are filtered-vocab models with no Full, so everyone is compared on Filt).
+COLUMNS_MAIN = [(n, mk, ['Filt']) for n, mk, _ in COLUMNS]
+# SUPPLEMENTARY table: the full-vocab baselines, Filt vs Full — shows the include-unk effect.
+COLUMNS_SUPP = [(n, mk, ['Filt','Full']) for n, mk, subs in COLUMNS if 'Full' in subs]
 UNK = {'Filt':'exclude', 'Full':'include'}
 METRIC = 'grouped_pearson_u'
 import sys as _sys
@@ -171,24 +176,31 @@ def cell(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
     if n==0: return '--'
     return f'${m*100:.1f}_{{{s*100:.1f}}}$'    # x100, one decimal, subscript=std (14 cols -> compact)
 
-def build(df, metric=METRIC):
-    ncol = sum(len(sub) for _,_,sub in COLUMNS)
-    L = [rf'% metric={metric} (real labels); cell=.mean_{{std}} x100; Filt=exclude Full=include; GAT=heads1(eval_gath1)',
+def build(df, metric=METRIC, columns=None):
+    columns = COLUMNS if columns is None else columns
+    ncol = sum(len(sub) for _,_,sub in columns)
+    L = [rf'% metric={metric} (real labels); cell=mean_{{std}} x100 (1 dp); GAT=heads1(eval_gath1)',
          r'\begin{tabular}{ll'+'c'*ncol+'}', r'\toprule']
-    hdr = ['','']+[rf'\multicolumn{{{len(sub)}}}{{c}}{{{n}}}' for n,_,sub in COLUMNS]
-    L.append(' & '.join(hdr)+r' \\')
-    sub=['Dataset','BB']; [sub.extend(s) for _,_,s in COLUMNS]
-    L.append(' & '.join(sub)+r' \\'); L.append(r'\midrule')
+    # if every column is the SAME single condition (e.g. all Filt), use a flat one-row
+    # header (method names only) and state the condition in the caption — no redundant sub-row.
+    flat = all(len(sub)==1 for _,_,sub in columns) and len({sc for _,_,sub in columns for sc in sub})==1
+    if flat:
+        L.append(' & '.join(['Dataset','BB']+[n for n,_,_ in columns])+r' \\'); L.append(r'\midrule')
+    else:
+        hdr = ['','']+[rf'\multicolumn{{{len(sub)}}}{{c}}{{{n}}}' for n,_,sub in columns]
+        L.append(' & '.join(hdr)+r' \\')
+        sub=['Dataset','BB']; [sub.extend(s) for _,_,s in columns]
+        L.append(' & '.join(sub)+r' \\'); L.append(r'\midrule')
     for disp, ds_id in DATASETS:
         for i,bb in enumerate(BACKBONES):
             # significance groups: methods compete WITHIN each unk condition (Filt vs Full)
             tags={}
             for sc in ('Filt','Full'):
-                members=[mk for _,mk,subs in COLUMNS if sc in subs]
+                members=[mk for _,mk,subs in columns if sc in subs]
                 grp=[dict(key=mk, **dict(zip(('mean','std','n'), agg_p(df,ds_id,bb,mk,UNK[sc],metric)))) for mk in members]
                 tags[sc]=_ts.decide(grp, higher_better=True, alpha=ALPHA) if SIG else {}
             cells=[rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
-            for _,mkey,subs in COLUMNS:
+            for _,mkey,subs in columns:
                 for sc in subs:
                     s=cell(df, ds_id, bb, mkey, UNK[sc], metric)
                     cells.append(_ts.wrap(s, tags[sc].get(mkey,'plain'), STYLE) if SIG else s)
@@ -219,16 +231,29 @@ if __name__ == '__main__':
     # default action = build the table for --metric
     out = a.out or f'{a.metric}_real.tex'
     df = load(a.gat_rollups, a.other_rollups, a.vocab)
-    _sig = ((r' Per (dataset, backbone) and within each condition, the best is in '
-             r'\textbf{bold} and results not significantly worse (Welch two-sided '
-             rf'$t$-test, $\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
-    _cap = (r'Grouped (unweighted) Pearson correlation between motif importance and '
-            r'per-motif impact (real labels), pooled over train+valid+test, $\times100$; '
-            r'subscript\,=\,std. \textbf{Filt} (exclude-unk) uses kept-vocabulary motifs '
-            r'only; \textbf{Full} (include-unk) uses the full vocabulary. MoSE/MoSE$_U$ '
-            r'(filtered-vocab models) report Filt only. BB=backbone.' + _sig)
-    _float = (f'\\begin{{table*}}[t]\n\\centering\n\\small\n{build(df, a.metric)}\n'
-              f'\\caption{{{_cap}}}\n\\label{{tab:{a.metric}}}\n\\end{{table*}}\n')
-    open(out, 'w').write(_float)
+    _sig = ((r' Per (dataset, backbone), the best is in \textbf{bold} and results not '
+             r'significantly worse (Welch two-sided $t$-test, '
+             rf'$\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
+    def _float(tab, cap, label, size='small'):
+        return (f'\\begin{{table*}}[t]\n\\centering\n\\{size}\n{tab}\n'
+                f'\\caption{{{cap}}}\n\\label{{{label}}}\n\\end{{table*}}\n')
+
+    # MAIN: kept-vocab (Filt) for every method — fair like-for-like comparison
+    _cap_main = (r'Grouped (unweighted) Pearson correlation between motif importance and '
+                 r'per-motif impact (real labels), pooled over train+valid+test, $\times100$; '
+                 r'subscript\,=\,std. All values use the \emph{kept-vocabulary} '
+                 r'evaluation (Filt / exclude-unk), so every method is compared on the '
+                 r'same motif set. BB=backbone; MoSE$_U$=MoSE with learnable unknown.' + _sig)
+    open(out, 'w').write(_float(build(df, a.metric, COLUMNS_MAIN), _cap_main, f'tab:{a.metric}'))
+
+    # SUPPLEMENTARY: full-vocab baselines, kept (Filt) vs full (Full) vocabulary
+    supp_out = out[:-4] + '_supp.tex' if out.endswith('.tex') else out + '_supp'
+    _cap_supp = (r'Effect of the vocabulary filter on the full-vocab baselines: grouped '
+                 r'(unweighted) Pearson (real labels, train+valid+test, $\times100$; '
+                 r'subscript\,=\,std) evaluated over \textbf{Filt} (kept-vocabulary motifs '
+                 r'only) vs \textbf{Full} (entire vocabulary). MoSE/MoSE$_U$ are omitted '
+                 r'(filtered-vocab models, Filt only; see main table). BB=backbone.' + _sig)
+    open(supp_out, 'w').write(_float(build(df, a.metric, COLUMNS_SUPP), _cap_supp,
+                                      f'tab:{a.metric}-supp', size='footnotesize'))
     cov = df.groupby('backbone').size().to_dict() if len(df) else {}
     print(f'metric={a.metric} | rows by backbone:', cov, '\nwrote', out)
