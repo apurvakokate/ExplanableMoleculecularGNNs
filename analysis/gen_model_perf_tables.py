@@ -18,7 +18,8 @@ REG = ['esol','Lipophilicity']
 DISP = {'Benzene_Verified_GT':'Benzene','Fluoride_Carbonyl_Verified_GT':'Fluoride-Carbonyl',
         'Alkane_Carbonyl_Verified_GT':'Alkane-Carbonyl'}
 BB = ['GIN','GCN','GAT','SAGE','PNA']
-MODELS = ['Vanilla','MoSE','MoSE_U','GSAT']
+MODELS = ['Vanilla','GSAT','MoSE','MoSE_U']            # display/column order
+MODEL_HDR = {'Vanilla':'Vanilla','GSAT':'GSAT','MoSE':'MoSE','MoSE_U':r'MoSE$_U$'}  # LaTeX-safe headers
 SPECS = [
   dict(model='Vanilla', roots=['final_v2','final_v2_gath1'],        family='vanilla',   vocab='rbrics',        unk=None),
   dict(model='MoSE',    roots=['final_v2','final_v2_gath1'],         family='mose',      vocab='rbrics_filter', unk='unk-fixed'),
@@ -64,7 +65,7 @@ def build(datasets, col, title, scale100=False, dec=2, higher_better=True):
     L = [f'% {title}  (test set; mean_{{std}} over folds)'
          + ('  [best=bold, tie=underline; Welch t, alpha=%g, Holm]'%ALPHA if SIG else ''),
          r'\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}ll'+'c'*len(MODELS)+'}', r'\toprule',
-         'Dataset & BB & '+' & '.join(MODELS)+r' \\', r'\midrule']
+         'Dataset & BB & '+' & '.join(MODEL_HDR[m] for m in MODELS)+r' \\', r'\midrule']
     for ds in datasets:
         disp = DISP.get(ds, ds)
         for i,bb in enumerate(BB):
