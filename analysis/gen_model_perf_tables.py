@@ -55,12 +55,10 @@ def agg(ds, bb, model, col):
     v = pd.to_numeric(s[col], errors='coerce').dropna().values
     return (np.nan, 0, 0) if len(v)==0 else (float(np.mean(v)), float(np.std(v, ddof=1) if len(v)>1 else 0.0), len(v))
 
-def cell(ds, bb, model, col, scale100=False, dec=2):
+def cell(ds, bb, model, col, scale100=False, dec=3):
     m,s,n = agg(ds,bb,model,col)
     if np.isnan(m): return '--'
-    if scale100:
-        return f'${m*100:.0f}_{{{s*100:.0f}}}$'.replace('.0','')
-    return f'${m:.{dec}f}_{{{s:.{dec}f}}}$'
+    return f'${m:.{dec}f} \\pm {s:.{dec}f}$'    # explicit mean +- std (few columns, room)
 
 def build(datasets, col, title, scale100=False, dec=2, higher_better=True):
     L = [f'% {title}  (test set; mean_{{std}} over folds)'
@@ -93,10 +91,28 @@ def pretty(datasets, col, title, dec=3):
     return '\n'.join(out)
 
 import sys
+def floatwrap(tab, caption, label, star=False):
+    env = 'table*' if star else 'table'
+    return (f'\\begin{{{env}}}[t]\n\\centering\n\\small\n{tab}\n'
+            f'\\caption{{{caption}}}\n\\label{{{label}}}\n\\end{{{env}}}\n')
+
+SIGNOTE = ((r' For each backbone the best model is in \textbf{bold}, and models not '
+            r'significantly worse than it (Welch two-sided $t$-test on the per-fold '
+            rf'scores, $\alpha={ALPHA:g}$, Holm--Bonferroni corrected) are '
+            r'\underline{underlined}.') if SIG else '')
+CAP_CLS = (r'Classification performance on the held-out \textbf{test} set: ROC-AUC, '
+           r'mean\,$\pm$\,std over 5 folds (higher is better). BB=backbone; '
+           r'MoSE$_U$=MoSE with learnable unknown. A few MoSE$_U$/Verified-GT cells '
+           r'have $<5$ folds and are not tie-tested.' + SIGNOTE)
+CAP_RO  = (r'Regression error (RMSE, original units) on the \textbf{test} set, '
+           r'mean\,$\pm$\,std over 5 folds (lower is better). BB=backbone; '
+           r'MoSE$_U$=MoSE with learnable unknown.' + SIGNOTE)
+CAP_RS  = CAP_RO.replace('original units', 'standardised targets')
+
 os.makedirs(OUTDIR, exist_ok=True)
-open(f'{OUTDIR}/classification_auc.tex','w').write(build(CLS,'auc','Classification — test ROC-AUC',scale100=True,higher_better=True))
-open(f'{OUTDIR}/regression_rmse_orig.tex','w').write(build(REG,'rmse_orig','Regression — RMSE (original units)',dec=3,higher_better=False))
-open(f'{OUTDIR}/regression_rmse_std.tex','w').write(build(REG,'rmse','Regression — RMSE (standardized)',dec=3,higher_better=False))
+open(f'{OUTDIR}/classification_auc.tex','w').write(floatwrap(build(CLS,'auc','Classification — test ROC-AUC',higher_better=True), CAP_CLS, 'tab:model-cls'))
+open(f'{OUTDIR}/regression_rmse_orig.tex','w').write(floatwrap(build(REG,'rmse_orig','Regression — RMSE (original units)',higher_better=False), CAP_RO, 'tab:model-reg-orig'))
+open(f'{OUTDIR}/regression_rmse_std.tex','w').write(floatwrap(build(REG,'rmse','Regression — RMSE (standardized)',higher_better=False), CAP_RS, 'tab:model-reg-std'))
 print(pretty(CLS,'auc','CLASSIFICATION — test ROC-AUC'))
 print(); print(pretty(REG,'rmse_orig','REGRESSION — RMSE (original units)'))
 print(); print(pretty(REG,'rmse','REGRESSION — RMSE (standardized)'))

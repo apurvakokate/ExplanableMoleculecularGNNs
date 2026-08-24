@@ -100,7 +100,7 @@ def agg_g(ds, bb, mkey, unk):
 def cell(ds, bb, mkey, unk):
     m,sd,n=agg_g(ds,bb,mkey,unk)
     if n==0: return '--'
-    return f'${m*100:.0f}_{{{sd*100:.0f}}}$'.replace('.','')
+    return f'${m*100:.1f}_{{{sd*100:.1f}}}$'    # x100, one decimal, subscript=std (14 cols -> compact)
 
 def build():
     ncol=sum(len(sub) for _,_,sub in COLS)
@@ -139,8 +139,19 @@ def pretty():
             out.append(f'{disp[:16]:16} {bb:5}'+' '.join(f'{x:>5}' for x in cs))
     return '\n'.join(out)
 
+def floatwrap(tab, caption, label):
+    return (f'\\begin{{table*}}[t]\n\\centering\n\\small\n{tab}\n'
+            f'\\caption{{{caption}}}\n\\label{{{label}}}\n\\end{{table*}}\n')
+_SIG = ((r' Per (dataset, backbone) and within each condition, the best is in '
+         r'\textbf{bold} and results not significantly worse (Welch two-sided $t$-test, '
+         rf'$\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
+CAP = (r'Instance GT-ROC on the source-GT datasets, pooled over train+valid+test '
+       r'(graph-weighted), $\times100$; subscript\,=\,std\,($\times100$). \textbf{Filt} '
+       r'(exclude-unk) restricts evaluation to kept-motif nodes; \textbf{Full} '
+       r'(include-unk) scores all-node ground-truth recovery. MoSE$_U$=MoSE with '
+       r'learnable unknown; cells with $<2$ folds are not tie-tested.' + _SIG)
 os.makedirs(OUTDIR,exist_ok=True)
-open(f'{OUTDIR}/gtroc_instance_tvt.tex','w').write(build())
+open(f'{OUTDIR}/gtroc_instance_tvt.tex','w').write(floatwrap(build(), CAP, 'tab:gtroc-tvt'))
 print(pretty()); print()
 cov=df.groupby(['method','dataset','backbone','unk']).fold.nunique()
 print('cells:',len(cov),' folds min/med/max:',cov.min(),int(cov.median()),cov.max())

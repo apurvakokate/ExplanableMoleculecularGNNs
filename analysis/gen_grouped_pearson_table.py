@@ -169,8 +169,7 @@ def agg_p(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
 def cell(df, ds_id, bb, mkey, unk_eval, metric=METRIC):
     m, s, n = agg_p(df, ds_id, bb, mkey, unk_eval, metric)
     if n==0: return '--'
-    sign = '-' if m<0 else ''
-    return f'${sign}.{min(round(abs(m)*100),99):02d}_{{{min(round(s*100),99):02d}}}$'
+    return f'${m*100:.1f}_{{{s*100:.1f}}}$'    # x100, one decimal, subscript=std (14 cols -> compact)
 
 def build(df, metric=METRIC):
     ncol = sum(len(sub) for _,_,sub in COLUMNS)
@@ -220,6 +219,16 @@ if __name__ == '__main__':
     # default action = build the table for --metric
     out = a.out or f'{a.metric}_real.tex'
     df = load(a.gat_rollups, a.other_rollups, a.vocab)
-    open(out, 'w').write(build(df, a.metric) + '\n')
+    _sig = ((r' Per (dataset, backbone) and within each condition, the best is in '
+             r'\textbf{bold} and results not significantly worse (Welch two-sided '
+             rf'$t$-test, $\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
+    _cap = (r'Grouped (unweighted) Pearson correlation between motif importance and '
+            r'per-motif impact (real labels), pooled over train+valid+test, $\times100$; '
+            r'subscript\,=\,std. \textbf{Filt} (exclude-unk) uses kept-vocabulary motifs '
+            r'only; \textbf{Full} (include-unk) uses the full vocabulary. MoSE/MoSE$_U$ '
+            r'(filtered-vocab models) report Filt only. BB=backbone.' + _sig)
+    _float = (f'\\begin{{table*}}[t]\n\\centering\n\\small\n{build(df, a.metric)}\n'
+              f'\\caption{{{_cap}}}\n\\label{{tab:{a.metric}}}\n\\end{{table*}}\n')
+    open(out, 'w').write(_float)
     cov = df.groupby('backbone').size().to_dict() if len(df) else {}
     print(f'metric={a.metric} | rows by backbone:', cov, '\nwrote', out)
