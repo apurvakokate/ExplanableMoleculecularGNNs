@@ -373,9 +373,26 @@ def _iter_run_dirs(root: Path, subdir: str):
         yield sj.parent
 
 
-def load_method_points(antehoc_root: Path, posthoc_root: Path, *,
+def _as_roots(x):
+    """Normalise a root arg (None | str | Path | list) to a list[Path]."""
+    if x is None:
+        return []
+    if isinstance(x, (str, Path)):
+        return [Path(x)]
+    return [Path(p) for p in x]
+
+
+def _iter_run_dirs_multi(roots, subdir: str):
+    """`_iter_run_dirs` fanned out over several roots (e.g. eval_real + eval_gath1
+    so a single call covers non-GAT and GAT trees from the bundle)."""
+    for r in _as_roots(roots):
+        yield from _iter_run_dirs(r, subdir)
+
+
+def load_method_points(antehoc_root, posthoc_root, *,
                        tier: str, pooling: str, datasets: set | None,
-                       validate: bool) -> tuple[pd.DataFrame, list[dict]]:
+                       validate: bool, mose_unk: str | None = None
+                       ) -> tuple[pd.DataFrame, list[dict]]:
     """Long frame of pooled per-motif points for all 6 methods, real tier.
 
     Columns: method, dataset, backbone, fold, motif_id, motif_smarts, split,
@@ -399,9 +416,13 @@ def load_method_points(antehoc_root: Path, posthoc_root: Path, *,
     for subdir, stem, family, variant_ok in (
             ('mose', 'mose', 'mose', 'rbrics_filter'),
             ('base_gsat', 'gsat', 'gsat', 'rbrics')):
-        for run_dir in _iter_run_dirs(antehoc_root, subdir):
+        for run_dir in _iter_run_dirs_multi(antehoc_root, subdir):
             meta = _setup_antehoc(run_dir, subdir)
             if not _keep(meta) or meta['variant'] != variant_ok:
+                continue
+            # bundle: eval_real/mose holds BOTH unk-fixed and unk-learnable_shared
+            # leaves; keep only the requested MoSE-native variant here.
+            if subdir == 'mose' and mose_unk and mose_unk not in run_dir.name:
                 continue
             pts = _load_setup_points(run_dir, stem, splits)
             if pts is None:
@@ -413,7 +434,7 @@ def load_method_points(antehoc_root: Path, posthoc_root: Path, *,
             recs.append(pts)
 
     # --- post-hoc (rbrics): 4 methods share one dir ---
-    for run_dir in _iter_run_dirs(posthoc_root, 'baselines'):
+    for run_dir in _iter_run_dirs_multi(posthoc_root, 'baselines'):
         meta = _setup_posthoc(run_dir)
         if not _keep(meta) or meta['variant'] != 'rbrics':
             continue
@@ -449,7 +470,7 @@ def load_agnostic_points(posthoc_root: Path, *, tier: str, pooling: str,
     splits = _SPLITS_ALL if pooling == 'alltest' else ('test',)
     want_tier = _canon_tier(tier)
     recs = []
-    for run_dir in _iter_run_dirs(posthoc_root, 'baselines'):
+    for run_dir in _iter_run_dirs_multi(posthoc_root, 'baselines'):
         meta = _setup_posthoc(run_dir)
         if meta is None or meta['variant'] != 'rbrics_filter':
             continue
@@ -517,7 +538,7 @@ def load_mose_lu_points(ablation_root: Path, *, tier: str, pooling: str,
     splits = _SPLITS_ALL if pooling == 'alltest' else ('test',)
     want_tier = _canon_tier(tier)
     recs: list[pd.DataFrame] = []
-    for run_dir in _iter_run_dirs(ablation_root, 'mose'):
+    for run_dir in _iter_run_dirs_multi(ablation_root, 'mose'):
         meta = _setup_antehoc(run_dir, 'mose')
         if meta is None or meta['variant'] != 'rbrics_filter':
             continue
@@ -1307,25 +1328,26 @@ def _emit_validation(report: list[dict], save_dir: Path) -> None:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def _resolve_roots(args) -> tuple[Path, Path, Path | None]:
+def _resolve_roots(args) -> tuple[list, list, list]:
     if args.base:
         base = Path(args.base)
-        ah = Path(args.antehoc_root) if args.antehoc_root else base / 'antehoc_v1'
-        ph = Path(args.posthoc_root) if args.posthoc_root else base / 'posthoc_v1'
-        lu = (Path(args.mose_lu_root) if args.mose_lu_root
-              else base / 'ablated_completely_v1')
+        ah = args.antehoc_root or [base / 'antehoc_v1']
+        ph = args.posthoc_root or [base / 'posthoc_v1']
+        lu = args.mose_lu_root or [base / 'ablated_completely_v1']
     else:
         if not (args.antehoc_root and args.posthoc_root):
             raise SystemExit('Provide --base, or both --antehoc_root and '
                              '--posthoc_root.')
-        ah, ph = Path(args.antehoc_root), Path(args.posthoc_root)
-        lu = Path(args.mose_lu_root) if args.mose_lu_root else None
-    for p in (ah, ph):
+        ah, ph = args.antehoc_root, args.posthoc_root
+        lu = args.mose_lu_root or None
+    ah, ph, lu = _as_roots(ah), _as_roots(ph), _as_roots(lu)
+    for p in ah + ph:
         if not p.exists():
             warnings.warn(f'root does not exist: {p}')
-    if lu is not None and not lu.exists():
-        warnings.warn(f'MoSE Learn-Unknown root does not exist: {lu} '
-                      '(Plot 1 will omit that series)')
+    for p in lu:
+        if not p.exists():
+            warnings.warn(f'MoSE Learn-Unknown root does not exist: {p} '
+                          '(Plot 1 will omit that series)')
     return ah, ph, lu
 
 
@@ -1335,9 +1357,16 @@ def main():
     ap.add_argument('--base', default=None,
                     help='Base dir containing antehoc_v1/ and posthoc_v1/ '
                          '(convenience; overridden by explicit roots).')
-    ap.add_argument('--antehoc_root', default=None, help='antehoc_v1 tree.')
-    ap.add_argument('--posthoc_root', default=None, help='posthoc_v1 tree.')
-    ap.add_argument('--mose_lu_root', default=None,
+    ap.add_argument('--antehoc_root', nargs='*', default=None,
+                    help='MoSE-native tree(s). Accepts several roots, e.g. '
+                         'eval_real eval_gath1 (non-GAT + GAT from the bundle).')
+    ap.add_argument('--posthoc_root', nargs='*', default=None,
+                    help='post-hoc / vanilla tree(s) (e.g. posthoc_v1).')
+    ap.add_argument('--mose_unk', default=None,
+                    help="keep only MoSE-native leaves whose name contains this "
+                         "token (e.g. 'unk-fixed') — needed when native and "
+                         "learn-unknown leaves share one tree (bundle eval_real/mose).")
+    ap.add_argument('--mose_lu_root', nargs='*', default=None,
                     help='ablated_completely_v1 tree (source of the MoSE + '
                          'Learn-Unknown series for Plot 1). Defaults to '
                          '<base>/ablated_completely_v1 when --base is given.')
@@ -1402,7 +1431,7 @@ def main():
 
     df, report = load_method_points(
         antehoc_root, posthoc_root, tier=args.tier, pooling=args.pooling,
-        datasets=datasets, validate=args.validate)
+        datasets=datasets, validate=args.validate, mose_unk=args.mose_unk)
     if exclude:
         df = df[~df['dataset'].isin(exclude)].copy()
     if df.empty:
@@ -1417,7 +1446,7 @@ def main():
 
     if '1' in args.plots:
         mose_df = df[df['method'] == 'mose'].copy()
-        if mose_lu_root is not None and mose_lu_root.exists():
+        if mose_lu_root:
             lu_df = load_mose_lu_points(mose_lu_root, tier=args.tier,
                                         pooling=args.pooling, datasets=datasets)
             if exclude and not lu_df.empty:
