@@ -86,9 +86,9 @@ def main():
         return ('white', 'black') if (0.299 * r + 0.587 * g + 0.114 * b) < 0.55 else ('black', 'white')
 
     fig, axs = plt.subplots(len(DS), len(BB),
-                            figsize=(1.05 * len(buckets) * len(BB) + 2.2, 0.92 * len(a.methods) * len(DS) + 2),
+                            figsize=(0.55 * len(buckets) * len(BB) + 1.3, 0.46 * len(a.methods) * len(DS) + 1.0),
                             sharex=False, sharey=False)
-    fig.subplots_adjust(left=0.075, right=0.9, top=0.93, bottom=0.06, wspace=0.06, hspace=0.42)
+    fig.subplots_adjust(left=0.11, right=0.885, top=0.905, bottom=0.13, wspace=0.045, hspace=0.26)
     im = None
     w1 = sum(1 for (k, w) in buckets if w == 1)
     for ri, d in enumerate(DS):
@@ -98,46 +98,47 @@ def main():
             im = ax.imshow(M, cmap=CMAP, norm=NORM, aspect='auto')
             ax.set_xticks(np.arange(-.5, len(buckets), 1), minor=True)
             ax.set_yticks(np.arange(-.5, len(a.methods), 1), minor=True)
-            ax.grid(which='minor', color='white', linewidth=1.2)
+            ax.grid(which='minor', color='white', linewidth=1.4)
             ax.tick_params(which='both', length=0)
             if 0 < w1 < len(buckets):
-                ax.axvline(w1 - 0.5, color='k', lw=1.4)
+                ax.axvline(w1 - 0.5, color='k', lw=1.6)
             for sp in ax.spines.values():
                 sp.set_visible(False)
             ax.set_yticks(range(len(a.methods)))
-            ax.set_yticklabels([PR[m] for m in a.methods] if ci == 0 else [], fontsize=9.5)
+            ax.set_yticklabels([PR[m] for m in a.methods] if ci == 0 else [], fontsize=11.5)
             if ri == 0:
-                ax.set_title(bb, fontsize=12, fontweight='bold', pad=5)
+                ax.set_title(bb, fontsize=14, fontweight='bold', pad=5)
             # x labels: bucket + this dataset's per-bucket n, directly under each panel
             ax.set_xticks(range(len(buckets)))
             ax.set_xticklabels([f'$k{k}w{w}$\n$n{{=}}{n}$' for (k, w), n in zip(buckets, dsn[d])],
-                               fontsize=7.8, linespacing=1.05)
-            if ci == 0:   # dataset row label (horizontal, tight to the panel)
-                ax.annotate(d, xy=(-0.30, 0.5), xycoords='axes fraction', ha='right', va='center',
-                            rotation=90, fontsize=12.5, fontweight='bold')
+                               fontsize=9.5, linespacing=1.15)
+            if ci == 0:   # dataset row label, clear of the method tick labels
+                ax.annotate(d, xy=(-0.62, 0.5), xycoords='axes fraction', ha='center', va='center',
+                            rotation=90, fontsize=15, fontweight='bold')
             for yi in range(len(a.methods)):
                 for xi in range(len(buckets)):
                     if M[yi, xi] == M[yi, xi]:
                         fg, hc = tc(M[yi, xi])
                         ax.text(xi, yi, f'{M[yi,xi]*100:.0f}', ha='center', va='center',
-                                fontsize=9.5, fontweight='bold', color=fg,
-                                path_effects=[pe.withStroke(linewidth=1.4, foreground=hc)])
+                                fontsize=13, fontweight='bold', color=fg,
+                                path_effects=[pe.withStroke(linewidth=1.6, foreground=hc)])
     fig.supxlabel('rule structural complexity  —  $k$ clauses, width $w$  '
-                  '(simpler $\\rightarrow$ harder;  black rule separates $w{=}1$ from $w{=}2$;  '
-                  '$n$ = rules in that dataset\'s bucket)', fontsize=10, y=0.005)
+                  '(black rule separates $w{=}1$ from $w{=}2$;  '
+                  '$n$ = rules in that dataset\'s bucket)', fontsize=12, y=0.035)
     fig.suptitle('Explanation correctness (GT-ROC$\\,\\times100$) vs rule structure — '
-                 'dataset (rows) $\\times$ backbone (cols)', fontsize=13)
-    cb = fig.colorbar(im, ax=axs, shrink=.6, pad=.015)
-    cb.set_label('GT-ROC $\\times100$', fontsize=10, labelpad=20)
+                 'dataset (rows) $\\times$ backbone (cols)', fontsize=15, y=0.965)
+    cax = fig.add_axes([0.905, 0.20, 0.014, 0.55])       # tall, tight to the panels
+    cb = fig.colorbar(im, cax=cax)
+    cb.set_label('GT-ROC $\\times100$', fontsize=12, labelpad=8)
+    cb.ax.tick_params(labelsize=10)
     ticks = [round(x, 2) for x in np.arange(np.ceil(gmin * 20) / 20, gmax + 1e-9, 0.1)]
     if gmin < 0.5 < gmax:
-        cb.ax.axhline(0.5, color='k', lw=1.0)
-        cb.ax.text(0.5, 0.5, 'chance', ha='center', va='center', fontsize=7,
-                   transform=cb.ax.transAxes,
-                   bbox=dict(fc='white', ec='none', alpha=0.75, pad=0.5))
+        cb.ax.axhline(0.5, color='k', lw=1.2)
         if 0.5 not in ticks:
             ticks.append(0.5)
-    cb.set_ticks(sorted(ticks)); cb.set_ticklabels([f'{int(round(x*100))}' for x in sorted(ticks)])
+    ticks = sorted(ticks)
+    cb.set_ticks(ticks)
+    cb.set_ticklabels(['chance' if abs(t - 0.5) < 1e-9 else f'{int(round(t*100))}' for t in ticks])
     out = os.path.join(a.out, 'heat_kw_grid.pdf')
     fig.savefig(out, bbox_inches='tight', dpi=200)
     fig.savefig(out.replace('.pdf', '.png'), bbox_inches='tight', dpi=200)
