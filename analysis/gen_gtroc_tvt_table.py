@@ -103,11 +103,12 @@ def cell(ds, bb, mkey, unk):
     return f'${m*100:.1f}_{{{sd*100:.1f}}}$'    # x100, one decimal, subscript=std (14 cols -> compact)
 
 def build():
-    ncol=sum(len(sub) for _,_,sub in COLS)
-    L=['% GT-ROC instance, pooled train+valid+test (graph-weighted); Filt=exclude(kept-node) Full=include(all-node GT); GAT=heads1',
+    # STACKED: one column per method; each cell = \makecell{Filt (top) \\ Full (bottom)}
+    # with independent significance per condition. Requires \usepackage{makecell}.
+    ncol=len(COLS)
+    L=['% GT-ROC instance, stacked Filt(top)/Full(bottom) per method; needs \\usepackage{makecell}',
        r'\begin{tabular}{ll'+'c'*ncol+'}', r'\toprule',
-       ' & '.join(['','']+[rf'\multicolumn{{{len(s)}}}{{c}}{{{n}}}' for n,_,s in COLS])+r' \\',
-       ' & '.join(['Dataset','BB']+[('Filt' if x=='filt' else 'Full') for _,_,s in COLS for x in s])+r' \\',
+       ' & '.join(['Dataset','BB']+[n for n,_,_ in COLS])+r' \\',
        r'\midrule']
     methods=[mk for _,mk,_ in COLS]
     for disp,ds in DATASETS:
@@ -117,10 +118,10 @@ def build():
                 cells=[dict(key=mk, **dict(zip(('mean','std','n'), agg_g(ds,bb,mk,UNK[sc])))) for mk in methods]
                 tags[sc]=_ts.decide(cells, higher_better=True, alpha=ALPHA) if SIG else {}
             c=[rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
-            for _,mk,subs in COLS:
-                for sc in subs:
-                    s=cell(ds,bb,mk,UNK[sc])
-                    c.append(_ts.wrap(s, tags[sc].get(mk,'plain'), STYLE) if SIG else s)
+            for _,mk,_ in COLS:
+                fs=cell(ds,bb,mk,UNK['filt']); fw=_ts.wrap(fs, tags['filt'].get(mk,'plain'), STYLE) if SIG else fs
+                us=cell(ds,bb,mk,UNK['full']); uw=_ts.wrap(us, tags['full'].get(mk,'plain'), STYLE) if SIG else us
+                c.append(rf'\makecell{{{fw}\\{uw}}}')
             L.append(' & '.join(c)+r' \\')
         L.append(r'\midrule')
     L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')
@@ -146,10 +147,12 @@ _SIG = ((r' Per (dataset, backbone) and within each condition, the best is in '
          r'\textbf{bold} and results not significantly worse (Welch two-sided $t$-test, '
          rf'$\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
 CAP = (r'Instance GT-ROC on the source-GT datasets, pooled over train+valid+test '
-       r'(graph-weighted), $\times100$; subscript\,=\,std\,($\times100$). \textbf{Filt} '
-       r'(exclude-unk) restricts evaluation to kept-motif nodes; \textbf{Full} '
-       r'(include-unk) scores all-node ground-truth recovery. MoSE$_U$=MoSE with '
-       r'learnable unknown; cells with $<2$ folds are not tie-tested.' + _SIG)
+       r'(graph-weighted), $\times100$; subscript\,=\,std\,($\times100$). Each cell shows '
+       r'two values: \emph{top} = \textbf{Filt} (exclude-unk, evaluation restricted to '
+       r'kept-motif nodes) and \emph{bottom} = \textbf{Full} (include-unk, all-node '
+       r'ground-truth recovery). The Full$-$Filt gap is large for MoSE/MoSE$_U$ '
+       r'(filtered-vocab models) but small for the baselines. MoSE$_U$=MoSE with '
+       r'learnable unknown; BB=backbone; cells with $<2$ folds are not tie-tested.' + _SIG)
 os.makedirs(OUTDIR,exist_ok=True)
 open(f'{OUTDIR}/gtroc_instance_tvt.tex','w').write(floatwrap(build(), CAP, 'tab:gtroc-tvt'))
 print(pretty()); print()
