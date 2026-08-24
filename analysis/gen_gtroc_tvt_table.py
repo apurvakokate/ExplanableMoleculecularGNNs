@@ -103,26 +103,28 @@ def cell(ds, bb, mkey, unk):
     return f'${m*100:.1f}_{{{sd*100:.1f}}}$'    # x100, one decimal, subscript=std (14 cols -> compact)
 
 def build():
-    # STACKED: one column per method; each cell = \makecell{Filt (top) \\ Full (bottom)}
-    # with independent significance per condition. Requires \usepackage{makecell}.
-    ncol=len(COLS)
-    L=['% GT-ROC instance, stacked Filt(top)/Full(bottom) per method; needs \\usepackage{makecell}',
-       r'\begin{tabular}{ll'+'c'*ncol+'}', r'\toprule',
-       ' & '.join(['Dataset','BB']+[n for n,_,_ in COLS])+r' \\',
-       r'\midrule']
+    # ROW layout: a 'Vocab' column labels Filt (kept-node) vs Full (all-node GT); each
+    # (dataset,backbone) spans two rows, one per condition. Best/ties decided per row.
     methods=[mk for _,mk,_ in COLS]
+    lastcol=3+len(COLS)
+    L=['% GT-ROC instance, Filt/Full as labelled rows (Vocab column)',
+       r'\begin{tabular}{lll'+'c'*len(COLS)+'}', r'\toprule',
+       ' & '.join(['Dataset','BB','Vocab']+[n for n,_,_ in COLS])+r' \\',
+       r'\midrule']
     for disp,ds in DATASETS:
-        for i,bb in enumerate(BB):
-            tags={}
-            for sc in ('filt','full'):
+        for bi,bb in enumerate(BB):
+            for si,(sc,slab) in enumerate((('filt','Filt'),('full','Full'))):
                 cells=[dict(key=mk, **dict(zip(('mean','std','n'), agg_g(ds,bb,mk,UNK[sc])))) for mk in methods]
-                tags[sc]=_ts.decide(cells, higher_better=True, alpha=ALPHA) if SIG else {}
-            c=[rf'\multirow{{5}}{{*}}{{{disp}}}' if i==0 else '', bb]
-            for _,mk,_ in COLS:
-                fs=cell(ds,bb,mk,UNK['filt']); fw=_ts.wrap(fs, tags['filt'].get(mk,'plain'), STYLE) if SIG else fs
-                us=cell(ds,bb,mk,UNK['full']); uw=_ts.wrap(us, tags['full'].get(mk,'plain'), STYLE) if SIG else us
-                c.append(rf'\makecell{{{fw}\\{uw}}}')
-            L.append(' & '.join(c)+r' \\')
+                tags=_ts.decide(cells, higher_better=True, alpha=ALPHA) if SIG else {}
+                dcell=rf'\multirow{{10}}{{*}}{{{disp}}}' if (bi==0 and si==0) else ''
+                bcell=rf'\multirow{{2}}{{*}}{{{bb}}}' if si==0 else ''
+                row=[dcell, bcell, slab]
+                for _,mk,_ in COLS:
+                    s=cell(ds,bb,mk,UNK[sc])
+                    row.append(_ts.wrap(s, tags.get(mk,'plain'), STYLE) if SIG else s)
+                L.append(' & '.join(row)+r' \\')
+            if bi < len(BB)-1:
+                L.append(rf'\cmidrule(l){{2-{lastcol}}}')   # separate backbone blocks
         L.append(r'\midrule')
     L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')
     return '\n'.join(L)
@@ -147,12 +149,12 @@ _SIG = ((r' Per (dataset, backbone) and within each condition, the best is in '
          r'\textbf{bold} and results not significantly worse (Welch two-sided $t$-test, '
          rf'$\alpha={ALPHA:g}$, Holm) are \underline{{underlined}}.') if SIG else '')
 CAP = (r'Instance GT-ROC on the source-GT datasets, pooled over train+valid+test '
-       r'(graph-weighted), $\times100$; subscript\,=\,std\,($\times100$). Each cell shows '
-       r'two values: \emph{top} = \textbf{Filt} (exclude-unk, evaluation restricted to '
-       r'kept-motif nodes) and \emph{bottom} = \textbf{Full} (include-unk, all-node '
-       r'ground-truth recovery). The Full$-$Filt gap is large for MoSE/MoSE$_U$ '
-       r'(filtered-vocab models) but small for the baselines. MoSE$_U$=MoSE with '
-       r'learnable unknown; BB=backbone; cells with $<2$ folds are not tie-tested.' + _SIG)
+       r'(graph-weighted), $\times100$; subscript\,=\,std\,($\times100$). The \textbf{Vocab} '
+       r'column gives the evaluation setting: \textbf{Filt} (exclude-unk) restricts to '
+       r'kept-motif nodes, \textbf{Full} (include-unk) scores all-node ground-truth '
+       r'recovery. The Full$-$Filt gap is large for MoSE/MoSE$_U$ (filtered-vocab models) '
+       r'but small for the baselines. MoSE$_U$=MoSE with learnable unknown; BB=backbone; '
+       r'cells with $<2$ folds are not tie-tested.' + _SIG)
 os.makedirs(OUTDIR,exist_ok=True)
 open(f'{OUTDIR}/gtroc_instance_tvt.tex','w').write(floatwrap(build(), CAP, 'tab:gtroc-tvt'))
 print(pretty()); print()
