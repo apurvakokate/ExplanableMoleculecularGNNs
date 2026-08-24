@@ -123,9 +123,9 @@ METHOD_COLOR = {
     'motif_occlusion': '#3cb44b', # green
     'mage_v2': '#ffe119',         # yellow
 }
-_MOSE_COLOR = METHOD_COLOR['mose']
-_AGNOSTIC_COLOR = '#9e9e9e'       # grey vanilla-agnostic bar/box (Plot 1)
-_MOSE_LU_COLOR = '#1b9e77'        # teal — MoSE + Learn-Unknown series (Plot 1)
+_MOSE_COLOR = '#911eb4'           # purple — MoSE (Plot 1)
+_AGNOSTIC_COLOR = '#9e9e9e'       # grey — vanilla-agnostic (Plot 1)
+_MOSE_LU_COLOR = '#1b9e77'        # green — MoSE + Learn-Unknown (Plot 1)
 
 # Colour-blind-safe palette per GNN backbone (Plot 2 grouped bars).
 BACKBONE_COLOR = {
@@ -133,7 +133,7 @@ BACKBONE_COLOR = {
     'GraphSAGE': '#009E73', 'GAT': '#CC79A7', 'PNA': '#D55E00',
 }
 
-_BACKBONE_ORDER = ('GIN', 'GCN', 'GraphSAGE', 'SAGE', 'GAT', 'PNA')
+_BACKBONE_ORDER = ('GAT', 'GCN', 'GraphSAGE', 'SAGE', 'PNA', 'GIN')   # GIN last
 _DATASET_ORDER = (
     'BBBP', 'Mutagenicity', 'hERG',
     'Benzene_Verified_GT', 'Alkane_Carbonyl_Verified_GT',
@@ -610,9 +610,14 @@ def _bin_edge_labels(edges) -> list[str]:
     return [f'{edges[i]:.2g}–{edges[i+1]:.2g}' for i in range(len(edges) - 1)]
 
 
+def _bin_center_labels(edges) -> list[str]:
+    return [f'{(edges[i]+edges[i+1])/2:.2g}' for i in range(len(edges) - 1)]
+
+
 def _box_series(ax, positions, data, color, width, whisker_col='0.25',
-                highlight=False, alpha=None, zorder=None):
-    """Draw one coloured box-plot series (whiskers to 1.5·IQR, fliers hidden).
+                highlight=False, alpha=None, zorder=None,
+                showfliers=False, whis=1.5):
+    """Draw one coloured box-plot series (whiskers per ``whis``; fliers optional).
 
     Line weights are deliberately heavy so edges/medians/whiskers survive PDF
     compression and grayscale printing (ACM guidance). ``highlight`` gives the
@@ -626,11 +631,13 @@ def _box_series(ax, positions, data, color, width, whisker_col='0.25',
     wc = 'black' if highlight else whisker_col
     z = zorder if zorder is not None else (7 if highlight else 4)
     bp = ax.boxplot(data, positions=positions, widths=width, patch_artist=True,
-                    showfliers=False, manage_ticks=False, zorder=z,
+                    showfliers=showfliers, whis=whis, manage_ticks=False, zorder=z,
                     medianprops=dict(color='black', linewidth=med_lw),
                     whiskerprops=dict(linewidth=wh_lw, color=wc),
                     capprops=dict(linewidth=wh_lw, color=wc),
-                    boxprops=dict(linewidth=box_lw, edgecolor='black'))
+                    boxprops=dict(linewidth=box_lw, edgecolor='black'),
+                    flierprops=dict(marker='o', markersize=1.8, markerfacecolor='0.45',
+                                    markeredgecolor='none', alpha=0.35))
     import matplotlib.colors as _mcolors
     fa = alpha if alpha is not None else (1.0 if highlight else 0.95)
     for b in bp['boxes']:
@@ -657,7 +664,8 @@ def _binned_values(scores, impacts, edges):
 
 def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
                *, nbins: int, score_min, score_max, save_dir: Path, tier: str,
-               fmt: tuple[str, ...], fig_width=None, fig_height=None) -> Path | None:
+               fmt: tuple[str, ...], fig_width=None, fig_height=None,
+               count_style='strip', shared_y='none') -> Path | None:
     """MOSE importance vs impact — three box series per bin + motif-count strip.
 
     The original single-figure grid (rows = dataset, columns = backbone), kept
@@ -732,6 +740,7 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
     fig, axes = plt.subplots(nrow, ncol, squeeze=False, figsize=(fw, fh))
 
     drew_any = False
+    panels = {}                      # (ri,ci) -> {ax, ymax, ucnt} for the 2nd pass
     for ri, ds in enumerate(datasets):
         for ci, bb in enumerate(backbones):
             ax = axes[ri][ci]
@@ -762,42 +771,26 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
                 bv = _binned_values(sub['score'], sub[col], edges)
                 pos = [box_centres[k][j] for k in range(nbin) if len(bv[k])]
                 dat = [v for v in bv if len(v)]
+                # box = IQR, whiskers to 1.5*IQR, no outlier dots.
                 ymax = max(ymax, _box_series(ax, pos, dat, clr, box_w))
             if ymax <= 0:
                 ymax = 1.0
 
-            # Counts (unique MoSE motifs per bin) drawn DOWNWARD below the y=0
-            # baseline on the SAME axes — an inverted mini-axis. Counts use their
-            # own fixed band, scaled to the fullest bin; integers are annotated.
+            # Unique MoSE motifs per bin. The count layer + y-limits are drawn in a
+            # SECOND pass (below) so a shared y-range can be resolved across panels.
             b = _assign_bins(cell['score'].to_numpy(float), edges)
             ucnt = np.array([int(cell.loc[b == k, 'motif_id'].nunique())
                              for k in range(nbin)])
-            cmax = int(ucnt.max()) if ucnt.max() > 0 else 1
-            band = 0.34 * ymax                       # vertical room for counts
-            scaled = -band * ucnt / cmax
-            ax.axhline(0, color='0.4', linewidth=0.5, zorder=2)
-            ax.bar(gc, scaled, inner * 0.9, color='#e8a24c', alpha=0.85,
-                   edgecolor='white', linewidth=0.3, zorder=1)
-            for xi, cc, sv in zip(gc, ucnt, scaled):
-                if cc > 0:
-                    ax.text(xi, sv - band * 0.05, str(cc), ha='center',
-                            va='top', fontsize=8, color='#8a5a10')
-
-            ax.set_ylim(-band * 1.32, ymax * 1.12)
+            panels[(ri, ci)] = dict(ax=ax, ymax=ymax, ucnt=ucnt)
             ax.set_xlim(*xlim)
-            # Keep only non-negative (impact) y ticks; the count band is unitless.
-            yt = [t for t in ax.get_yticks() if t >= -1e-9]
-            ax.set_yticks(yt)
-
             ax.set_xticks(group_centres)
             if ri == nrow - 1:   # declutter: bin labels only on the bottom row
-                # Plot-2 font size (13); rotated so the 6 range labels don't crowd
-                # in these (3-box, narrower) panels.
-                ax.set_xticklabels(_bin_edge_labels(edges), rotation=30,
-                                   ha='right', rotation_mode='anchor', fontsize=13)
+                # Bin CENTRES (compact, horizontal) instead of ranges.
+                ax.set_xticklabels(_bin_center_labels(edges), rotation=0,
+                                   ha='center', fontsize=16)
             else:
                 ax.set_xticklabels([])
-            ax.tick_params(axis='y', labelsize=13, length=3.5)
+            ax.tick_params(axis='y', labelsize=16, length=4)
             ax.tick_params(axis='x', length=4)
 
             if ri == 0:
@@ -805,18 +798,63 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
             if ci == 0:
                 ax.set_ylabel(_ds_label(ds), fontsize=17)
 
+    # ── Pass 2: resolve y-limits (per-panel / per-row / global) then draw the
+    #    motif-count layer using the resolved ymax so it stays positioned right.
+    def _target_ymax(ri, ci):
+        if shared_y == 'all':
+            return max(p['ymax'] for p in panels.values())
+        if shared_y == 'row':
+            return max(p['ymax'] for (r, c), p in panels.items() if r == ri)
+        return panels[(ri, ci)]['ymax']
+    for (ri, ci), P in panels.items():
+        ax, ucnt, Y = P['ax'], P['ucnt'], _target_ymax(ri, ci)
+        if count_style == 'annotate':
+            lo, hi = 0.0, Y * 1.17
+            ax.axhline(0, color='0.4', linewidth=0.5, zorder=2)
+            # Rule + counts in AXES-fraction Y (0..1), so they sit at the SAME height
+            # in every panel/row regardless of that panel's data scale.
+            ax.plot([0, 1], [0.90, 0.90], transform=ax.transAxes, color='0.55',
+                    linewidth=0.8, zorder=2, clip_on=False)
+            xt = ax.get_xaxis_transform()          # x = data, y = axes-fraction
+            for xi, cc in zip(gc, ucnt):
+                if cc > 0:
+                    ax.text(xi, 0.925, str(cc), transform=xt, ha='center', va='bottom',
+                            fontsize=13, fontweight='bold', color='0.15')
+        else:
+            cmax = int(ucnt.max()) if ucnt.max() > 0 else 1
+            band = 0.34 * Y
+            scaled = -band * ucnt / cmax
+            lo, hi = -band * 1.32, Y * 1.12
+            ax.axhline(0, color='0.4', linewidth=0.5, zorder=2)
+            ax.bar(gc, scaled, inner * 0.9, color='#e8a24c', alpha=0.85,
+                   edgecolor='white', linewidth=0.3, zorder=1)
+            for xi, cc, sv in zip(gc, ucnt, scaled):
+                if cc > 0:
+                    ax.text(xi, sv - band * 0.05, str(cc), ha='center',
+                            va='top', fontsize=8, color='#8a5a10')
+        ax.set_ylim(lo, hi)
+        # keep only in-range ticks so set_yticks can't re-expand the view, then LOCK.
+        yt = [t for t in ax.get_yticks() if -1e-9 <= t <= hi + 1e-9]
+        ax.set_yticks(yt)
+        ax.set_ylim(lo, hi)
+
     if not drew_any:
         plt.close(fig)
         print('[plot1] no non-empty cells — skipped.')
         return None
 
-    handles = [Patch(facecolor=_MOSE_COLOR, edgecolor='black', label='MOSE impact'),
+    handles = [Patch(facecolor=_MOSE_COLOR, edgecolor='black',
+                     label='MoSE impact (native LOO)'),
                Patch(facecolor=_MOSE_LU_COLOR, edgecolor='black',
-                     label='MOSE + Learn-Unknown impact'),
+                     label='MoSE$_U$ impact (learnable-unknown LOO)'),
                Patch(facecolor=_AGNOSTIC_COLOR, edgecolor='black',
-                     label='Vanilla impact'),
-               Patch(facecolor='#e8a24c', edgecolor='white', alpha=0.85,
-                     label='# unique motifs / bin (inverted, below axis)')]
+                     label='Vanilla impact (model-agnostic LOO)')]
+    if count_style == 'annotate':
+        handles.append(Line2D([0], [0], color='0.55', lw=0.8,
+                              label='rule: # unique motifs per bin (number printed above)'))
+    else:
+        handles.append(Patch(facecolor='#e8a24c', edgecolor='white', alpha=0.85,
+                             label='# unique motifs per bin (inverted strip, below axis)'))
     # Reserve a top band for the legend + a bottom/left band for the shared
     # axis labels (Plot-2 font sizes throughout).
     fig.tight_layout(rect=(0.03, 0.025, 0.995, 0.93))
@@ -1378,6 +1416,12 @@ def main():
                     help='Override bin count for Plot 1 (default: --nbins).')
     ap.add_argument('--nbins_plot2', type=int, default=None,
                     help='Override bin count for Plot 2 (default: --nbins).')
+    ap.add_argument('--count_style', default='strip', choices=['strip', 'annotate'],
+                    help="Plot-1 motif-count display: 'strip' (inverted orange band, "
+                         "default) or 'annotate' (raw numbers above panels).")
+    ap.add_argument('--shared_y', default='none', choices=['none', 'row', 'all'],
+                    help="Plot-1 y-axis sharing: 'none' (per-panel autoscale, default), "
+                         "'row' (shared within each dataset row), 'all' (one global scale).")
     ap.add_argument('--score_min', type=float, default=None,
                     help='Plot-1 MOSE-importance axis min (default 0).')
     ap.add_argument('--score_max', type=float, default=None,
@@ -1464,7 +1508,8 @@ def main():
         make_plot1(mose_df, lu_df, agn_df, nbins=(args.nbins_plot1 or args.nbins),
                    score_min=args.score_min, score_max=args.score_max,
                    save_dir=save_dir, tier=args.tier, fmt=fmt,
-                   fig_width=args.fig_width, fig_height=args.fig_height)
+                   fig_width=args.fig_width, fig_height=args.fig_height,
+                   count_style=args.count_style, shared_y=args.shared_y)
 
     if '2' in args.plots:
         pgroups = PLOT2_GROUPS if args.plot2_split else None
