@@ -63,9 +63,9 @@ def cell(ds, bb, model, col, scale100=False, dec=2):
     return f'${m:.{dec}f}_{{{s:.{dec}f}}}$'
 
 def build(datasets, col, title, scale100=False, dec=2, higher_better=True):
-    L = [f'% {title}  (bundle; mean_{{std}} over folds)'
+    L = [f'% {title}  (test set; mean_{{std}} over folds)'
          + ('  [best=bold, tie=underline; Welch t, alpha=%g, Holm]'%ALPHA if SIG else ''),
-         r'\begin{tabular}{ll'+'c'*len(MODELS)+'}', r'\toprule',
+         r'\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}ll'+'c'*len(MODELS)+'}', r'\toprule',
          'Dataset & BB & '+' & '.join(MODELS)+r' \\', r'\midrule']
     for ds in datasets:
         disp = DISP.get(ds, ds)
@@ -78,7 +78,7 @@ def build(datasets, col, title, scale100=False, dec=2, higher_better=True):
                 c.append(_ts.wrap(s, tags.get(mo,'plain'), STYLE) if SIG else s)
             L.append(' & '.join(c)+r' \\')
         L.append(r'\midrule')
-    L[-1]=r'\bottomrule'; L.append(r'\end{tabular}')
+    L[-1]=r'\bottomrule'; L.append(r'\end{tabular*}')
     return '\n'.join(L)
 
 def pretty(datasets, col, title, dec=3):

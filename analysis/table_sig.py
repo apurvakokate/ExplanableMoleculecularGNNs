@@ -96,13 +96,17 @@ def decide(cells, higher_better=True, alpha=0.05):
 
 def wrap(s, tag, style='bold_underline'):
     """Wrap a formatted cell string per tag. style: 'bold_underline' (best bold,
-    tie underline) or 'bold_all' (best+tie bold)."""
+    tie underline) or 'bold_all' (best+tie bold). Math cells ($...$) are bolded
+    with \\boldmath (\\textbf does NOT bold math content)."""
     if s is None or s.strip() in ('--', ''):
         return s
+    is_math = s.strip().startswith('$')
+    def _bold(x):
+        return (r'{\boldmath ' + x + '}') if is_math else (r'\textbf{' + x + '}')
     if tag == 'best':
-        return r'\textbf{' + s + '}'
+        return _bold(s)
     if tag == 'tie':
-        return (r'\textbf{' + s + '}') if style == 'bold_all' else (r'\underline{' + s + '}')
+        return _bold(s) if style == 'bold_all' else (r'\underline{' + s + '}')
     return s
 
 CAPTION = ("Best result per group in \\textbf{bold}; results not significantly "
