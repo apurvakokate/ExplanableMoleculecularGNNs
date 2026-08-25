@@ -254,6 +254,8 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
         import importlib
 
         if family == 'mose':
+            if not meta.get('unk_mode'):     # no silent 'fixed' default — paper values
+                return None, None, "mose run meta lacks unk_mode (refusing to assume 'fixed')"
             _purge_trainer_modules()
             _prepend_trainer_path(_REPO / 'MOSE-GNN')
             from config import MOSEConfig
@@ -304,7 +306,10 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
     try:
         state = torch.load(ckpt, map_location=device, weights_only=False)
         state = state.get('model_state_dict', state) if isinstance(state, dict) else state
-        model.load_state_dict(state, strict=False)
+        _ld = model.load_state_dict(state, strict=False)
+        if _ld.missing_keys or _ld.unexpected_keys:      # no silent partial load — paper values
+            raise ValueError(f"state_dict mismatch: missing={list(_ld.missing_keys)[:6]} "
+                             f"unexpected={list(_ld.unexpected_keys)[:6]}")
         model.to(device).eval()
         if not test_list:
             return None, None, 'no test data'
@@ -365,7 +370,10 @@ def _load_vanilla_and_data(run_dir: Path, data_root: str, vocab_root: str, devic
             deg=getattr(dmeta, 'deg', None))
         state = torch.load(ckpt, map_location=device, weights_only=False)
         state = state.get('model_state_dict', state) if isinstance(state, dict) else state
-        model.load_state_dict(state, strict=False)
+        _ld = model.load_state_dict(state, strict=False)
+        if _ld.missing_keys or _ld.unexpected_keys:      # no silent partial load — paper values
+            raise ValueError(f"state_dict mismatch: missing={list(_ld.missing_keys)[:6]} "
+                             f"unexpected={list(_ld.unexpected_keys)[:6]}")
         model.to(device).eval()
     except Exception as e:  # pragma: no cover
         return None, None, f'vanilla rebuild failed: {e}'

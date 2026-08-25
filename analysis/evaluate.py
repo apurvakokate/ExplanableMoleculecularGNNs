@@ -884,6 +884,16 @@ def _iter_runs(ckpt_root, family_dir, dataset):
             yield rd, meta
 
 
+def _run_backbone(meta, run_dir):
+    """A run's backbone (GAT/GCN/GIN/PNA/SAGE). Prefers meta['backbone']; falls back to the
+    run-dir name token (native 'GAT_...' or baseline 'bb-GAT_...')."""
+    bb = meta.get('backbone')
+    if bb:
+        return str(bb)
+    tok = getattr(run_dir, 'name', str(run_dir)).split('_')[0]
+    return tok[3:] if tok.startswith('bb-') else tok
+
+
 def _run_unk_mode(meta, run_dir):
     """A run's trained UNK mode ('fixed' | 'learnable_shared' | None). Prefers meta,
     falls back to the run-dir name token (unk-fixed / unk-learnable_shared)."""
@@ -923,6 +933,10 @@ def main():
     ap.add_argument('--loader_batch_size', type=int, default=128)
     ap.add_argument('--fold', nargs='*', type=int, default=None,
                     help='restrict to these fold indices (default all) — shard folds across jobs')
+    ap.add_argument('--backbone', nargs='*', default=None,
+                    help='restrict to these backbones (e.g. GCN GIN PNA SAGE). Used to skip the '
+                         'old 4-head GAT in final_v2: run non-GAT here, GAT from final_v2_gath1. '
+                         'Planted needs NO filter (planted_v2 GAT is already heads=1, in-place).')
     ap.add_argument('--limit', type=int, default=None)
     args = ap.parse_args()
 
@@ -952,6 +966,8 @@ def main():
         if args.fold is not None and meta.get('fold') not in args.fold:
             continue
         if args.unk_mode != 'any' and _run_unk_mode(meta, run_dir) != args.unk_mode:
+            continue
+        if args.backbone is not None and _run_backbone(meta, run_dir) not in args.backbone:
             continue
         if args.limit and (ok + failed) >= args.limit:
             break
