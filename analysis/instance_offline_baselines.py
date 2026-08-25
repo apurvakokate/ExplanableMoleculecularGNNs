@@ -58,12 +58,22 @@ def _rank(a):
     cs = np.cumsum(c); return ((cs - c + cs - 1) / 2.0)[inv]
 
 
-def _load_kept(vocab_root, dataset, filt_variant):
-    p = vocab_root / dataset / filt_variant / f'{dataset}_{filt_variant}_kept_motif_ids.pickle'
-    if not p.exists():
-        return None
-    with open(p, 'rb') as f:
-        return set(int(x) for x in pickle.load(f))
+def _load_kept(vocab_root, data_root, dataset, filt_variant, fold):
+    from SharedModules.data.vocab import load_vocab
+    from SharedModules.data.fold_threshold import build_fold_annotation
+    from SharedModules.data.dataset_schema import DATASET_COLUMN
+    filt = load_vocab(str(vocab_root), dataset, filt_variant)
+    csv = Path(data_root) / f'{dataset}_{fold}.csv'
+    _, kept, _, _ = build_fold_annotation(
+        lookup_all=filt.lookup_all, motif_list=filt.motif_list,
+        mol_fragment_smarts=filt.mol_fragment_smarts, csv_path=str(csv),
+        label_col=DATASET_COLUMN[dataset], dataset=dataset,
+        variant=filt.variant or filt_variant,
+        vocab_dir=Path(filt.vocab_dir) if filt.vocab_dir else Path('.'),
+        apply_threshold=True, threshold_pct=filt.threshold_pct)
+    if kept is None:
+        raise ValueError(f"no per-fold kept for {dataset} fold {fold}")
+    return set(int(x) for x in kept)
 
 
 def _n2m_by_split(loaders):
@@ -190,7 +200,7 @@ def main():
         mf = re.match(r'fold(\d+)', fold_s); fold = int(mf.group(1)) if mf else -1
         base = vocab[:-7] if vocab.endswith('_filter') else vocab
         filt_variant = base + '_filter'                   # kept-set is label-independent
-        kept = _load_kept(vocab_root, dataset, filt_variant)
+        kept = _load_kept(vocab_root, args.data_root, dataset, filt_variant, fold)
         if kept is None:
             continue
         # minimal meta for the loaders: instance corr needs only nodes_to_motifs,

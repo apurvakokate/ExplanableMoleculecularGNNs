@@ -266,8 +266,9 @@ def _load_model_and_data(run_dir: Path, data_root: str, vocab_root: str,
             # FOLD's kept_motif_ids (filtered vocab), not the total motif count. Without
             # this a *_filter checkpoint (kept<<total) fails to load with a size mismatch.
             _fold_kept = getattr(dmeta, 'kept_motif_ids', None)
-            _kept_ids = (_fold_kept if _fold_kept is not None
-                         else getattr(vocab, 'kept_motif_ids', None))
+            if _fold_kept is None:
+                raise ValueError("No fallback permitted in loading vocab")
+            _kept_ids = _fold_kept
             model = mose_run.build_model(cfg, vocab.num_motifs, task_type, dmeta,
                                          kept_motif_ids=_kept_ids)
         else:
