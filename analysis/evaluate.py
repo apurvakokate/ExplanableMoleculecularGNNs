@@ -719,12 +719,19 @@ def _gtroc_summary(att_by_split, gt, split_lists, keep, unk):
     return out
 
 
-def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
+def eval_run(method, run_dir, art_dir, meta, args, device, dest_dir):
     stem = DISK_STEM.get(method, method)
     dest_dir.mkdir(parents=True, exist_ok=True)      # before any write (ante-hoc atts cache)
     loaders, vocab, dmeta, tt = build_gt_loaders(
         meta, args.data_root, args.vocab_root, args.processed_root, args.loader_batch_size)
     split_lists, gt = split_lists_and_gt(loaders, meta)
+
+    _fold_kept = getattr(dmeta, 'kept_motif_ids', None)
+    if _fold_kept is not None:
+        kept = _fold_kept
+    else:    
+        raise ValueError(f"No kept motif found in the dataset {cfg.dataset} and fold {cfg.fold}")
+
     keep = _keep_fn(kept, args.unk)
     do_gtroc = args.gt_tier in ('source', 'planted')
 
@@ -907,13 +914,13 @@ def main():
                           or (args.device == 'auto' and torch.cuda.is_available())) else 'cpu')
     want_base = _base_vocab(args.vocab)
     want_filter = args.vocab.endswith('_filter')
-    kept = None
-    if args.unk == 'exclude':
-        p = (Path(args.vocab_root) / args.dataset / (want_base + '_filter') /
-             f'{args.dataset}_{want_base}_filter_kept_motif_ids.pickle')
-        if not p.exists():
-            raise SystemExit(f'--unk exclude needs kept_motif_ids: {p} not found')
-        kept = set(int(x) for x in pickle.load(open(p, 'rb')))
+    # kept = None
+    # if args.unk == 'exclude':
+    #     p = (Path(args.vocab_root) / args.dataset / (want_base + '_filter') /
+    #          f'{args.dataset}_{want_base}_filter_kept_motif_ids.pickle')
+    #     if not p.exists():
+    #         raise SystemExit(f'--unk exclude needs kept_motif_ids: {p} not found')
+    #     kept = set(int(x) for x in pickle.load(open(p, 'rb')))
     print(f'method={args.method} dataset={args.dataset} vocab={args.vocab} '
           f'gt_tier={args.gt_tier} unk={args.unk} device={device}')
 
@@ -938,7 +945,7 @@ def main():
             art_dir = (Path(args.artifacts_root) / run_dir.relative_to(args.ckpt_root)
                        if args.artifacts_root else run_dir)
             dest_dir = _dest_dir(run_dir, args, want_base)
-            m = eval_run(args.method, run_dir, art_dir, meta, args, device, kept, dest_dir)
+            m = eval_run(args.method, run_dir, art_dir, meta, args, device, dest_dir)
             out_rows.append(dict(
                 dataset=args.dataset, method=args.method, backbone=meta.get('backbone'),
                 fold=meta.get('fold'), vocab=args.vocab, gt_rule=_gt_rule(meta, run_dir),
