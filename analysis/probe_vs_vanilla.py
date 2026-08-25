@@ -376,8 +376,24 @@ def _load_vanilla_and_data(run_dir: Path, data_root: str, vocab_root: str, devic
 # probe_vs_vanilla logic
 # ─────────────────────────────────────────────────────────────────────────────
 def run_dirs(ds):
-    return sorted(Path(r) for r in glob.glob(str(BASE / "final_v2/mose/rbrics_filter" / ds / "fold*" / "*"))
-                  if "_real" in os.path.basename(r) and (Path(r) / "summary.json").exists())
+    """Fixed-unk MoSE run dirs for the probe, one tree per backbone:
+    GAT comes STRICTLY from final_v2_gath1 (heads=1) — final_v2's GAT is the old 4-head.
+    All other backbones come from final_v2. Learnable-unk runs (present only in gath1) are
+    excluded: this probe compares FIXED-unk MoSE vs Vanilla."""
+    out = []
+    for r in glob.glob(str(BASE / "final_v2/mose/rbrics_filter" / ds / "fold*" / "*")):
+        bn = os.path.basename(r)
+        if bn.split("_")[0] == "GAT":
+            continue  # GAT served from gath1 below (final_v2 GAT = 4-head)
+        if "_real" in bn and (Path(r) / "summary.json").exists():
+            out.append(Path(r))
+    for r in glob.glob(str(BASE / "final_v2_gath1/mose/rbrics_filter" / ds / "fold*" / "*")):
+        bn = os.path.basename(r)
+        if bn.split("_")[0] != "GAT" or "unk-fixed" not in bn:
+            continue  # GAT only, fixed-unk only
+        if "_real" in bn and (Path(r) / "summary.json").exists():
+            out.append(Path(r))
+    return sorted(out)
 
 
 def l2(X):
@@ -403,17 +419,20 @@ def probe_hilo(E, Y, low, high, mid):
     return ev(high), ev(low)
 
 
-def process(mose_dir, data_root, vocab_root, device, max_graphs=800):
-    ds = mose_dir.parts[mose_dir.parts.index("rbrics_filter") + 1]
-    fold = mose_dir.parent.name
-    bb = mose_dir.name.split("_")[0]
-    mose, tl, st = _load_model_and_data(mose_dir, data_root, vocab_root, device)
-    if st != "ok":
-        return None, "mose " + st
-    vdir = BASE / "final_v2/vanilla" / ds / fold / "rbrics" / f"bb-{bb}_enc-onehot_norm-none_real"
-    van, _tl2, st2 = _load_vanilla_and_data(vdir, data_root, vocab_root, device)
-    if st2 != "ok":
-        return None, "vanilla " + st2
+def _learn_run_dir(ds, bb, fold):
+    """Learnable-unk MoSE run dir for (ds, bb, fold), or None.
+    GAT -> final_v2_gath1 (heads=1, per project standard); all other backbones ->
+    ablated_completely_v1 (the only tree carrying non-GAT learnable_shared runs)."""
+    tree = "final_v2_gath1" if bb == "GAT" else "ablated_completely_v1"
+    pat = str(BASE / tree / "mose/rbrics_filter" / ds / fold /
+              f"{bb}_*unk-learnable_shared*_real_*")
+    hits = [Path(p) for p in glob.glob(pat) if (Path(p) / "summary.json").exists()]
+    return sorted(hits)[0] if hits else None
+
+
+def _did_from_models(mose, van, tl, device, max_graphs):
+    """Core DiD for an already-loaded (mose, vanilla) pair over test list tl.
+    Returns (dict, 'ok') or (None, reason)."""
     Emo, Eva, GA, Y = [], [], [], []
     for d in tl[:max_graphs]:
         ne, na, x = _node_emb_and_att(mose, d, device, gated=True)
@@ -430,8 +449,8 @@ def process(mose_dir, data_root, vocab_root, device, max_graphs=800):
         return None, "no aligned reps"
     Emo = np.concatenate(Emo); Eva = np.concatenate(Eva); GA = np.concatenate(GA); Y = np.concatenate(Y)
     # ABSOLUTE gate thresholds: LOW = genuinely masked (<0.1), HIGH = genuinely
-    # important (>0.9). Skip a run if either extreme is (near-)empty -- i.e. the
-    # backbone never gates that far (PNA/GIN). That skip is itself informative.
+    # important (>0.9). Skip if either extreme is (near-)empty -- i.e. the backbone
+    # never gates that far (PNA/GIN). That skip is itself informative.
     low = GA < 0.1; high = GA > 0.9; mid = (~low) & (~high)
     if low.sum() < 30 or high.sum() < 30 or mid.sum() < 100 or len(np.unique(Y[mid])) < 2:
         return None, f"no extremes (n_low={int(low.sum())} n_high={int(high.sum())})"
@@ -444,6 +463,48 @@ def process(mose_dir, data_root, vocab_root, device, max_graphs=800):
                 n_atoms=int(n), n_low=int(low.sum()), n_high=int(high.sum()),
                 frac_low=float(low.mean()), frac_high=float(high.mean()),
                 gate_min=float(GA.min()), gate_med=float(np.median(GA))), "ok"
+
+
+def process(mose_dir, data_root, vocab_root, device, max_graphs=800):
+    """Two-arm probe for (dataset, backbone, fold):
+        did_base  = fixed-unk MoSE vs Vanilla
+        did_learn = learnable_shared MoSE vs the SAME Vanilla (NaN if that run is absent)."""
+    ds = mose_dir.parts[mose_dir.parts.index("rbrics_filter") + 1]
+    fold = mose_dir.parent.name
+    bb = mose_dir.name.split("_")[0]
+
+    # Vanilla is shared by both arms; GAT vanilla is heads=1 (gath1).
+    _vtree = "final_v2_gath1" if bb == "GAT" else "final_v2"
+    vdir = BASE / _vtree / "vanilla" / ds / fold / "rbrics" / f"bb-{bb}_enc-onehot_norm-none_real"
+    van, _tl2, st2 = _load_vanilla_and_data(vdir, data_root, vocab_root, device)
+    if st2 != "ok":
+        return None, "vanilla " + st2
+
+    # --- base (fixed-unk) arm ---
+    mose, tl, st = _load_model_and_data(mose_dir, data_root, vocab_root, device)
+    if st != "ok":
+        return None, "mose " + st
+    base, bst = _did_from_models(mose, van, tl, device, max_graphs)
+    if base is None:
+        return None, "base " + bst
+    row = {f"{k}_base": v for k, v in base.items()}      # -> did_base, mose_high_base, ...
+
+    # --- learnable-unk arm (optional; same vanilla + fold test set) ---
+    row["did_learn"] = float("nan")
+    ldir = _learn_run_dir(ds, bb, fold)
+    if ldir is None:
+        row["learn_skip"] = "no learnable run dir"
+    else:
+        lmose, ltl, lst = _load_model_and_data(ldir, data_root, vocab_root, device)
+        if lst != "ok":
+            row["learn_skip"] = "load: " + lst
+        else:
+            learn, lst2 = _did_from_models(lmose, van, ltl, device, max_graphs)
+            if learn is None:
+                row["learn_skip"] = lst2
+            else:
+                row.update({f"{k}_learn": v for k, v in learn.items()})   # -> did_learn, ...
+    return row, "ok"
 
 
 if __name__ == "__main__":
@@ -461,8 +522,9 @@ if __name__ == "__main__":
             print(f"  [skip] {bb} {fold}: {st}"); continue
         row.update(dataset=a.dataset, backbone=bb, fold=fold)
         rows.append(row)
-        print(f"  [{bb} {fold}] MoSE h/l={row['mose_high']:.2f}/{row['mose_low']:.2f} "
-              f"Van h/l={row['van_high']:.2f}/{row['van_low']:.2f} | DiD={row['did']:+.2f}")
+        _dl = row.get('did_learn', float('nan'))
+        print(f"  [{bb} {fold}] DiD_base={row['did_base']:+.2f} DiD_learn={_dl:+.2f}"
+              + (f"  (learn: {row['learn_skip']})" if 'learn_skip' in row else ""))
     if rows:
         out = Path(a.save) if a.save else BASE / "final_v2" / f"probe_vsvanilla_{a.dataset}.csv"
         pd.DataFrame(rows).to_csv(out, index=False); print("wrote", out, len(rows))

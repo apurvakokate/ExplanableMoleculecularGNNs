@@ -209,9 +209,15 @@ def load_native_model_and_scores(run_dir, meta, fam, loaders, vocab, dmeta, devi
     sd = _torch_load_retry(run_dir / 'best_model.pt', map_location='cpu', weights_only=False)
     sd = sd.get('model_state_dict', sd) if isinstance(sd, dict) else sd
     if fam == 'mose':
-        kept = (getattr(dmeta, 'kept_motif_ids', None)
-                if getattr(dmeta, 'kept_motif_ids', None) is not None
-                else getattr(vocab, 'kept_motif_ids', None))
+        # STRICT per-fold: the model's motif_params are sized by THIS fold's kept set.
+        # Never fall back to vocab.kept_motif_ids (fold-0 mining) — that silently mixes
+        # a fold-0 filter into a non-fold-0 run. Fail loudly instead.
+        kept = getattr(dmeta, 'kept_motif_ids', None)
+        if kept is None:
+            raise ValueError(
+                f"per-fold kept_motif_ids missing from dmeta for "
+                f"{meta.get('dataset')} fold {meta.get('fold')} — refusing to fall back "
+                f"to fold-0 vocab.kept_motif_ids")
         model = run_mod.build_model(cfg, vocab.num_motifs, task_type, dmeta, kept_motif_ids=kept)
         model.load_state_dict(sd)
         model = model.to(device).eval()
@@ -878,6 +884,20 @@ def _iter_runs(ckpt_root, family_dir, dataset):
             yield rd, meta
 
 
+def _run_unk_mode(meta, run_dir):
+    """A run's trained UNK mode ('fixed' | 'learnable_shared' | None). Prefers meta,
+    falls back to the run-dir name token (unk-fixed / unk-learnable_shared)."""
+    m = meta.get('unk_mode')
+    if m:
+        return str(m)
+    name = getattr(run_dir, 'name', str(run_dir))
+    if 'unk-learnable_shared' in name:
+        return 'learnable_shared'
+    if 'unk-fixed' in name:
+        return 'fixed'
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description='THE single source of truth for explainability eval')
     ap.add_argument('--method', required=True, choices=sorted(POSTHOC | NATIVE))
@@ -885,6 +905,11 @@ def main():
     ap.add_argument('--vocab', required=True, help='e.g. rbrics (rbrics_filter selects MoSE-filter)')
     ap.add_argument('--gt_tier', required=True, choices=['none', 'source', 'planted'])
     ap.add_argument('--unk', required=True, choices=['include', 'exclude'])
+    ap.add_argument('--unk_mode', default='any', choices=['any', 'fixed', 'learnable_shared'],
+                    help='MoSE run selection by trained UNK mode: "fixed" -> mose, '
+                         '"learnable_shared" -> mose_U. Default "any" keeps all runs. '
+                         'Needed to isolate mose_U in ablated_completely_v1 (which co-locates '
+                         'fixed + learnable arms).')
     ap.add_argument('--ckpt_root', required=True, help='checkpoint tree (e.g. final_v2) — enumerated')
     ap.add_argument('--artifacts_root', default=None,
                     help='post-hoc: tree with the SAVED explanation outputs (e.g. posthoc_v1); '
@@ -926,6 +951,8 @@ def main():
             continue
         if args.fold is not None and meta.get('fold') not in args.fold:
             continue
+        if args.unk_mode != 'any' and _run_unk_mode(meta, run_dir) != args.unk_mode:
+            continue
         if args.limit and (ok + failed) >= args.limit:
             break
         tag = f"{args.dataset}/{args.method}/{meta.get('backbone')}/fold{meta.get('fold')}/{_gt_rule(meta, run_dir) or '-'}"
@@ -962,7 +989,7 @@ def main():
             out_rows.append(dict(
                 dataset=args.dataset, method=args.method, backbone=meta.get('backbone'),
                 fold=meta.get('fold'), vocab=args.vocab, gt_rule=_gt_rule(meta, run_dir),
-                gt_tier=args.gt_tier, unk=args.unk, **m,
+                gt_tier=args.gt_tier, unk=args.unk, unk_mode=_run_unk_mode(meta, run_dir), **m,
                 run_path=str(run_dir.relative_to(args.ckpt_root))))
             print(f'  [ok] {tag}')
             ok += 1
