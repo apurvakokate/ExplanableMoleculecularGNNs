@@ -907,24 +907,6 @@ def main():
                           or (args.device == 'auto' and torch.cuda.is_available())) else 'cpu')
     want_base = _base_vocab(args.vocab)
     want_filter = args.vocab.endswith('_filter')
-    kept = None
-    if args.unk == 'exclude':
-        from SharedModules.data.loader import load_vocab
-        from SharedModules.data.fold_threshold import build_fold_annotation
-        from SharedModules.data.dataset_schema import DATASET_COLUMN
-        _wb = _base_vocab(args.vocab)
-        _filt = load_vocab(str(args.vocab_root), args.dataset, _wb + '_filter')
-        _csv = Path(args.data_root) / f"{args.dataset}{int(meta.get('fold', 0))}.csv"
-        _, kept, _, _ = build_fold_annotation(
-            lookup_all=_filt.lookup_all, motif_list=_filt.motif_list,
-            mol_fragment_smarts=_filt.mol_fragment_smarts, csv_path=str(_csv),
-            label_col=DATASET_COLUMN[args.dataset], dataset=args.dataset,
-            variant=_filt.variant or (_wb + '_filter'),
-            vocab_dir=Path(_filt.vocab_dir) if _filt.vocab_dir else Path('.'),
-            apply_threshold=True, threshold_pct=_filt.threshold_pct)
-        if kept is None:
-            raise ValueError(f"no per-fold kept for {args.dataset} fold {meta.get('fold')}")
-        kept = set(int(x) for x in kept)
 
     print(f'method={args.method} dataset={args.dataset} vocab={args.vocab} '
           f'gt_tier={args.gt_tier} unk={args.unk} device={device}')
@@ -936,6 +918,7 @@ def main():
         Path(args.dest).parent.mkdir(parents=True, exist_ok=True)
         Path(args.dest).unlink(missing_ok=True)
     for run_dir, meta in _iter_runs(args.ckpt_root, FAMILY_DIR[args.method], args.dataset):
+
         v = str(meta.get('vocab_variant', ''))
         if _base_vocab(v) != want_base or v.endswith('_filter') != want_filter:
             continue
@@ -950,6 +933,31 @@ def main():
             art_dir = (Path(args.artifacts_root) / run_dir.relative_to(args.ckpt_root)
                        if args.artifacts_root else run_dir)
             dest_dir = _dest_dir(run_dir, args, want_base)
+
+            kept = None
+            if args.unk == 'exclude':
+                from SharedModules.data.vocab import load_vocab
+                from SharedModules.data.fold_threshold import build_fold_annotation
+                from SharedModules.data.dataset_schema import DATASET_COLUMN
+                _wb = _base_vocab(args.vocab)
+                _filt = load_vocab(str(args.vocab_root), args.dataset, _wb + '_filter')
+                meta_fold = getattr(meta, 'fold', None)
+                if meta_fold is not None:
+                    meta_fold_int = int(meta_fold)
+                else:
+                    raise ValueError(f"no fold in meta")
+                _csv = Path(args.data_root) / f"{args.dataset}_{meta_fold_int}.csv"
+                _, kept, _, _ = build_fold_annotation(
+                    lookup_all=_filt.lookup_all, motif_list=_filt.motif_list,
+                    mol_fragment_smarts=_filt.mol_fragment_smarts, csv_path=str(_csv),
+                    label_col=DATASET_COLUMN[args.dataset], dataset=args.dataset,
+                    variant=_filt.variant or (_wb + '_filter'),
+                    vocab_dir=Path(_filt.vocab_dir) if _filt.vocab_dir else Path('.'),
+                    apply_threshold=True, threshold_pct=_filt.threshold_pct)
+                if kept is None:
+                    raise ValueError(f"no per-fold kept for {args.dataset} fold {meta.get('fold')}")
+                kept = set(int(x) for x in kept)
+
             m = eval_run(args.method, run_dir, art_dir, meta, args, device, kept, dest_dir)
             out_rows.append(dict(
                 dataset=args.dataset, method=args.method, backbone=meta.get('backbone'),
