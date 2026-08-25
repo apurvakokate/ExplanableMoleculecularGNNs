@@ -273,7 +273,10 @@ def _setup_antehoc(run_dir: Path, family_dir: str):
     parts = run_dir.parts
     if family_dir not in parts:
         return None
-    i = parts.index(family_dir)
+    # LAST occurrence: mose_replication_v2 nests the family under <ds>/<method>/<bbgroup>,
+    # so the path can contain the token twice (e.g. .../mose/nonGAT/mose/rbrics_filter/...).
+    # For legacy single-token trees this equals parts.index(family_dir).
+    i = len(parts) - 1 - parts[::-1].index(family_dir)
     try:
         variant_full = parts[i + 1]
         dataset = parts[i + 2]
@@ -665,7 +668,7 @@ def _binned_values(scores, impacts, edges):
 def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
                *, nbins: int, score_min, score_max, save_dir: Path, tier: str,
                fmt: tuple[str, ...], fig_width=None, fig_height=None,
-               count_style='strip', shared_y='none') -> Path | None:
+               count_style='annotate', shared_y='none') -> Path | None:
     """MOSE importance vs impact — three box series per bin + motif-count strip.
 
     The original single-figure grid (rows = dataset, columns = backbone), kept
@@ -719,12 +722,12 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
     # Plot 2's gaps (tuned for 6 boxes) leave the panels too wide here. Reduce
     # both slightly — NOT to zero — to restore Plot 2's whitespace proportions.
     ng = 3
-    p1_intra, p1_inter = 0.4, 1.3          # vs Plot 2's 0.5 / 2.6
+    p1_intra, p1_inter = 0.55, 2.2          # vs Plot 2's 0.5 / 2.6
     box_centres, group_centres, xlim, span, pitch = _grouped_positions(
         nbin, ng, p1_intra, p1_inter)
     # Wider than Plot 2's box (0.6) so the 3 boxes read clearly; the intra-group
     # step is 1 + p1_intra = 1.4, so 0.95 still leaves a ~0.45 gap between boxes.
-    box_w = 0.95
+    box_w = 1.5
     inner = pitch - p1_inter               # group extent (for the count bars)
     gc = np.asarray(group_centres)
     # (colour, value-column) per series, in draw order: MoSE, MoSE-LU, vanilla.
@@ -752,16 +755,16 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
                 ax.text(0.5, 0.5, 'no data', ha='center', va='center',
                         transform=ax.transAxes, fontsize=13, color='0.55')
                 if ri == 0:
-                    ax.set_title(str(bb), fontsize=20, pad=6)
+                    ax.set_title(str(bb), fontsize=26, pad=14)
                 if ci == 0:
-                    ax.set_ylabel(_ds_label(ds), fontsize=17)
+                    ax.set_ylabel(_ds_label(ds), fontsize=22)
                 continue
             drew_any = True
 
             # Dotted dividers centred in each between-group gap.
             for k in range(1, nbin):
-                ax.axvline(k * pitch - p1_inter / 2.0, color='0.6',
-                           linewidth=0.7, linestyle=':', zorder=0.5)
+                ax.axvline(k * pitch - p1_inter / 2.0, color='0.4',
+                           linewidth=1.6, linestyle=(0, (5, 3)), zorder=0.5)
 
             # Three whiskered box series per bin (MoSE / MoSE-LU / vanilla) of the
             # SAME motifs, at Plot-2 box width + grouped spacing.
@@ -786,17 +789,17 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
             ax.set_xticks(group_centres)
             if ri == nrow - 1:   # declutter: bin labels only on the bottom row
                 # Bin CENTRES (compact, horizontal) instead of ranges.
-                ax.set_xticklabels(_bin_center_labels(edges), rotation=0,
-                                   ha='center', fontsize=16)
+                ax.set_xticklabels(_bin_center_labels(edges), rotation=35,
+                                   ha='right', fontsize=18)
             else:
                 ax.set_xticklabels([])
-            ax.tick_params(axis='y', labelsize=16, length=4)
+            ax.tick_params(axis='y', labelsize=22, length=5)
             ax.tick_params(axis='x', length=4)
 
             if ri == 0:
-                ax.set_title(str(bb), fontsize=20, pad=6)
+                ax.set_title(str(bb), fontsize=26, pad=14)
             if ci == 0:
-                ax.set_ylabel(_ds_label(ds), fontsize=17)
+                ax.set_ylabel(_ds_label(ds), fontsize=22)
 
     # ── Pass 2: resolve y-limits (per-panel / per-row / global) then draw the
     #    motif-count layer using the resolved ymax so it stays positioned right.
@@ -809,17 +812,17 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
     for (ri, ci), P in panels.items():
         ax, ucnt, Y = P['ax'], P['ucnt'], _target_ymax(ri, ci)
         if count_style == 'annotate':
-            lo, hi = 0.0, Y * 1.17
+            lo, hi = 0.0, Y * 1.34
             ax.axhline(0, color='0.4', linewidth=0.5, zorder=2)
             # Rule + counts in AXES-fraction Y (0..1), so they sit at the SAME height
             # in every panel/row regardless of that panel's data scale.
-            ax.plot([0, 1], [0.90, 0.90], transform=ax.transAxes, color='0.55',
+            ax.plot([0, 1], [0.86, 0.86], transform=ax.transAxes, color='0.55',
                     linewidth=0.8, zorder=2, clip_on=False)
             xt = ax.get_xaxis_transform()          # x = data, y = axes-fraction
             for xi, cc in zip(gc, ucnt):
                 if cc > 0:
-                    ax.text(xi, 0.925, str(cc), transform=xt, ha='center', va='bottom',
-                            fontsize=13, fontweight='bold', color='0.15')
+                    ax.text(xi, 0.885, str(cc), transform=xt, ha='center', va='bottom',
+                            fontsize=18, fontweight='bold', color='0.15')
         else:
             cmax = int(ucnt.max()) if ucnt.max() > 0 else 1
             band = 0.34 * Y
@@ -859,9 +862,9 @@ def make_plot1(mose_df: pd.DataFrame, lu_df: pd.DataFrame, agn_df: pd.DataFrame,
     # axis labels (Plot-2 font sizes throughout).
     fig.tight_layout(rect=(0.03, 0.025, 0.995, 0.93))
     fig.legend(handles=handles, loc='upper center', ncol=4, frameon=False,
-               bbox_to_anchor=(0.5, 0.985), fontsize=17)
-    fig.supylabel(r'Impact $= |\Delta\sigma(\mathrm{logit})|$', x=0.006, fontsize=18)
-    fig.supxlabel('Motif Importance', y=0.008, fontsize=18)
+               bbox_to_anchor=(0.5, 0.985), fontsize=22)
+    fig.supylabel(r'Impact $= |\Delta\sigma(\mathrm{logit})|$', x=0.006, fontsize=24)
+    fig.supxlabel('Motif Importance', y=0.008, fontsize=24)
 
     out = None
     for ext in fmt:
@@ -1063,7 +1066,7 @@ def make_plot2(df: pd.DataFrame, *, nbins: int, unk: str, save_dir: Path,
                 ax.yaxis.set_major_locator(MaxNLocator(3))
                 is_bottom = (r + 1, c) not in panel_map
                 if is_bottom:
-                    ax.set_xticklabels(_bin_edge_labels(edges), rotation=0,
+                    ax.set_xticklabels(_bin_edge_labels(edges), rotation=35,
                                        ha='center', fontsize=13)
                 else:
                     ax.set_xticklabels([])
@@ -1074,9 +1077,9 @@ def make_plot2(df: pd.DataFrame, *, nbins: int, unk: str, save_dir: Path,
                                  fontsize=18, pad=5)
                 else:
                     if r == 0:                     # column header = backbone
-                        ax.set_title(str(bb), fontsize=20, pad=6)
+                        ax.set_title(str(bb), fontsize=26, pad=14)
                     if c == 0:                     # row label = dataset
-                        ax.set_ylabel(_ds_label(ds), fontsize=17)
+                        ax.set_ylabel(_ds_label(ds), fontsize=22)
 
         # One colour key per method; MoSE last with its heavier edge.
         def _leg_label(m):
@@ -1299,9 +1302,9 @@ def make_plot3(df: pd.DataFrame, *, nbins: int, unk: str, save_dir: Path,
                                  fontsize=18, pad=5)
                 else:
                     if r == 0:
-                        ax.set_title(str(bb), fontsize=20, pad=6)
+                        ax.set_title(str(bb), fontsize=26, pad=14)
                     if c == 0:
-                        ax.set_ylabel(_ds_label(ds), fontsize=17)
+                        ax.set_ylabel(_ds_label(ds), fontsize=22)
 
         # Legend: baselines as line keys, MoSE as a box key (last).
         handles = [Line2D([0], [0], color=_LINE_COLOR[m], marker=_LINE_MARKER[m],
@@ -1410,13 +1413,13 @@ def main():
                          '<base>/ablated_completely_v1 when --base is given.')
     ap.add_argument('--save_dir', default=None,
                     help='Output dir (default: analysis/plots_importance_impact).')
-    ap.add_argument('--nbins', type=int, default=6,
+    ap.add_argument('--nbins', type=int, default=4,
                     help='Default importance-bin count for both plots.')
     ap.add_argument('--nbins_plot1', type=int, default=None,
                     help='Override bin count for Plot 1 (default: --nbins).')
     ap.add_argument('--nbins_plot2', type=int, default=None,
                     help='Override bin count for Plot 2 (default: --nbins).')
-    ap.add_argument('--count_style', default='strip', choices=['strip', 'annotate'],
+    ap.add_argument('--count_style', default='annotate', choices=['strip', 'annotate'],
                     help="Plot-1 motif-count display: 'strip' (inverted orange band, "
                          "default) or 'annotate' (raw numbers above panels).")
     ap.add_argument('--shared_y', default='none', choices=['none', 'row', 'all'],

@@ -63,9 +63,14 @@ def mose_variant(run_dir):
     return 'mose:learn' if 'unk-learnable_shared' in run_dir else 'mose:fixed'
 
 # --- collect rows ---
+# Per-unk roots (default = the legacy single SRC/unk-* layout). For the fold-corrected re-eval:
+#   EXCL_ROOT = mose_replication_v2/artifacts/source  (new, fold-correct Filt / exclude-unk)
+#   INCL_ROOT = eval_srcgt_gtroc_v1/unk-include        (old Full / include-unk; fold bug did not affect it)
+ROOTS={'exclude': os.environ.get('EXCL_ROOT', f'{SRC}/unk-exclude'),
+       'include': os.environ.get('INCL_ROOT', f'{SRC}/unk-include')}
 rows=[]
 for unk in ('exclude','include'):
-    root=f'{SRC}/unk-{unk}'
+    root=ROOTS[unk]
     for sj in glob.glob(f'{root}/**/summary_splits.json', recursive=True):
         run_dir=os.path.dirname(sj)
         ds=dataset_of(run_dir); fold=fold_of(run_dir)
@@ -157,6 +162,16 @@ CAP = (r'Instance GT-ROC on the source-GT datasets, pooled over train+valid+test
        r'cells with $<2$ folds are not tie-tested.' + _SIG)
 os.makedirs(OUTDIR,exist_ok=True)
 open(f'{OUTDIR}/gtroc_instance_tvt.tex','w').write(floatwrap(build(), CAP, 'tab:gtroc-tvt'))
+# companion CSV: the underlying cells (mean/std x100 per dataset,backbone,method,vocab)
+_csv=[]
+for _disp,_ds in DATASETS:
+    for _bb in BB:
+        for _,_mk,_ in COLS:
+            for _sc,_slab in (('filt','Filt'),('full','Full')):
+                _m,_sd,_n=agg_g(_ds,_bb,_mk,UNK[_sc])
+                if _n: _csv.append(dict(dataset=_ds,backbone=_bb,method=_mk,vocab=_slab,
+                    gtroc_instance_mean=round(_m*100,2),gtroc_instance_std=round(_sd*100,2),n_folds=_n))
+pd.DataFrame(_csv).to_csv(f'{OUTDIR}/gtroc_instance_tvt.csv',index=False)
 print(pretty()); print()
 cov=df.groupby(['method','dataset','backbone','unk']).fold.nunique()
 print('cells:',len(cov),' folds min/med/max:',cov.min(),int(cov.median()),cov.max())

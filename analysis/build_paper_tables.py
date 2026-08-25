@@ -42,18 +42,27 @@ def rulekey(r):
     return (int(r.split('_k')[1].split('_')[0]), int(r.split('_r')[1]))
 
 
-def load(root):
+def load(root, vocab_root):
+    # rule_tiers.json (spurious strength) lives in the planted SOURCE tree (planted_v2),
+    # which is a DIFFERENT tree from the metrics rollups (mose_replication_v2/rollups/planted).
     strength = {}
     for d in DS:
-        t = json.load(open(f'{root}/{d}/_shared/vocab/{d}/rbrics/rule_tiers.json'))
+        t = json.load(open(f'{vocab_root}/{d}/_shared/vocab/{d}/rbrics/rule_tiers.json'))
         for rule, r in t.items():
             strength[(d, rule)] = r['correlate_r']
     # perfold[(ds,rule,bb,method,metric)] -> list over folds (unk=exclude only)
     perfold = defaultdict(lambda: defaultdict(list))
-    for f in glob.glob(f'{root}/*/*/eval/metrics_*.csv'):
+    # A concurrent-write race left some rollups with duplicate (ds,rule,bb,method,fold)
+    # rows (identical to ~1e-8); dedup so a fold is not double-counted in its mean.
+    seen = set()
+    for f in glob.glob(f'{root}/*/*/all/metrics_*_unk-exclude.csv'):
         for r in csv.DictReader(open(f)):
             if r['unk'] != 'exclude':
                 continue
+            dk = (r['dataset'], r['gt_rule'], r['backbone'], r['method'], r['fold'])
+            if dk in seen:
+                continue
+            seen.add(dk)
             k = (r['dataset'], r['gt_rule'], r['backbone'], r['method'])
             for mk, (col, _) in METRICS.items():
                 v = fl(r.get(col))
@@ -99,11 +108,17 @@ def holm(pairs, alpha=0.05):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--root', required=True)
+    ap.add_argument('--root', required=True,
+                    help='metrics rollup root, e.g. mose_replication_v2/rollups/planted '
+                         '(reads <root>/<ds>/<rule>/all/metrics_*_unk-exclude.csv)')
+    ap.add_argument('--vocab_root', default=None,
+                    help='root holding <ds>/_shared/vocab/<ds>/rbrics/rule_tiers.json '
+                         '(the planted_v2 source tree). Defaults to --root for the '
+                         'legacy single-tree layout.')
     ap.add_argument('--out', default='paper_deliverables')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    strength, perfold = load(a.root)
+    strength, perfold = load(a.root, a.vocab_root or a.root)
 
     for mk, (col, higher) in METRICS.items():
         with_strength = (mk == 'spurroc')
