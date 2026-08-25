@@ -17,11 +17,12 @@ W=$D/worklist_smoke.tsv
 {
   printf '# smoke worklist\n'
   # tier<TAB>ds<TAB>rule<TAB>method<TAB>unk_mode<TAB>backbones<TAB>bbgroup<TAB>ckpt_rel<TAB>art_rel<TAB>vocab
-  printf 'none\tBBBP\t-\tmose\tfixed\tGCN GIN PNA SAGE\tnonGAT\tfinal_v2\t\trbrics_filter\n'
-  printf 'none\tBBBP\t-\tmose\tlearnable_shared\tGAT\tGAT\tfinal_v2_gath1\t\trbrics_filter\n'
-  printf 'source\tBenzene_Verified_GT\t-\tmage\t\tGCN GIN PNA SAGE\tnonGAT\tfinal_v2\tposthoc_v1\trbrics\n'
-  printf 'planted\tBBBP\t%s\tmose\tfixed\t\tall\tplanted_v2/BBBP/%s\t\trbrics_filter\n' "$RULE" "$RULE"
-  printf 'probe\tBBBP\t-\tprobe\t\t\t-\t\t\t\n'
+  # '-' = empty placeholder (never leave a field blank; IFS=tab collapses real empties)
+  printf 'none\tBBBP\t-\tmose\tfixed\tGCN GIN PNA SAGE\tnonGAT\tfinal_v2\t-\trbrics_filter\n'
+  printf 'none\tBBBP\t-\tmose\tlearnable_shared\tGAT\tGAT\tfinal_v2_gath1\t-\trbrics_filter\n'
+  printf 'source\tBenzene_Verified_GT\t-\tmage\t-\tGCN GIN PNA SAGE\tnonGAT\tfinal_v2\tposthoc_v1\trbrics\n'
+  printf 'planted\tBBBP\t%s\tmose\tfixed\t-\tall\tplanted_v2/BBBP/%s\t-\trbrics_filter\n' "$RULE" "$RULE"
+  printf 'probe\tBBBP\t-\tprobe\t-\t-\t-\t-\t-\t-\n'
 } > "$W"
 
 echo 2 > "$D/cursor_smoke"; : > "$D/lock_smoke"
@@ -29,8 +30,8 @@ QUEUE="$W" CURSOR="$D/cursor_smoke" QLOCK="$D/lock_smoke" WALL_SECONDS=7200 \
   bash "$P/analysis/mose_replication_v2/eval_worker.sh"
 
 echo; echo "===== SMOKE CHECKS ====="
-f_fix=$V2/rollups/none/BBBP/metrics_mose__fixed__nonGAT_unk-exclude.csv
-f_lrn=$V2/rollups/none/BBBP/metrics_mose__learnable_shared__GAT_unk-exclude.csv
+f_fix=$V2/rollups/none/BBBP/nonGAT/metrics_mose__fixed_unk-exclude.csv
+f_lrn=$V2/rollups/none/BBBP/GAT/metrics_mose__learnable_shared_unk-exclude.csv
 echo "-- nonGAT fixed rollup: backbones present (must NOT contain GAT) --"
 [ -s "$f_fix" ] && cut -d, -f3 "$f_fix" | tail -n +2 | sort -u | tr '\n' ' '; echo
 echo "-- GAT learnable rollup: backbone + unk_mode --"

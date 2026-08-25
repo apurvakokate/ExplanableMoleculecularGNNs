@@ -23,9 +23,9 @@ def main():
     gat_bad = []                      # GAT rows in a non-GAT/non-all file
     empty = []
     for fp in files:
-        base = os.path.basename(fp)
-        is_gat_file = "__GAT_" in base
-        is_all_file = "__all_" in base
+        parent = os.path.basename(os.path.dirname(fp))   # bbgroup is the containing directory
+        is_gat_file = (parent == "GAT")
+        is_all_file = (parent == "all")
         rows = list(csv.DictReader(open(fp)))
         if not rows:
             empty.append(fp); continue

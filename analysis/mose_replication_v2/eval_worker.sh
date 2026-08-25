@@ -56,6 +56,11 @@ while :; do
   row=${row%$'\r'}; [ "${row:0:1}" = "#" ] && continue
 
   IFS=$'\t' read -r tier ds rule meth unk_mode bbs bbgroup ckpt_rel art_rel vocab <<< "$row"
+  # restore '-' placeholders to empty (see make_worklist.py: IFS=tab collapses real empties)
+  [ "$rule" = "-" ] && rule=""
+  [ "$unk_mode" = "-" ] && unk_mode=""
+  [ "$bbs" = "-" ] && bbs=""
+  [ "$art_rel" = "-" ] && art_rel=""
 
   # ---- node-mask probe shard -------------------------------------------------
   if [ "$tier" = "probe" ]; then
@@ -84,27 +89,29 @@ while :; do
     PROOT=$P/processed_final_v2
     subdir="$ds"
   fi
-  DESTDIR=$V2/rollups/$tier/$subdir; mkdir -p "$DESTDIR"
-  tag="${meth}${unk_mode:+__$unk_mode}__${bbgroup}"          # e.g. mose__fixed__GAT
+  # bbgroup is a SUBDIRECTORY (isolates GAT cleanly); the filename carries only method[+unk_mode]
+  DESTDIR=$V2/rollups/$tier/$subdir/$bbgroup; mkdir -p "$DESTDIR"
+  tag="${meth}${unk_mode:+__$unk_mode}"                     # e.g. mose__fixed  or  mage
+  lab="$tier/$subdir/$bbgroup/$tag"                         # human label for logs/RESULT
   DEST=$DESTDIR/metrics_${tag}_unk-exclude.csv
   DROOT=$V2/artifacts/$tier/$subdir/$meth/$bbgroup
 
-  if rollup_complete "$DEST" "$tier"; then echo "SKIP $tier/$subdir $tag"; skip=$((skip+1)); continue; fi
+  if rollup_complete "$DEST" "$tier"; then echo "SKIP $lab"; skip=$((skip+1)); continue; fi
 
   ART="";  SRC_ART="-"; [ -n "$art_rel"  ] && { ART="--artifacts_root $P/$art_rel"; SRC_ART="$P/$art_rel"; }
   UNKM=""; [ -n "$unk_mode" ] && UNKM="--unk_mode $unk_mode"
   BB="";   [ -n "$bbs"      ] && BB="--backbone $bbs"
-  echo "== $tier/$subdir $tag  ${left}s left  $(date +%H:%M:%S) =="
+  echo "== $lab  ${left}s left  $(date +%H:%M:%S) =="
 
   python3 -u analysis/evaluate.py --method "$meth" --dataset "$ds" \
     --vocab "$vocab" --gt_tier "$tier" --unk exclude $UNKM $BB $ART \
     --ckpt_root "$CKPT" --dest_root "$DROOT" --dest "$DEST" \
     --data_root "$DATA_ROOT" --vocab_root "$VROOT" --processed_root "$PROOT" \
-    --device cpu > "$V2/_deploy/logs/${tier}_${ds}_${rule}_${tag}.log" 2>&1
+    --device cpu > "$V2/_deploy/logs/${tier}_${ds}_${rule}_${bbgroup}_${tag}.log" 2>&1
   rc=$?
 
   if rollup_complete "$DEST" "$tier"; then r=$(( $(wc -l < "$DEST") - 1 ))
-    echo "RESULT $tier/$subdir $tag OK rc=$rc rows=$r"; ok=$((ok+1)); manifest OK "$r" "$CKPT" "$SRC_ART" "$DEST" "$DROOT"
-  else echo "RESULT $tier/$subdir $tag FAIL rc=$rc"; fail=$((fail+1)); manifest FAIL 0 "$CKPT" "$SRC_ART" "$DEST" "$DROOT"; fi
+    echo "RESULT $lab OK rc=$rc rows=$r"; ok=$((ok+1)); manifest OK "$r" "$CKPT" "$SRC_ART" "$DEST" "$DROOT"
+  else echo "RESULT $lab FAIL rc=$rc"; fail=$((fail+1)); manifest FAIL 0 "$CKPT" "$SRC_ART" "$DEST" "$DROOT"; fi
 done
 echo "worker done: ok=$ok fail=$fail skip=$skip $(date)"

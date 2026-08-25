@@ -112,7 +112,9 @@ def main():
     with open(a.out, "w") as f:
         f.write("# tier\tdataset\trule\tmethod\tunk_mode\tbackbones\tbbgroup\tckpt_rel\tart_rel\tvocab\n")
         for r in rows:
-            f.write("\t".join(r) + "\n")
+            # '-' placeholder for empties: under IFS=$'\t' bash collapses consecutive tabs
+            # (tab is IFS-whitespace), so a truly empty field would shift every later column.
+            f.write("\t".join(x if x != "" else "-" for x in r) + "\n")
     n_by_tier = {}
     for r in rows:
         n_by_tier[r[0]] = n_by_tier.get(r[0], 0) + 1
