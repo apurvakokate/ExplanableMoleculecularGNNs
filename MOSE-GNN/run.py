@@ -135,7 +135,11 @@ def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
 
     # Model
     _fold_kept = getattr(meta, 'kept_motif_ids', None)
-    _kept_ids = (_fold_kept if _fold_kept is not None else vocab.kept_motif_ids)
+    if _fold_kept is not None:
+        _kept_ids = _fold_kept
+    else:    
+        raise ValueError(f"No kept motif found in the dataset {cfg.dataset} and fold {cfg.fold}")
+
     model = build_model(cfg, vocab.num_motifs, task_type, meta,
                         kept_motif_ids=_kept_ids)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
