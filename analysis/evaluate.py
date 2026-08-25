@@ -941,7 +941,7 @@ def main():
                 from SharedModules.data.dataset_schema import DATASET_COLUMN
                 _wb = _base_vocab(args.vocab)
                 _filt = load_vocab(str(args.vocab_root), args.dataset, _wb + '_filter')
-                meta_fold = getattr(meta, 'fold', None)
+                meta_fold = meta.get('fold')
                 if meta_fold is not None:
                     meta_fold_int = int(meta_fold)
                 else:
