@@ -29,10 +29,15 @@ def fl(x):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--root', required=True)
+    ap.add_argument('--root', required=True,
+                    help='metrics rollup root (reads <root>/<ds>/<rule>/all/metrics_*_unk-exclude.csv)')
+    ap.add_argument('--vocab_root', default=None,
+                    help='root holding <ds>/_shared/vocab/<ds>/rbrics/rule_tiers.json '
+                         '(the planted_v2 source tree). Defaults to --root.')
     ap.add_argument('--out', default='paper_deliverables')
     ap.add_argument('--methods', nargs='+', default=['mose', 'gsat', 'mage', 'gnnexplainer'])
     a = ap.parse_args()
+    vocab_root = a.vocab_root or a.root
     os.makedirs(a.out, exist_ok=True)
     import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
     import matplotlib.patheffects as pe
@@ -45,15 +50,20 @@ def main():
 
     kw = {}
     for d in DS:
-        t = json.load(open(f'{a.root}/{d}/_shared/vocab/{d}/rbrics/rule_tiers.json'))
+        t = json.load(open(f'{vocab_root}/{d}/_shared/vocab/{d}/rbrics/rule_tiers.json'))
         for rule, r in t.items():
             w = max(len(c['motifs']) for c in r['clauses'])
             kw[(d, rule)] = (r['k'], w)
     cell = defaultdict(list)
-    for f in glob.glob(f'{a.root}/*/*/eval/metrics_*.csv'):
+    seen = set()   # drop concurrent-write duplicate (ds,rule,method,bb,fold) rows
+    for f in glob.glob(f'{a.root}/*/*/all/metrics_*_unk-exclude.csv'):
         for r in csv.DictReader(open(f)):
             if r['method'] not in a.methods or r['unk'] != 'exclude':
                 continue
+            dk = (r['dataset'], r['gt_rule'], r['method'], r['backbone'], r['fold'])
+            if dk in seen:
+                continue
+            seen.add(dk)
             v = fl(r.get('gtroc_instance'))
             if v is not None:
                 cell[(r['dataset'], r['gt_rule'], r['method'], r['backbone'])].append(v)
