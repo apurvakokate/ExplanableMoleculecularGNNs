@@ -869,8 +869,16 @@ def _dest_dir(run_dir, args, want_base):
 
 
 def _iter_runs(ckpt_root, family_dir, dataset):
+    import os
     base = Path(ckpt_root) / family_dir
-    for ss in sorted(base.rglob('summary.json')):
+    # os.walk(followlinks=True), NOT Path.rglob: run dirs in final_v2 are SYMLINKS into the
+    # sealed mose_replication/ bundle, and rglob (py<3.13) does not descend symlinked dirs —
+    # it would silently yield only the real (GAT) runs. followlinks reads through to the reals.
+    summaries = []
+    for dirpath, _dirnames, filenames in os.walk(base, followlinks=True):
+        if 'summary.json' in filenames:
+            summaries.append(Path(dirpath) / 'summary.json')
+    for ss in sorted(summaries):
         rd = ss.parent
         if any(p.startswith(('archive', 'tune')) for p in rd.parts):
             continue

@@ -33,15 +33,18 @@ manifest() {  # $1=status $2=rows $3=src_ckpt $4=src_art $5=dest_rollup $6=dest_
     "$1" "$2" "$3" "${4:--}" "$5" "${6:--}" >> "$MANI"
 }
 
-# A rollup counts as DONE only if it has >=1 data row AND (for gt tiers) a GT-ROC column.
-rollup_complete() {  # $1=csv  $2=tier
+# rows_ok: CSV has data + (for gt tiers) a GT-ROC column. shard_done: the .done sentinel,
+# written ONLY after evaluate.py exits 0 (a full sweep). A preempted/SIGXCPU'd partial CSV has
+# no .done, so it is NOT treated as complete and gets re-run (never silently half-skipped).
+rows_ok() {  # $1=csv  $2=tier
   [ -s "$1" ] || return 1
   local n; n=$(( $(wc -l < "$1") - 1 )); [ "$n" -gt 0 ] || return 1
   case "$2" in
-    source|planted) head -1 "$1" | grep -qE "gt_roc_node_auc_mean|instance_gt_roc_node_auc_mean" || return 1 ;;
+    source|planted) head -1 "$1" | grep -qE "gtroc_instance|gtroc_global" || return 1 ;;
   esac
   return 0
 }
+shard_done() { [ -f "$1.done" ]; }
 
 ok=0; fail=0; skip=0
 while :; do
@@ -65,16 +68,19 @@ while :; do
   # ---- node-mask probe shard -------------------------------------------------
   if [ "$tier" = "probe" ]; then
     OUT=$V2/probe/probe_vsvanilla_${ds}.csv; mkdir -p "$(dirname "$OUT")"
-    if [ -s "$OUT" ] && [ "$(( $(wc -l < "$OUT") - 1 ))" -gt 0 ]; then echo "SKIP probe $ds"; skip=$((skip+1)); continue; fi
+    if shard_done "$OUT"; then echo "SKIP probe $ds (done)"; skip=$((skip+1)); continue; fi
+    rm -f "$OUT.done"
     echo "== probe $ds  ${left}s left  $(date +%H:%M:%S) =="
     python3 -u analysis/probe_vs_vanilla.py --dataset "$ds" \
       --data_root "$DATA_ROOT" --vocab_root "$P/vocab_final_v2" --save "$OUT" \
       > "$V2/_deploy/logs/probe_${ds}.log" 2>&1
+    prc=$?
     # per-backbone sources (not a fallback): GAT everything from gath1; nonGAT fixed+vanilla
     # from final_v2 and the learnable arm from ablated_completely_v1.
     P_SRC="nonGAT[fixed=final_v2/mose,learn=ablated_completely_v1/mose,vanilla=final_v2/vanilla] GAT[all=final_v2_gath1]"
-    if [ -s "$OUT" ]; then r=$(( $(wc -l < "$OUT") - 1 )); echo "RESULT probe $ds OK"; ok=$((ok+1)); manifest OK "$r" "$P_SRC" - "$OUT" -
-    else echo "RESULT probe $ds FAIL"; fail=$((fail+1)); manifest FAIL 0 "$P_SRC" - "$OUT" -; fi
+    if [ "$prc" -eq 0 ] && [ -s "$OUT" ]; then r=$(( $(wc -l < "$OUT") - 1 )); touch "$OUT.done"
+      echo "RESULT probe $ds OK rows=$r"; ok=$((ok+1)); manifest OK "$r" "$P_SRC" - "$OUT" -
+    else echo "RESULT probe $ds FAIL rc=$prc"; fail=$((fail+1)); manifest FAIL 0 "$P_SRC" - "$OUT" -; fi
     continue
   fi
 
@@ -96,12 +102,13 @@ while :; do
   DEST=$DESTDIR/metrics_${tag}_unk-exclude.csv
   DROOT=$V2/artifacts/$tier/$subdir/$meth/$bbgroup
 
-  if rollup_complete "$DEST" "$tier"; then echo "SKIP $lab"; skip=$((skip+1)); continue; fi
+  if shard_done "$DEST"; then echo "SKIP $lab (done)"; skip=$((skip+1)); continue; fi
 
   ART="";  SRC_ART="-"; [ -n "$art_rel"  ] && { ART="--artifacts_root $P/$art_rel"; SRC_ART="$P/$art_rel"; }
   UNKM=""; [ -n "$unk_mode" ] && UNKM="--unk_mode $unk_mode"
   BB="";   [ -n "$bbs"      ] && BB="--backbone $bbs"
   echo "== $lab  ${left}s left  $(date +%H:%M:%S) =="
+  rm -f "$DEST.done"
 
   python3 -u analysis/evaluate.py --method "$meth" --dataset "$ds" \
     --vocab "$vocab" --gt_tier "$tier" --unk exclude $UNKM $BB $ART \
@@ -110,7 +117,8 @@ while :; do
     --device cpu > "$V2/_deploy/logs/${tier}_${ds}_${rule}_${bbgroup}_${tag}.log" 2>&1
   rc=$?
 
-  if rollup_complete "$DEST" "$tier"; then r=$(( $(wc -l < "$DEST") - 1 ))
+  # OK only on a clean full sweep (rc==0) with real rows; else re-runnable (no .done written)
+  if [ "$rc" -eq 0 ] && rows_ok "$DEST" "$tier"; then r=$(( $(wc -l < "$DEST") - 1 )); touch "$DEST.done"
     echo "RESULT $lab OK rc=$rc rows=$r"; ok=$((ok+1)); manifest OK "$r" "$CKPT" "$SRC_ART" "$DEST" "$DROOT"
   else echo "RESULT $lab FAIL rc=$rc"; fail=$((fail+1)); manifest FAIL 0 "$CKPT" "$SRC_ART" "$DEST" "$DROOT"; fi
 done
