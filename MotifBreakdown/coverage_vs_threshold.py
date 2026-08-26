@@ -108,7 +108,20 @@ def _load(vocab_root, dataset, variant):
 def compute_node_coverage(data_lookup, kept_motifs):
     """Fraction of nodes per graph whose motif is in kept_motifs, averaged across graphs.
     Matches old Utils_vocab.compute_node_coverage exactly."""
-    coverages = []
+    return _coverage_stats(data_lookup, kept_motifs)['mean_node_cov']
+
+
+def _coverage_stats(data_lookup, kept_motifs):
+    """Strict coverage / UNKNOWN accounting when a motif not in kept_motifs falls to UNK.
+
+    Returns both views because they answer different questions:
+      mean_node_cov   macro: mean over graphs of (covered nodes / nodes)  [the legacy metric]
+      micro_node_cov  micro: total covered nodes / total nodes            [atom-weighted]
+      n_unk_nodes     ABSOLUTE count of atoms that become UNKNOWN at this threshold
+      frac_mols_full  fraction of molecules with ZERO unknown atoms (fully explained)
+    A node's motif is v[0] when the lookup stores (motif, ...) tuples, else v."""
+    per_graph = []
+    n_nodes = n_cov = n_mols = n_full = 0
     for node2motif in data_lookup.values():
         total = len(node2motif)
         if total == 0:
@@ -117,10 +130,19 @@ def compute_node_coverage(data_lookup, kept_motifs):
             1 for v in node2motif.values()
             if (v[0] if isinstance(v, tuple) else v) in kept_motifs
         )
-        coverages.append(covered / total)
-    return sum(coverages) / len(coverages) if coverages else 0.0
+        per_graph.append(covered / total)
+        n_nodes += total; n_cov += covered
+        n_mols += 1; n_full += int(covered == total)
+    return {
+        'mean_node_cov':  (sum(per_graph) / len(per_graph)) if per_graph else 0.0,
+        'micro_node_cov': (n_cov / n_nodes) if n_nodes else 0.0,
+        'n_nodes':        n_nodes,
+        'n_unk_nodes':    n_nodes - n_cov,
+        'n_mols':         n_mols,
+        'frac_mols_full': (n_full / n_mols) if n_mols else 0.0,
+    }
 
-def compute_sweep(vocab_root, dataset, variant, thresholds=None):
+def compute_sweep(vocab_root, dataset, variant, thresholds=None, large_min=8):
     cols, n_tv, n0_tv, n1_tv, n_total, lookup_tv, lookup_test, task_type = _load(vocab_root, dataset, variant)
 
     # ── Count signal: weighted_count (flat +1.0 per fragment occurrence) ──
@@ -130,6 +152,12 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
         support = cols['n_occurrences'].astype(float)
     else:
         support = cols['n_mols'].astype(float)
+
+    # ── Fragment-size signal for the singleton / large breakdown ──
+    # n_atoms and ring ship in matrix_columns.csv for every variant (rbrics & sfo),
+    # so the size distribution of the KEPT vocab needs no SMILES parsing.
+    frag_na  = cols['n_atoms'].astype(float) if 'n_atoms' in cols.columns else None
+    frag_rng = cols['ring'].astype(bool)     if 'ring'    in cols.columns else None
 
     # Per-class weighted counts for minority rescue
     wt0 = cols['wt_count_0'] if 'wt_count_0' in cols.columns else None
@@ -182,8 +210,10 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
         # else:
         #     cov_test = float('nan')
         kept_motifs = set(cols.loc[motif_post, 'motif_identity'])
-        cov_tv   = compute_node_coverage(lookup_tv,   kept_motifs)
-        cov_test = compute_node_coverage(lookup_test, kept_motifs)
+        st_tv   = _coverage_stats(lookup_tv,   kept_motifs)
+        st_test = _coverage_stats(lookup_test, kept_motifs)
+        cov_tv   = st_tv['mean_node_cov']
+        cov_test = st_test['mean_node_cov'] if st_test['n_mols'] else float('nan')
 
         # Fraction of >=1% motifs kept
         if 'above_1pct' in cols.columns:
@@ -193,16 +223,47 @@ def compute_sweep(vocab_root, dataset, variant, thresholds=None):
         else:
             pck = float('nan')
 
+        # ── Size breakdown of the KEPT vocab at this threshold ──
+        #   singleton = 1 heavy atom ; large = >= large_min atoms ; ring = whole ring system.
+        if frag_na is not None:
+            kept_na       = frag_na[motif_post]
+            n_singleton   = int((kept_na == 1).sum())
+            n_large       = int((kept_na >= large_min).sum())
+            frag_size_med = float(kept_na.median()) if len(kept_na) else float('nan')
+            frag_size_avg = float(kept_na.mean())   if len(kept_na) else float('nan')
+        else:
+            n_singleton = n_large = -1
+            frag_size_med = frag_size_avg = float('nan')
+        n_ring = int((frag_rng & motif_post).sum()) if frag_rng is not None else -1
+        vs = int(motif_post.sum())
+
         rows.append({
             'threshold':        thr,
             'min_count':        global_cut,
             'mb_cut':           mb_cut,
             'vocab_size_global': int(mask_global.sum()),
-            'vocab_size':       int(motif_post.sum()),
+            'vocab_size':       vs,
             'n_rescued':        n_rescued,
-            'coverage_tv':      round(cov_tv,   4),
+            'n_singleton':      n_singleton,
+            'n_large':          n_large,
+            'n_ring':           n_ring,
+            'frac_singleton':   round(n_singleton / vs, 4) if (vs > 0 and n_singleton >= 0) else float('nan'),
+            'frac_large':       round(n_large / vs, 4) if (vs > 0 and n_large >= 0) else float('nan'),
+            'frag_size_median': frag_size_med,
+            'frag_size_mean':   round(frag_size_avg, 3) if not np.isnan(frag_size_avg) else float('nan'),
+            'large_min':        large_min,
+            'coverage_tv':      round(cov_tv,   4),            # macro: mean per-graph node coverage
             'coverage_test':    round(cov_test,  4) if not np.isnan(cov_test) else float('nan'),
-            'unk_rate':         round(1 - cov_tv, 4),
+            'unk_rate':         round(1 - cov_tv, 4),          # macro node UNK rate (train+val)
+            # ── strict UNKNOWN accounting once the threshold re-applies to the vocab ──
+            'micro_cov_tv':     round(st_tv['micro_node_cov'], 4),      # atom-weighted coverage
+            'n_nodes_tv':       int(st_tv['n_nodes']),
+            'n_unk_nodes_tv':   int(st_tv['n_unk_nodes']),             # ATOMS that fall to UNK
+            'unk_rate_micro_tv': round(1 - st_tv['micro_node_cov'], 4),
+            'frac_mols_full_tv': round(st_tv['frac_mols_full'], 4),    # molecules with 0 UNK atoms
+            'micro_cov_test':   round(st_test['micro_node_cov'], 4) if st_test['n_mols'] else float('nan'),
+            'n_unk_nodes_test': int(st_test['n_unk_nodes']) if st_test['n_mols'] else -1,
+            'frac_mols_full_test': round(st_test['frac_mols_full'], 4) if st_test['n_mols'] else float('nan'),
             'pct_common_kept':  round(pck, 4),
             'minority_class':   minority if minority is not None else -1,
             'n_trainval':       n_tv,
@@ -215,19 +276,24 @@ def print_table(df, dataset, variant):
     n_tv  = int(df['n_trainval'].iloc[0])
     minor = int(df['minority_class'].iloc[0])
     minor_str = f'  minority=class{minor}' if minor >= 0 else '  balanced'
+    lm = int(df['large_min'].iloc[0]) if 'large_min' in df.columns else 8
     print(f"\n  {dataset} / {variant}  (N_trainval={n_tv:,}{minor_str})")
-    print(f"  {'thr%':>8}  {'N_cut':>6}  {'vocab':>6}  {'rescued':>7}  "
-          f"{'cov_tv%':>8}  {'cov_test%':>9}  {'common%':>8}")
-    print(f"  {'-'*65}")
+    print(f"  {'thr%':>8}  {'N_cut':>6}  {'vocab':>6}  {'singl':>6}  {'large>='+str(lm):>8}  "
+          f"{'ring':>5}  {'medsz':>5}  {'cov_tv%':>8}  {'unk_nodes':>9}  {'mols_full%':>10}  {'cov_test%':>9}")
+    print(f"  {'-'*104}")
     for _, r in df.iterrows():
         flag = ''
         if 0.78 <= r['coverage_tv'] <= 0.82: flag = ' <- ~80%'
         if 0.88 <= r['coverage_tv'] <= 0.92: flag = ' <- ~90%'
         ct = f"{r['coverage_test']*100:8.1f}%" if not np.isnan(r['coverage_test']) else '       N/A'
+        msz = f"{r['frag_size_median']:.0f}" if not np.isnan(r.get('frag_size_median', float('nan'))) else '  -'
+        unkn = int(r['n_unk_nodes_tv']) if 'n_unk_nodes_tv' in r else -1
+        mf   = r.get('frac_mols_full_tv', float('nan'))
+        mfs  = f"{mf*100:9.1f}%" if not (isinstance(mf, float) and np.isnan(mf)) else '      N/A'
         print(f"  {r['threshold']*100:7.3f}%  {int(r['min_count']):6d}  "
-              f"{int(r['vocab_size']):6d}  {int(r['n_rescued']):7d}  "
-              f"{r['coverage_tv']*100:7.1f}%  {ct}  "
-              f"{r['pct_common_kept']*100:7.1f}%{flag}")
+              f"{int(r['vocab_size']):6d}  {int(r['n_singleton']):6d}  {int(r['n_large']):8d}  "
+              f"{int(r['n_ring']):5d}  {msz:>5}  "
+              f"{r['coverage_tv']*100:7.1f}%  {unkn:9d}  {mfs}  {ct}{flag}")
 
     cands = df[df['coverage_tv'] >= 0.80]
     if not cands.empty:
@@ -271,7 +337,7 @@ def plot_sweep(df, dataset, variant, out_path):
         top.set_xlabel(f'Min support count  (N_trainval={n_tv:,})', fontsize=9)
 
     minor_str = f'minority=class{minor}' if minor >= 0 else 'balanced'
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(21, 5))
     fig.suptitle(f'{dataset} / {variant}  [{minor_str}]', fontsize=13)
 
     # Panel 0: vocabulary size (linear)
@@ -320,6 +386,22 @@ def plot_sweep(df, dataset, variant, out_path):
         _fmt_x(ax2)
     else:
         axes[2].set_visible(False)
+
+    # Panel 3: kept-vocab size breakdown (distinct / singletons / large / rings)
+    ax3 = axes[3]
+    lm = int(df['large_min'].iloc[0]) if 'large_min' in df.columns else 8
+    if 'n_singleton' in df.columns and (df['n_singleton'] >= 0).any():
+        ax3.plot(xi, df['vocab_size'],  'o-', color='steelblue', lw=2,   ms=6, label='distinct (all kept)')
+        ax3.plot(xi, df['n_singleton'], 's-', color='crimson',   lw=1.8, ms=5, label='singletons (1 atom)')
+        ax3.plot(xi, df['n_large'],     'D-', color='seagreen',  lw=1.8, ms=5, label=f'large (>={lm} atoms)')
+        ax3.plot(xi, df['n_ring'],      '^-', color='purple',    lw=1.5, ms=4, alpha=0.7, label='ring systems')
+        ax3.set_ylabel('Motif count')
+        ax3.set_title('Kept-vocab size breakdown')
+        ax3.legend(fontsize=7.5, loc='best')
+        ax3.grid(True, alpha=0.3)
+        _fmt_x(ax3)
+    else:
+        ax3.set_visible(False)
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,8 +509,8 @@ def plot_combined_sweep(sweeps: dict, variant: str, out_path: Path):
     print(f"  Saved combined: {out_path}")
 
 
-def _run_single(vocab_root, dataset, variant, out_dir, thresholds):
-    df = compute_sweep(vocab_root, dataset, variant, thresholds)
+def _run_single(vocab_root, dataset, variant, out_dir, thresholds, large_min=8):
+    df = compute_sweep(vocab_root, dataset, variant, thresholds, large_min=large_min)
     print_table(df, dataset, variant)
     out_dir = Path(out_dir)
     plot_sweep(df, dataset, variant, out_dir / f'{dataset}_{variant}_coverage.png')
@@ -437,6 +519,90 @@ def _run_single(vocab_root, dataset, variant, out_dir, thresholds):
     df.to_csv(csv, index=False)
     print(f"  CSV:  {csv}")
     return df
+
+
+def assemble_regen_curve(regen_root_tmpl, dataset, variant, thresholds, out_dir, large_min=8):
+    """For methods whose vocabulary is REGENERATED per threshold (SFO: S_min gates the
+    partition), the curve is one point per regenerated vocab, NOT a post-hoc sweep.
+
+    For each threshold X, read the vocab at regen_root_tmpl with '{thr}' -> f'{X:g}',
+    take its FULL-vocab measurement (compute_sweep at threshold 0 keeps everything, so
+    the reported vocab_size/coverage/singleton/large is exactly what SFO SELECTS at X),
+    stamp the real threshold X, and emit a curve CSV+plot in the post-hoc-sweep schema."""
+    rows = []
+    for thr in thresholds:
+        root = regen_root_tmpl.replace('{thr}', f'{thr:g}')
+        vdir = Path(root) / dataset / variant
+        if not (vdir / 'matrix_columns.csv').exists():
+            print(f"  [skip] {dataset}/{variant} @ thr={thr:g}: no vocab at {vdir}")
+            continue
+        one = compute_sweep(root, dataset, variant, thresholds=[0.0], large_min=large_min)
+        r = one.iloc[0].to_dict()
+        r['threshold'] = thr
+        r['min_count'] = int(thr * int(r['n_trainval']))
+        rows.append(r)
+    if not rows:
+        print(f"  [warn] no regenerated vocabs found for {dataset}/{variant}")
+        return None
+    df = pd.DataFrame(rows).sort_values('threshold').reset_index(drop=True)
+    print_table(df, dataset, variant)
+    out_dir = Path(out_dir)
+    plot_sweep(df, dataset, variant, out_dir / f'{dataset}_{variant}_coverage.png')
+    csv = out_dir / f'{dataset}_{variant}_coverage.csv'
+    csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv, index=False)
+    print(f"  CSV:  {csv}")
+    return df
+
+
+def plot_variant_compare(out_dir: Path, datasets, variants, tag='rbrics_vs_sfo'):
+    """Overlay the per-setup CSVs of >=2 variants for each dataset: coverage, vocab
+    size, and singleton fraction on shared threshold axes. Reads the CSVs already
+    written by _run_single (no vocab needed), so it runs after the fan-out."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  matplotlib not available — skipping variant-compare"); return
+    out_dir = Path(out_dir)
+    loaded = {}   # (ds, var) -> df
+    for ds in datasets:
+        for var in variants:
+            p = out_dir / f'{ds}_{var}_coverage.csv'
+            if p.exists():
+                loaded[(ds, var)] = pd.read_csv(p)
+    ds_have = [ds for ds in datasets if any((ds, v) in loaded for v in variants)]
+    if not ds_have:
+        print("  [warn] variant-compare: no CSVs found"); return
+    vcol = {variants[0]: 'tab:blue', variants[-1]: 'tab:red'}
+    for i, v in enumerate(variants):
+        vcol.setdefault(v, f'C{i}')
+    ncol = min(4, len(ds_have)); nrow = (len(ds_have) + ncol - 1) // ncol
+    for metric, ylab, scale in (('coverage_tv', 'Node coverage (train+val) %', 100.0),
+                                ('vocab_size', 'Distinct kept motifs', 1.0),
+                                ('frac_singleton', 'Singleton fraction %', 100.0)):
+        fig, axes = plt.subplots(nrow, ncol, figsize=(4.2*ncol, 3.2*nrow), squeeze=False)
+        for k, ds in enumerate(ds_have):
+            ax = axes[k // ncol][k % ncol]
+            for v in variants:
+                df = loaded.get((ds, v))
+                if df is None or metric not in df.columns:
+                    continue
+                ax.plot(df['threshold']*100, df[metric]*scale, 'o-', ms=4, lw=1.8,
+                        color=vcol[v], label=v.replace('size_frequency_optimization', 'sfo'))
+            ax.axvline(0.5, color='0.5', ls=':', lw=1)   # the current 0.5% threshold
+            ax.set_title(ds, fontsize=9); ax.grid(True, alpha=0.3)
+            ax.set_xlabel('threshold %', fontsize=8)
+            if k % ncol == 0: ax.set_ylabel(ylab, fontsize=8)
+            if k == 0: ax.legend(fontsize=7)
+        for k in range(len(ds_have), nrow*ncol):
+            axes[k // ncol][k % ncol].set_visible(False)
+        fig.suptitle(f'{tag}: {ylab}', fontsize=12)
+        fig.tight_layout()
+        p = out_dir / f'compare_{tag}_{metric}.png'
+        fig.savefig(p, dpi=150, bbox_inches='tight'); plt.close(fig)
+        print(f"  Saved compare: {p}")
 
 
 def main():
@@ -449,11 +615,43 @@ def main():
     ap.add_argument('--variant',    required=True)
     ap.add_argument('--out_dir',    default='./results/coverage_plots')
     ap.add_argument('--thresholds', nargs='*', type=float, default=None)
+    ap.add_argument('--large_min', type=int, default=8,
+                    help='heavy-atom count at/above which a kept motif counts as "large"')
     ap.add_argument('--combine_plot', action='store_true',
                     help='Save one PNG overlaying all --datasets on the same axes')
+    ap.add_argument('--compare', action='store_true',
+                    help='Read already-written per-setup CSVs in --out_dir and overlay '
+                         '--variants per dataset (rbrics vs sfo). No vocab needed.')
+    ap.add_argument('--variants', nargs='*', default=None,
+                    help='variant list for --compare (e.g. rbrics size_frequency_optimization)')
+    ap.add_argument('--assemble_regen', action='store_true',
+                    help='Assemble a per-threshold-REGENERATED curve (SFO): one point per '
+                         'vocab read from --regen_root_tmpl (with {thr}), for --thresholds.')
+    ap.add_argument('--regen_root_tmpl', default=None,
+                    help="vocab-root template with a literal {thr}, e.g. "
+                         "'.../sfo_vocabs/thr{thr}'  ({thr} -> f'{X:g}' per threshold)")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
+
+    # ── comparison mode: overlay variants from existing CSVs ──
+    if args.compare:
+        if not args.datasets or not args.variants:
+            ap.error('--compare needs --datasets and --variants')
+        plot_variant_compare(out_dir, args.datasets, args.variants)
+        return
+
+    # ── assemble mode: SFO curve from per-threshold regenerated vocabs ──
+    if args.assemble_regen:
+        if not args.regen_root_tmpl or not args.thresholds:
+            ap.error('--assemble_regen needs --regen_root_tmpl and --thresholds')
+        dss = args.datasets or ([args.dataset] if args.dataset else None)
+        if not dss:
+            ap.error('--assemble_regen needs --dataset or --datasets')
+        for ds in dss:
+            assemble_regen_curve(args.regen_root_tmpl, ds, args.variant,
+                                 args.thresholds, args.out_dir, args.large_min)
+        return
 
     if args.datasets:
         sweeps = {}
@@ -464,7 +662,7 @@ def main():
                 continue
             try:
                 sweeps[ds] = _run_single(args.vocab_root, ds, args.variant,
-                                         args.out_dir, args.thresholds)
+                                         args.out_dir, args.thresholds, args.large_min)
             except FileNotFoundError as e:
                 print(f"  [skip] {ds}: {e}", file=sys.stderr)
         if args.combine_plot and sweeps:
@@ -480,7 +678,7 @@ def main():
 
     try:
         _run_single(args.vocab_root, args.dataset, args.variant,
-                    args.out_dir, args.thresholds)
+                    args.out_dir, args.thresholds, args.large_min)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
