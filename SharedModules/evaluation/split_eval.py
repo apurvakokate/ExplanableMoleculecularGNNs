@@ -570,6 +570,43 @@ def _atts_to_jsonable(atts: Dict[int, torch.Tensor]) -> Dict[int, list]:
     return {int(g): a.detach().cpu().view(-1).tolist() for g, a in atts.items()}
 
 
+# Explainers whose per-node attribution is a property of the VANILLA model + graph
+# only (not the vocabulary), so a run under a different fragmentation can REUSE the
+# saved atts verbatim instead of a fresh (stochastic) refit. Motif-Occlusion and MAGE
+# are motif-level / vocab-dependent and are always recomputed.
+_REUSE_METHODS = ('gnnexplainer', 'pgexplainer')
+
+
+def _load_reused_atts(reuse_dir, split: str, ex: str, sl) -> Dict[int, torch.Tensor]:
+    """Load one explainer's per-node atts for one split from a PREVIOUSLY-SAVED
+    ``explainer_importances.json`` — a run on the SAME vanilla checkpoint under a
+    DIFFERENT vocabulary. The atts are per-ATOM and vocab-independent, so they are
+    reused verbatim and only the motif aggregation (via the current vocab) differs;
+    this is what lets the post-hoc explainers be scored on a new fragmentation WITHOUT
+    a stochastic refit. Alignment is asserted per graph (atom count must equal the
+    current split graph) — a mismatch means the molecule ordering drifted, so we FAIL
+    LOUD rather than silently mis-map. Returns {} when the split/method key is absent."""
+    p = Path(reuse_dir) / 'explainer_importances.json'
+    if not p.exists():
+        raise FileNotFoundError(f'reuse_atts: no explainer_importances.json at {p}')
+    by_split = (json.loads(p.read_text()).get('importances_by_split') or {})
+    raw = (by_split.get(split) or {}).get(ex) or {}
+    atts: Dict[int, torch.Tensor] = {}
+    for gk, vals in raw.items():
+        gi = int(gk)
+        if gi >= len(sl):
+            raise RuntimeError(
+                f'reuse_atts {ex}/{split}: graph index {gi} >= split size {len(sl)} '
+                f'(ordering mismatch between the reused run and this vocab).')
+        n = int(sl[gi].num_nodes)
+        if len(vals) != n:
+            raise RuntimeError(
+                f'reuse_atts {ex}/{split}: graph {gi} atom count {len(vals)} != {n} '
+                f'(molecule ordering drifted between vocabularies; refuse to mis-map).')
+        atts[gi] = torch.tensor(vals, dtype=torch.float32)
+    return atts
+
+
 def evaluate_posthoc_all_splits(
     model, vocab, loaders, split_lists: Dict[str, list],
     gt_split_lists: Dict[str, Optional[list]],
@@ -577,6 +614,7 @@ def evaluate_posthoc_all_splits(
     method_names=('gnnexplainer', 'motif_occlusion', 'mage_v2', 'pgexplainer'),
     mage_positive_class: Optional[int] = None, save_artifacts: bool = True,
     batch_size: int = 256, unk_mode: Optional[str] = None,
+    reuse_atts_dir=None,
 ) -> Dict[str, Dict[str, dict]]:
     """Per-split (train/valid/test) evaluation for the 4 post-hoc explainers on a
     Vanilla backbone. Trainable explainers are FIT ONCE on TRAIN (MAGE attention;
@@ -585,6 +623,14 @@ def evaluate_posthoc_all_splits(
     each split. Correlations use the AGNOSTIC (uniform-weight LOO) impact as the
     y-axis; GT-ROC grades the explainer's own attribution. Writes the per-split +
     pooled files + explainer_importances.json (all splits) and returns the summary.
+
+    ``reuse_atts_dir`` (optional): a run dir holding a saved explainer_importances.json
+    from a run on the SAME vanilla checkpoint under a DIFFERENT vocabulary. When set,
+    GNNExplainer/PGExplainer are NOT refit — their per-atom atts are loaded from there
+    and only re-aggregated to THIS vocab's motifs (see _load_reused_atts). Motif-Occlusion
+    (and MAGE, if requested) are still recomputed. This is the mechanism for scoring the
+    post-hoc explainers on a new fragmentation without a stochastic refit that would
+    confound the vocab comparison.
     """
     from ..baselines.gnn_explainer_batched import run_gnnexplainer_batched  # GPU-batched
     from ..baselines.motif_occlusion import run_motif_occlusion_batched     # GPU-batched
@@ -680,11 +726,29 @@ def evaluate_posthoc_all_splits(
             model, vocab, sl, device, task_type,
             cache_path=out_dir / f'impact_cache_agnostic_{split}.json')
         for ex in method_names:
-            scores, atts = _score_explainer(ex, sl)
-            if not scores.get('mean'):
-                summary[ex][split] = dict(pred_flat)   # no explainer signal here
-                continue
-            sc = scores['mean']
+            if reuse_atts_dir is not None and ex in _REUSE_METHODS:
+                # REUSE path: per-node atts come from a saved run on the SAME vanilla
+                # checkpoint under a different vocab (no refit). Motif scores are the
+                # per-motif mean of those atts under THIS vocab's mask cache — the same
+                # reduction _score_explainer would return, so everything downstream is
+                # identical to the fitted path.
+                atts = _load_reused_atts(reuse_atts_dir, split, ex, sl)
+                if not atts:
+                    summary[ex][split] = dict(pred_flat)   # no saved atts for this cell
+                    continue
+                _sccache = build_motif_score_cache_from_atts(
+                    atts, build_graph_mask_cache(sl))
+                sc = {int(m): float(np.mean(list(gm.values())))
+                      for m, gm in _sccache.items() if gm}
+                if not sc:
+                    summary[ex][split] = dict(pred_flat)
+                    continue
+            else:
+                scores, atts = _score_explainer(ex, sl)
+                if not scores.get('mean'):
+                    summary[ex][split] = dict(pred_flat)   # no explainer signal here
+                    continue
+                sc = scores['mean']
             # grouped + instance derived from the SHARED agnostic cache (no re-LOO).
             grouped_rows = _grouped_rows_from_cache(agn_cache, sc, vocab)
             inst = _instance_from_cache(agn_cache, (atts or None), sl)

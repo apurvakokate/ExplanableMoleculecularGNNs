@@ -542,6 +542,44 @@ def gtroc_all(att_by_i, gl, keep_fn):
 # WRITERS (inline — EXACT schema of split_eval, so build_metric_set reads them)
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _w_pergraph(d, stem, split, sc_cache, ic_cache, kept, unk):
+    """Raw per-(motif, graph) explainer score + leave-one-out impact -- the data for choosing
+    an impact-variability metric.  score = mean per-node attribution over the motif's atoms in
+    that graph; impact = |delta sigma(logit)| when the motif is removed from that graph."""
+    rows = []
+    for mid in (set(ic_cache) | set(sc_cache)):
+        if unk == 'exclude' and kept is not None and int(mid) not in kept:
+            continue
+        sc, ic = sc_cache.get(mid, {}), ic_cache.get(mid, {})
+        for gi in (set(sc) | set(ic)):
+            rows.append(dict(motif_id=int(mid), graph_id=int(gi),
+                             score=float(sc.get(gi, float('nan'))),
+                             impact=float(ic.get(gi, float('nan')))))
+    pd.DataFrame(rows, columns=['motif_id', 'graph_id', 'score', 'impact']).to_csv(
+        d / f'{stem}_pergraph_{split}.csv', index=False)
+
+
+def _impact_variability(ic_cache, kept, unk):
+    """Per-motif spread of leave-one-out impact across the graphs it appears in, aggregated.
+    impact_std_mean = mean over motifs of std(per-graph impact); impact_cv_mean = mean of the
+    coefficient of variation (std/|mean|, scale-free).  A more CONSISTENT motif spreads less."""
+    stds, cvs, n = [], [], 0
+    for mid, per in ic_cache.items():
+        if unk == 'exclude' and kept is not None and int(mid) not in kept:
+            continue
+        v = np.array([x for x in per.values() if x == x], float)
+        if len(v) < 2:
+            continue
+        sd, mu = float(np.std(v)), float(np.mean(v))
+        stds.append(sd)
+        if abs(mu) > 1e-9:
+            cvs.append(sd / abs(mu))
+        n += 1
+    return {'impact_std_mean': float(np.mean(stds)) if stds else float('nan'),
+            'impact_cv_mean': float(np.mean(cvs)) if cvs else float('nan'),
+            'n_motifs_var': n}
+
+
 def _w_importance(d, stem, split, rows):
     if rows:
         pd.DataFrame([{'motif_id': r['motif_id'], 'score': r['score'],
@@ -681,29 +719,6 @@ def _load_vanilla(run_dir, meta, dmeta, device):
     return model.to(device).eval()
 
 
-def mage_reload_atts(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, task_type):
-    """mage_v2 per-node atts by RELOADING the saved mage_attention.pt (NO re-fit) and re-scoring
-    attention_mean, then broadcasting to nodes. Needed because posthoc_v1 persisted mage_official
-    (label-leaking) atts to explainer_importances.json, not mage_v2. {split: {gi: np atts}}."""
-    from SharedModules.baselines.mage import _MotifAttention, score_mage
-    from SharedModules.evaluation.split_eval import _pi_to_node_atts
-    p = Path(art_dir) / 'mage_attention.pt'
-    if not p.exists():
-        return {s: {} for s in SPLITS}
-    sd = _torch_load_retry(p, map_location='cpu', weights_only=False)
-    attn = _MotifAttention(sd['W.weight'].shape[0])
-    attn.load_state_dict(sd)
-    attn = attn.to(device).eval()
-    model = _load_vanilla(run_dir, meta, dmeta, device)
-    out = {}
-    for s in SPLITS:
-        sl = split_lists.get(s) or []
-        _, pi = score_mage(model, attn, sl, vocab, device, task_type, return_per_instance=True,
-                           verbose=False, score_mode='attention_mean', embed_batch_size=256)
-        out[s] = {gi: _np1(a) for gi, a in _pi_to_node_atts(pi, sl).items()}
-    return out
-
-
 def _gtroc_summary(att_by_split, gt, split_lists, keep, unk):
     """{split: {instance_gt_roc_node_auc_mean, global_gt_roc_node_auc_mean, gt_roc_node_auc_mean}}.
     att_by_split[s] keyed by split-list index; realign to the GT graph list per split."""
@@ -735,6 +750,7 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
     do_gtroc = args.gt_tier in ('source', 'planted')
 
     rows_by_split, inst_by_split, summary = {}, {}, {}
+    pergraph_by_split = {}          # s -> (score_cache, impact_cache) for the raw per-graph dump
     motif_list = getattr(vocab, 'motif_list', [])
 
     if method in NATIVE:
@@ -772,18 +788,16 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
             sc_cache = score_cache_from_atts(att_by_split.get(s, {}), sl)
             ic_cache = {mid: imp[mid]['per'] for mid in imp}
             inst_by_split[s] = instance_corr(sc_cache, ic_cache, kept, args.unk)
+            pergraph_by_split[s] = (sc_cache, ic_cache)
             pred = evaluate_predictions(model, loaders[s], device, tt, denorm=_denorm(dmeta, tt))
             summary[s] = {'auc': pred.get('auc', pred.get('auc_mean', float('nan'))),
                           'rmse': pred.get('rmse', float('nan')), 'mae': pred.get('mae', float('nan')),
                           'rmse_orig': pred.get('rmse_orig', float('nan')),
                           'mae_orig': pred.get('mae_orig', float('nan'))}
+            summary[s].update(_impact_variability(ic_cache, kept, args.unk))
     else:  # POST-HOC — read saved artifacts, no model, no re-run
         by_split = read_pooled_rows(art_dir, stem)
         att_by_split = read_saved_atts(art_dir, stem)
-        if method == 'mage' and do_gtroc and not any(att_by_split.get(s) for s in SPLITS):
-            # producer saved mage_official atts, not mage_v2 -> reconstruct via saved attention
-            att_by_split = mage_reload_atts(run_dir, art_dir, meta, dmeta, vocab,
-                                            split_lists, device, tt)
         pred_by_split = read_producer_pred(art_dir, stem)
         for s in SPLITS:
             rows = by_split.get(s, [])
@@ -795,7 +809,9 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
                 ic_cache = {m: gm for m, gm in ic_cache.items() if m in kept}
             sc_cache = score_cache_from_atts(att_by_split.get(s, {}), split_lists.get(s, []))
             inst_by_split[s] = instance_corr(sc_cache, ic_cache, kept, args.unk)
+            pergraph_by_split[s] = (sc_cache, ic_cache)
             summary[s] = dict(pred_by_split.get(s, {}))
+            summary[s].update(_impact_variability(ic_cache, kept, args.unk))
 
     if do_gtroc:
         for s, g in _gtroc_summary(att_by_split, gt, split_lists, keep, args.unk).items():
@@ -806,6 +822,8 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
     for s in SPLITS:
         _w_importance(dest_dir, stem, s, rows_by_split.get(s, []))
         _w_impact(dest_dir, stem, s, rows_by_split.get(s, []))
+        if s in pergraph_by_split:
+            _w_pergraph(dest_dir, stem, s, *pergraph_by_split[s], kept, args.unk)
     _w_grouped(dest_dir, stem, rows_by_split)
     _w_instance(dest_dir, stem, inst_by_split)
     _w_global(dest_dir, stem, rows_by_split)
@@ -828,6 +846,8 @@ def eval_run(method, run_dir, art_dir, meta, args, device, kept, dest_dir):
                 spurious_roc=(max(_spur) if _spur else float('nan')),
                 n_spurious=len(_spur),
                 family_roc=tsum.get('family_roc_node_auc_mean', float('nan')),
+                impact_std_mean=tsum.get('impact_std_mean', float('nan')),
+                impact_cv_mean=tsum.get('impact_cv_mean', float('nan')),
                 pred_auc=tsum.get('auc', float('nan')))
 
 
@@ -921,6 +941,14 @@ def main():
     ap.add_argument('--method', required=True, choices=sorted(POSTHOC | NATIVE))
     ap.add_argument('--dataset', required=True)
     ap.add_argument('--vocab', required=True, help='e.g. rbrics (rbrics_filter selects MoSE-filter)')
+    ap.add_argument('--weight_vocab', default=None,
+                    help='NATIVE reuse: the vocabulary the MODEL was TRAINED under, when it '
+                         'differs from --vocab (the EVAL vocab). Run discovery + weight loading '
+                         'use --weight_vocab; loaders, kept-set, GT-ROC and dest use --vocab. Lets '
+                         'a vocab-independent native explainer (GSAT) trained on one fragmentation '
+                         'be scored on another WITHOUT retraining. Default None = --vocab. Refused '
+                         'for MoSE (motif-gated head is sized by the vocab) and for post-hoc '
+                         '(use eval_driver_posthoc --reuse_atts_dir).')
     ap.add_argument('--gt_tier', required=True, choices=['none', 'source', 'planted'])
     ap.add_argument('--unk', required=True, choices=['include', 'exclude'])
     ap.add_argument('--unk_mode', default='any', choices=['any', 'fixed', 'learnable_shared'],
@@ -950,10 +978,22 @@ def main():
 
     if args.method in POSTHOC and not args.artifacts_root:
         raise SystemExit('post-hoc methods READ saved atts/CSVs — pass --artifacts_root (e.g. posthoc_v1)')
+    if args.weight_vocab and args.method == 'mose':
+        raise SystemExit('--weight_vocab is not valid for MoSE: its motif-gated head is sized by '
+                         'the vocabulary, so a model trained on one fragmentation cannot be scored '
+                         'on another. GSAT (vocab-independent) only.')
+    if args.weight_vocab and args.method in POSTHOC:
+        raise SystemExit('--weight_vocab is for NATIVE reuse; post-hoc reuse is handled by '
+                         'eval_driver_posthoc --reuse_atts_dir.')
     device = torch.device('cuda' if (args.device == 'cuda'
                           or (args.device == 'auto' and torch.cuda.is_available())) else 'cpu')
-    want_base = _base_vocab(args.vocab)
+    want_base = _base_vocab(args.vocab)               # EVAL vocab (loaders/kept/GT/dest)
     want_filter = args.vocab.endswith('_filter')
+    # Run discovery + weight loading key on the WEIGHT vocab (the vocab the model was trained
+    # under). Without --weight_vocab this equals the eval vocab, so behaviour is unchanged.
+    _wt_vocab = args.weight_vocab or args.vocab
+    want_base_wt = _base_vocab(_wt_vocab)
+    want_filter_wt = _wt_vocab.endswith('_filter')
 
     print(f'method={args.method} dataset={args.dataset} vocab={args.vocab} '
           f'gt_tier={args.gt_tier} unk={args.unk} device={device}')
@@ -967,7 +1007,7 @@ def main():
     for run_dir, meta in _iter_runs(args.ckpt_root, FAMILY_DIR[args.method], args.dataset):
 
         v = str(meta.get('vocab_variant', ''))
-        if _base_vocab(v) != want_base or v.endswith('_filter') != want_filter:
+        if _base_vocab(v) != want_base_wt or v.endswith('_filter') != want_filter_wt:
             continue
         if _run_tier(meta, run_dir) != args.gt_tier:
             continue
@@ -1009,7 +1049,15 @@ def main():
                     raise ValueError(f"no per-fold kept for {args.dataset} fold {meta.get('fold')}")
                 kept = set(int(x) for x in kept)
 
-            m = eval_run(args.method, run_dir, art_dir, meta, args, device, kept, dest_dir)
+            # NATIVE reuse: the run was discovered by its WEIGHT vocab, but loaders / GT / motif
+            # aggregation must use the EVAL vocab. Override the vocab keys on a meta copy so
+            # build_gt_loaders reads the eval vocab from --vocab_root; the model itself (arch from
+            # meta, weights from run_dir) is vocab-independent (GSAT) so it loads unchanged.
+            eval_meta = meta
+            if args.weight_vocab:
+                eval_meta = {**meta, 'vocab_variant': want_base,
+                             'gt_vocab_variant': want_base}
+            m = eval_run(args.method, run_dir, art_dir, eval_meta, args, device, kept, dest_dir)
             out_rows.append(dict(
                 dataset=args.dataset, method=args.method, backbone=meta.get('backbone'),
                 fold=meta.get('fold'), vocab=args.vocab, gt_rule=_gt_rule(meta, run_dir),

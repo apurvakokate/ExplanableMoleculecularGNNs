@@ -79,7 +79,8 @@ def process(run_dir, meta, args, device):
         model, vocab, loaders, split_lists, gt, device, task_type,
         denorm_of(dmeta, task_type), out_dir, args.max_motifs_eval,
         dataset=meta['dataset'], batch_size=args.batch_size,
-        method_names=method_names, unk_mode=args.unk_mode)
+        method_names=method_names, unk_mode=args.unk_mode,
+        reuse_atts_dir=(Path(args.reuse_atts_dir) if args.reuse_atts_dir else None))
 
 
 def main():
@@ -117,6 +118,14 @@ def main():
                          'single cell (so a slow PGExplainer unit fits inside the wall '
                          'limit) without depending on iter_runs ordering the way '
                          '--shard does.')
+    ap.add_argument('--reuse_atts_dir', default=None,
+                    help='ABS path to a run dir with a saved explainer_importances.json '
+                         'from a run on the SAME vanilla checkpoint under a DIFFERENT vocab. '
+                         'When set, GNNExplainer/PGExplainer REUSE those per-atom atts (no '
+                         'stochastic refit); only the motif aggregation uses the current '
+                         'vocab. Motif-Occlusion still runs fresh (vocab-dependent, '
+                         'training-free). Requires --only so the reuse dir matches that exact '
+                         '(dataset,fold,backbone).')
     ap.add_argument('--families', nargs='*', default=None,
                     help="model families to include (default: baselines ONLY). This is "
                          "the post-hoc/baselines re-eval; vanilla is excluded unless "
@@ -159,6 +168,12 @@ def main():
     only = Path(args.only).resolve() if args.only else None
     if only is not None and not only.is_dir():
         raise SystemExit(f'--only: not a directory: {only}')
+    if args.reuse_atts_dir:
+        if only is None:
+            raise SystemExit('--reuse_atts_dir requires --only (one cell, so the reuse dir '
+                             'matches that exact dataset/fold/backbone).')
+        if not Path(args.reuse_atts_dir).is_dir():
+            raise SystemExit(f'--reuse_atts_dir: not a directory: {args.reuse_atts_dir}')
 
     ok = failed = skipped_only = 0
     for run_dir, meta, fam in iter_runs(args.out_root, fams,
