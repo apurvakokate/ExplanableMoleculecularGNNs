@@ -1,50 +1,50 @@
 #!/usr/bin/env python3
-r"""build_planted_gtroc_table.py — planted GT-ROC LaTeX table from evaluate_gtroc.py CSVs.
+r"""build_planted_gtroc_table.py — planted GT-ROC / Spurious-ROC / Family-ROC LaTeX tables from
+evaluate_gtroc.py CSVs.
 
 INPUT  : mose_replication_v2/gtroc_paper_artifacts/planted/<ds>/<rule>/<method>.csv
-         (produced by analysis/evaluate_gtroc.py; one row per backbone x fold, columns
-          gtroc_{full,filt}_{train,valid,test,all}).
-VALUE  : gtroc_filt_all  -- exclude-unk (kept vocabulary; all methods share one motif set),
-         pooled over train+valid+test (matches the source-GT table tab:gtroc-tvt convention).
-AGG    : per rule -> fold-average; per (dataset, backbone, method) -> mean +/- std over the
-         50 rules (each rule fold-averaged), x100, 1 dp.
-LAYOUT : rows = {BBBP, Mutagenicity, hERG} x {GCN, GAT, SAGE, PNA};
-         cols = GNNExpl, PGExpl, MAGE, Occlusion, GSAT, MOSE.  No GIN, no MOSE_unk
-         (mose_learnable_shared produced 0 planted rows -> not available).
-SIG    : per (dataset, backbone), best mean in \boldmath; methods NOT significantly worse than
-         the best (Welch two-sided t-test over the 50 rule values, Holm across the other methods,
-         alpha=0.05) in \underline.
-OUTPUT : <out>/planted_gtroc.tex  and  <out>/planted_gtroc_agg.csv  (validation: per-cell
-         mean/std/n plus the Full-all counterpart for a Full-vs-Filt sanity check).
-         Nothing existing is overwritten; both land under gtroc_paper_artifacts/tables/.
+         (one row per backbone x fold; columns gtroc_{full,filt}_{...}, spur_{full,filt}_{...},
+          fam_{full,filt}_{...}).
+AGG    : per rule -> fold-average; per (dataset, backbone, method) -> mean +/- std over the 50
+         rules, x100, 1 dp. Significance via analysis.table_sig (Welch two-sided + Holm), the SAME
+         module the source-GT table uses. GT-ROC: higher is better (bold=max). Spurious/Family-ROC:
+         lower is better (bold=min).
+
+TABLES (all under <out>/, nothing existing overwritten):
+  planted_gtroc.tex    : tab:planted_gtroc  -- Dataset x BB x Vocab{Filt,Full} rows, value gtroc_*_all.
+  planted_spurroc.tex  : tab:planted_spurroc -- Dataset x BB rows (exclude-unk / spur_filt_all), with a
+                         per-dataset column r_bar_sp = mean_std of the strongest planted confounder's
+                         correlation over the 50 rules, read from rule_tiers.json (NOT the eval run).
+  planted_famroc.tex   : tab:planted_famroc -- Dataset x BB rows (exclude-unk / fam_filt_all).
+  planted_gtroc_agg.csv: per-cell mean/std/n for gtroc/spur/fam, Filt + Full (validation).
 """
 import argparse
 import glob
+import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# reuse the EXACT significance module the source-GT table (tab:gtroc-tvt) uses -> identical
-# Welch two-sided + Holm step-down (best bold, not-sig-worse underlined). Sample unit here is
-# the 50 per-rule values (vs 5 folds for the source-GT table); the test itself is unchanged.
 try:
     from analysis import table_sig as ts
 except ImportError:                      # when run from inside analysis/
     import table_sig as ts
 
-VALUE = 'gtroc_filt_all'
-AUX = 'gtroc_full_all'                 # reported in the validation CSV only (Full vs Filt gap)
 DATASETS = ['BBBP', 'Mutagenicity', 'hERG']
 BACKBONES = ['GCN', 'GAT', 'SAGE', 'PNA']
 # (display label, method-file stem)
 METHODS = [('GNNExpl.', 'gnnexplainer'), ('PGExpl.', 'pgexplainer'), ('MAGE', 'mage'),
            ('Occlusion', 'motif_occlusion'), ('GSAT', 'gsat'), ('MOSE', 'mose_fixed')]
 ALPHA = 0.05
+# value columns pulled from each per-cell CSV (the pooled "all" split, both conditions)
+COLS = ['gtroc_filt_all', 'gtroc_full_all', 'spur_filt_all', 'spur_full_all',
+        'fam_filt_all', 'fam_full_all']
 
 
 def load(root):
-    """Long frame: one row per (dataset, rule, method-stem, backbone, fold, value_col)."""
+    """Long frame: one row per (dataset, rule, method-stem, backbone, fold) with every value col."""
     rows = []
     stems = sorted({m[1] for m in METHODS})
     for ds in DATASETS:
@@ -56,34 +56,29 @@ def load(root):
                 except Exception:
                     continue
                 for _, r in df.iterrows():
-                    rows.append(dict(
-                        dataset=ds, rule=rule, method=stem, backbone=str(r.get('backbone')),
-                        fold=r.get('fold'),
-                        filt=pd.to_numeric(pd.Series([r.get(VALUE)]), errors='coerce').iloc[0],
-                        full=pd.to_numeric(pd.Series([r.get(AUX)]), errors='coerce').iloc[0]))
+                    rec = dict(dataset=ds, rule=rule, method=stem,
+                               backbone=str(r.get('backbone')), fold=r.get('fold'))
+                    for c in COLS:
+                        rec[c] = pd.to_numeric(pd.Series([r.get(c)]), errors='coerce').iloc[0]
+                    rows.append(rec)
     return pd.DataFrame(rows)
 
 
-def rule_vector(df, ds, bb, stem, col='filt'):
-    """The 50 per-rule values (each rule fold-averaged), NaNs dropped."""
+def rule_vector(df, ds, bb, stem, col):
+    """The 50 per-rule values (each rule fold-averaged) for one value column, NaNs dropped."""
     sub = df[(df.dataset == ds) & (df.backbone == bb) & (df.method == stem)]
-    if sub.empty:
+    if sub.empty or col not in sub.columns:
         return np.array([])
-    v = sub.groupby('rule')[col].mean().dropna().values
-    return np.asarray(v, float)
+    return np.asarray(sub.groupby('rule')[col].mean().dropna().values, float)
 
 
 def fmt(mean, std):
     return f'{mean * 100:.1f}_{{{std * 100:.1f}}}'
 
 
-CONDITIONS = [('filt', 'Filt'), ('full', 'Full')]   # exclude-unk / include-unk, both pooled tvt
-
-
-def _row_cells(df, ds, bb, col):
-    r"""One table row for a Vocab condition. Best/tie decided by analysis.table_sig.decide (the
-    SAME Welch two-sided + Holm used by tab:gtroc-tvt); unit = the 50 per-rule values. Best ->
-    \boldmath, not-significantly-worse -> \underline, via table_sig.wrap(style='bold_underline')."""
+def _row_cells(df, ds, bb, col, higher_better):
+    """One table row for a value column; best/tie via table_sig (Welch+Holm). higher_better=True for
+    GT-ROC (bold=max), False for Spurious/Family-ROC (bold=min). bold=\\boldmath, tie=\\underline."""
     cells = []
     for _, stem in METHODS:
         v = rule_vector(df, ds, bb, stem, col)
@@ -91,7 +86,7 @@ def _row_cells(df, ds, bb, col):
                           mean=(float(v.mean()) if v.size else float('nan')),
                           std=(float(v.std(ddof=1)) if v.size > 1 else 0.0),
                           n=int(v.size)))
-    tags = ts.decide(cells, higher_better=True, alpha=ALPHA)
+    tags = ts.decide(cells, higher_better=higher_better, alpha=ALPHA)
     out = []
     for c in cells:
         if not np.isfinite(c['mean']):
@@ -102,24 +97,41 @@ def _row_cells(df, ds, bb, col):
     return out
 
 
-def build_tex(df):
-    """Mirror the source-GT table tab:gtroc-tvt: rows = Dataset x BB x Vocab{Filt,Full},
-    columns = explainers, cell = mean_{std} x100. Bold/underline computed per row (condition)."""
+# ── r_bar_sp : strongest-confounder correlation, averaged over the 50 rules (read, not evaluated) ──
+def r_sp_bar(planted_root, ds):
+    """(mean, std, n) of spurious_pos[0]['corr'] over the rules in rule_tiers.json. spurious_pos is
+    stored corr-descending (rule_dnf.py), so entry 0 is the strongest confounder for that rule."""
+    p = Path(planted_root) / ds / '_shared' / 'vocab' / ds / 'rbrics' / 'rule_tiers.json'
+    if not p.exists():
+        return (float('nan'), 0.0, 0)
+    d = json.loads(p.read_text())
+    vals = []
+    for _rule, spec in d.items():
+        sp = (spec or {}).get('spurious_pos') or []
+        if sp and 'corr' in sp[0]:
+            vals.append(float(sp[0]['corr']))
+    vals = [v for v in vals if v == v]
+    if not vals:
+        return (float('nan'), 0.0, 0)
+    return (float(np.mean(vals)), float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0, len(vals))
+
+
+# ── GT-ROC table: Dataset x BB x Vocab{Filt,Full}, explainer cols, bold=max ──
+CONDITIONS = [('gtroc_filt_all', 'Filt'), ('gtroc_full_all', 'Full')]
+
+
+def build_gtroc_tex(df):
     ncol = len(METHODS)
-    lastcol = 3 + ncol                                   # Dataset, BB, Vocab + methods
+    lastcol = 3 + ncol
     rows_per_ds = len(BACKBONES) * len(CONDITIONS)
-    L = []
-    L.append('% planted GT-ROC (instance); Filt=gtroc_filt_all (exclude-unk), Full=gtroc_full_all')
-    L.append('% (include-unk); both pooled train+valid+test. cell = mean_{std} x100 (1 dp);')
-    L.append('% unit=rule (50 rules, each fold-averaged). Matches tab:gtroc-tvt layout.')
-    L.append('\\begin{tabular}{lll' + 'c' * ncol + '}')
-    L.append('\\toprule')
-    L.append('Dataset & BB & Vocab & ' + ' & '.join(lbl for lbl, _ in METHODS) + ' \\\\')
-    L.append('\\midrule')
+    L = ['% planted GT-ROC (instance); Filt=exclude-unk, Full=include-unk; both pooled tvt.',
+         '% cell = mean_{std} x100 (1 dp); unit=rule (50 rules, each fold-averaged).',
+         '\\begin{tabular}{lll' + 'c' * ncol + '}', '\\toprule',
+         'Dataset & BB & Vocab & ' + ' & '.join(lbl for lbl, _ in METHODS) + ' \\\\', '\\midrule']
     for di, ds in enumerate(DATASETS):
         for bi, bb in enumerate(BACKBONES):
             for ci, (col, clab) in enumerate(CONDITIONS):
-                cells = _row_cells(df, ds, bb, col)
+                cells = _row_cells(df, ds, bb, col, higher_better=True)
                 if bi == 0 and ci == 0:
                     lead = f'\\multirow{{{rows_per_ds}}}{{*}}{{{ds}}} & \\multirow{{2}}{{*}}{{{bb}}} & {clab}'
                 elif ci == 0:
@@ -131,22 +143,78 @@ def build_tex(df):
                 L.append(f'\\cmidrule(l){{2-{lastcol}}}')
         if di != len(DATASETS) - 1:
             L.append('\\midrule')
-    L.append('\\bottomrule')
-    L.append('\\end{tabular}')
+    L += ['\\bottomrule', '\\end{tabular}']
     return '\n'.join(L)
 
 
-CAPTION = (
+# ── Spurious-ROC table: Dataset x r_bar_sp x BB, explainer cols, bold=min, one row per bb ──
+def build_spurroc_tex(df, planted_root):
+    ncol = len(METHODS)
+    L = ['% planted Spurious-ROC; cell = mean_{std} x100 (1 dp); unk=exclude; unit=rule; lower better',
+         '\\begin{tabular}{lll' + 'c' * ncol + '}', '\\toprule',
+         'Dataset & $\\bar r_{sp}$ & BB & ' + ' & '.join(lbl for lbl, _ in METHODS) + ' \\\\',
+         '\\midrule']
+    for di, ds in enumerate(DATASETS):
+        m, sd, _n = r_sp_bar(planted_root, ds)
+        rsp = f'${m:.2f}_{{{sd:.2f}}}$' if m == m else '--'
+        for bi, bb in enumerate(BACKBONES):
+            cells = _row_cells(df, ds, bb, 'spur_filt_all', higher_better=False)
+            if bi == 0:
+                lead = (f'\\multirow{{{len(BACKBONES)}}}{{*}}{{{ds}}} & '
+                        f'\\multirow{{{len(BACKBONES)}}}{{*}}{{{rsp}}} & {bb}')
+            else:
+                lead = f' &  & {bb}'
+            L.append(f'{lead} & ' + ' & '.join(cells) + ' \\\\')
+        if di != len(DATASETS) - 1:
+            L.append('\\midrule')
+    L += ['\\bottomrule', '\\end{tabular}']
+    return '\n'.join(L)
+
+
+# ── Family-ROC table: Dataset x BB, explainer cols, bold=min, one row per bb (no r_bar_sp) ──
+def build_famroc_tex(df):
+    ncol = len(METHODS)
+    L = ['% planted Family-ROC; cell = mean_{std} x100 (1 dp); unk=exclude; unit=rule; lower better',
+         '\\begin{tabular}{ll' + 'c' * ncol + '}', '\\toprule',
+         'Dataset & BB & ' + ' & '.join(lbl for lbl, _ in METHODS) + ' \\\\', '\\midrule']
+    for di, ds in enumerate(DATASETS):
+        for bi, bb in enumerate(BACKBONES):
+            cells = _row_cells(df, ds, bb, 'fam_filt_all', higher_better=False)
+            lead = f'\\multirow{{{len(BACKBONES)}}}{{*}}{{{ds}}} & {bb}' if bi == 0 else f' & {bb}'
+            L.append(f'{lead} & ' + ' & '.join(cells) + ' \\\\')
+        if di != len(DATASETS) - 1:
+            L.append('\\midrule')
+    L += ['\\bottomrule', '\\end{tabular}']
+    return '\n'.join(L)
+
+
+GTROC_CAP = (
     'Instance GT-ROC between motif attribution and the planted cause, pooled over '
     'train+valid+test (graph-weighted), $\\times100$; subscript $=$ std over the 50 rules '
-    '(each rule fold-averaged), per (dataset, backbone). The \\textbf{Vocab} column gives the '
-    'evaluation setting: \\textbf{Filt} (exclude-unk) restricts to kept-motif nodes so all '
-    'methods share one motif set, \\textbf{Full} (include-unk) scores all-node recovery. Per '
-    '(dataset, backbone) and within each condition, the best is in \\textbf{bold} and methods '
-    'not significantly worse (Welch two-sided $t$-test over the 50 rule values, Holm, '
-    '$\\alpha{=}0.05$) are \\underline{underlined}. The GIN backbone and a learnable-unknown '
-    'MoSE arm (MOSE$_{unk}$) were not trained in this campaign; PGExplainer entries rest on its '
-    'available valid rules.')
+    '(each rule fold-averaged), per (dataset, backbone). The \\textbf{Vocab} column: \\textbf{Filt} '
+    '(exclude-unk) restricts to kept-motif nodes so all methods share one motif set, \\textbf{Full} '
+    '(include-unk) scores all-node recovery. Per (dataset, backbone) and within each condition, the '
+    'best is in \\textbf{bold} and methods not significantly worse (Welch two-sided $t$-test over the '
+    '50 rule values, Holm, $\\alpha{=}0.05$) are \\underline{underlined}. The GIN backbone and a '
+    'learnable-unknown MoSE arm (MOSE$_{unk}$) were not trained in this campaign.')
+SPUR_CAP = (
+    'Spurious-ROC between motif attribution and the planted cause, \\emph{lower is better}, '
+    '$\\times100$; subscript $=$ std over the 50 rules (each rule fold-averaged), per (dataset, '
+    'backbone). Evaluated on the kept vocabulary (\\emph{exclude-unk}), so all methods share one '
+    'motif set. Per (dataset, backbone) the best (lowest) is in \\textbf{bold} and methods not '
+    'significantly worse (Welch two-sided $t$-test over the 50 rule values, Holm, $\\alpha{=}0.05$) '
+    'are \\underline{underlined}. The per-dataset column $\\bar r_{sp}$ gives the mean$_{std}$ '
+    'strength of the strongest planted confounder over the 50 rules (the correlation a shortcut '
+    'could exploit). The GIN backbone and a learnable-unknown MoSE arm (MOSE$_{unk}$) were not '
+    'trained in this campaign.')
+FAM_CAP = (
+    'Family-ROC between motif attribution and the planted cause, \\emph{lower is better}, '
+    '$\\times100$; subscript $=$ std over the 50 rules (each rule fold-averaged), per (dataset, '
+    'backbone). Evaluated on the kept vocabulary (\\emph{exclude-unk}), so all methods share one '
+    'motif set. Per (dataset, backbone) the best (lowest) is in \\textbf{bold} and methods not '
+    'significantly worse (Welch two-sided $t$-test over the 50 rule values, Holm, $\\alpha{=}0.05$) '
+    'are \\underline{underlined}. The GIN backbone and a learnable-unknown MoSE arm (MOSE$_{unk}$) '
+    'were not trained in this campaign.')
 
 
 def floatwrap(body, caption, label):
@@ -154,21 +222,18 @@ def floatwrap(body, caption, label):
             f'\n\\caption{{{caption}}}\n\\label{{{label}}}\n\\end{{table*}}\n')
 
 
-def build_agg_csv(df):
-    """Per-cell aggregate for validation: mean/std/n for both Filt-all and Full-all."""
+def build_agg_csv(df, planted_root):
     out = []
     for ds in DATASETS:
         for bb in BACKBONES:
             for lbl, stem in METHODS:
-                vf = rule_vector(df, ds, bb, stem, 'filt')
-                vfu = rule_vector(df, ds, bb, stem, 'full')
-                out.append(dict(
-                    dataset=ds, backbone=bb, method=lbl, stem=stem,
-                    n_rules=int(vf.size),
-                    filt_all_mean=round(float(vf.mean()) * 100, 2) if vf.size else np.nan,
-                    filt_all_std=round(float(vf.std(ddof=1)) * 100, 2) if vf.size > 1 else 0.0,
-                    full_all_mean=round(float(vfu.mean()) * 100, 2) if vfu.size else np.nan,
-                    full_all_std=round(float(vfu.std(ddof=1)) * 100, 2) if vfu.size > 1 else 0.0))
+                rec = dict(dataset=ds, backbone=bb, method=lbl, stem=stem)
+                for c in COLS:
+                    v = rule_vector(df, ds, bb, stem, c)
+                    rec[f'{c}_mean'] = round(float(v.mean()) * 100, 2) if v.size else np.nan
+                    rec[f'{c}_std'] = round(float(v.std(ddof=1)) * 100, 2) if v.size > 1 else 0.0
+                    rec[f'{c}_n'] = int(v.size)
+                out.append(rec)
     return pd.DataFrame(out)
 
 
@@ -177,6 +242,9 @@ def main():
     ap.add_argument('--root', required=True,
                     help='gtroc_paper_artifacts/planted (reads <root>/<ds>/<rule>/<method>.csv)')
     ap.add_argument('--out', required=True, help='output dir (created; nothing overwritten)')
+    ap.add_argument('--planted_root', required=True,
+                    help='planted_v2 base (reads <ds>/_shared/vocab/<ds>/rbrics/rule_tiers.json '
+                         'for the r_bar_sp column)')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -184,18 +252,26 @@ def main():
     if df.empty:
         raise SystemExit(f'no CSVs found under {args.root}')
 
-    # coverage report -> stdout, so a short cell count is visible before trusting the table
-    cov = (df.dropna(subset=['filt']).groupby(['dataset', 'method'])['rule']
-           .nunique().unstack(fill_value=0))
-    print('rules with a finite gtroc_filt_all, per dataset x method:')
-    print(cov.to_string())
+    for metric, col in (('gtroc', 'gtroc_filt_all'), ('spur', 'spur_filt_all'), ('fam', 'fam_filt_all')):
+        cov = (df.dropna(subset=[col]).groupby(['dataset', 'method'])['rule']
+               .nunique().unstack(fill_value=0))
+        print(f'== rules with finite {col} (per dataset x method) ==')
+        print(cov.to_string())
+    print('\n== r_bar_sp (per dataset, from rule_tiers.json) ==')
+    for ds in DATASETS:
+        m, sd, n = r_sp_bar(args.planted_root, ds)
+        print(f'  {ds}: {m:.3f} +/- {sd:.3f}  (n={n})')
 
-    tex = floatwrap(build_tex(df), CAPTION, 'tab:planted_gtroc')
-    with open(os.path.join(args.out, 'planted_gtroc.tex'), 'w') as fh:
-        fh.write(tex)
-    build_agg_csv(df).to_csv(os.path.join(args.out, 'planted_gtroc_agg.csv'), index=False)
-    print(f'\nwrote {args.out}/planted_gtroc.tex')
-    print(f'wrote {args.out}/planted_gtroc_agg.csv')
+    open(os.path.join(args.out, 'planted_gtroc.tex'), 'w').write(
+        floatwrap(build_gtroc_tex(df), GTROC_CAP, 'tab:planted_gtroc'))
+    open(os.path.join(args.out, 'planted_spurroc.tex'), 'w').write(
+        floatwrap(build_spurroc_tex(df, args.planted_root), SPUR_CAP, 'tab:planted_spurroc'))
+    open(os.path.join(args.out, 'planted_famroc.tex'), 'w').write(
+        floatwrap(build_famroc_tex(df), FAM_CAP, 'tab:planted_famroc'))
+    build_agg_csv(df, args.planted_root).to_csv(
+        os.path.join(args.out, 'planted_gtroc_agg.csv'), index=False)
+    print(f'\nwrote planted_gtroc.tex / planted_spurroc.tex / planted_famroc.tex / '
+          f'planted_gtroc_agg.csv -> {args.out}')
 
 
 if __name__ == '__main__':

@@ -93,19 +93,24 @@ def _att_by_i(atts_split, gl, sl):
             if id(g) in pos and pos[id(g)] in atts_split}
 
 
-def _instance(att_by_i, gl, keep_fn):
-    # No atts / no GT graphs on this split is legitimate (e.g. a method that produced nothing
-    # here) -> NaN. But if there ARE graphs and gtroc_all returns no instance key at all, the
-    # graphs carry no node_label / node_label_clauses -> a mis-pointed tier or unattached GT.
-    # Fail loud rather than emit a silent blank that reads as "computed, got nothing".
+SPUR_KEY = 'spurious_roc_node_auc_mean'    # gtroc_all: max over the rule's class-1 correlates
+FAM_KEY = 'family_roc_node_auc_mean'       # gtroc_all: contrast vs cause for look-alike motifs
+
+
+def _metrics(att_by_i, gl, keep_fn):
+    """(instance_gtroc, spurroc, famroc) from ONE gtroc_all call. instance FAILS LOUD when graphs
+    are present but carry no node_label / node_label_clauses (a mis-pointed tier / unattached GT).
+    SpurROC and FamROC are legitimately NaN when the rule has no class-1 correlate / no look-alike
+    motif on this subset, so they are read with .get and never fail. Same call, no extra passes."""
+    # No atts / no GT graphs on this split is legitimate (a method that produced nothing here).
     if not att_by_i or not gl:
-        return float('nan')
+        return float('nan'), float('nan'), float('nan')
     res = gtroc_all(att_by_i, gl, keep_fn)
     if INSTANCE_KEY not in res:
         raise ValueError(
             f'{INSTANCE_KEY} absent for {len(gl)} graphs: they carry no node_label / '
             f'node_label_clauses. Wrong --gt_tier, or GT not attached for this dataset.')
-    return res[INSTANCE_KEY]
+    return res[INSTANCE_KEY], res.get(SPUR_KEY, float('nan')), res.get(FAM_KEY, float('nan'))
 
 
 def _combined(gt, atts, split_lists):
@@ -168,9 +173,15 @@ def eval_one(method, run_dir, art_dir, meta, args, device, kept):
         for s in SPLITS:
             gl = gt.get(s)
             abi = _att_by_i(atts.get(s, {}), gl, split_lists[s]) if gl else {}
-            row[f'gtroc_{cond}_{s}'] = _instance(abi, gl, keep_fn)
+            g, sp, fm = _metrics(abi, gl, keep_fn)
+            row[f'gtroc_{cond}_{s}'] = g
+            row[f'spur_{cond}_{s}'] = sp
+            row[f'fam_{cond}_{s}'] = fm
         gl_all, abi_all = _combined(gt, atts, split_lists)
-        row[f'gtroc_{cond}_all'] = _instance(abi_all, gl_all, keep_fn)
+        g, sp, fm = _metrics(abi_all, gl_all, keep_fn)
+        row[f'gtroc_{cond}_all'] = g
+        row[f'spur_{cond}_all'] = sp
+        row[f'fam_{cond}_all'] = fm
     return row
 
 
