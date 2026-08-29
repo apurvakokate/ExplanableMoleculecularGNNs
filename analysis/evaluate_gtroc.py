@@ -165,14 +165,23 @@ def eval_one(method, run_dir, art_dir, meta, args, device, kept):
     if all(gt.get(s) is None for s in SPLITS):
         raise ValueError('no node-GT on any split (nothing to grade)')
 
-    if method in NATIVE:
+    # Read the persisted per-node atts FIRST for every method (mose/gsat under their eval/artifacts
+    # subtree, mage_v2 + post-hoc under posthoc_gtroc). A forward pass runs only as a fallback when
+    # nothing is on disk -> no needless re-embedding when the scores already exist.
+    atts = _atts_read(art_dir, method)
+    if any(atts.get(s) for s in SPLITS):
+        src = 'read'
+    elif method in NATIVE:
         atts = _atts_native(run_dir, meta, method, loaders, vocab, dmeta, device, tt, split_lists)
+        src = 'recompute'
     elif method == 'mage':
         atts = _atts_mage(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, tt)
+        src = 'recompute'
     elif method in READ_POSTHOC:
-        atts = _atts_read(art_dir, method)
+        src = 'read'   # post-hoc has no recompute path; empty atts -> downstream NaN / fail-loud
     else:
         raise SystemExit(f'unsupported method {method}')
+    eval_one.last_src = src
 
     row = {}
     for cond, unk in (('full', 'include'), ('filt', 'exclude')):
@@ -209,14 +218,33 @@ def main():
     ap.add_argument('--backbone', nargs='*', default=None)
     ap.add_argument('--loader_batch_size', type=int, default=128)
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--weight_vocab', default=None,
+                    help='NATIVE reuse: the vocab the MODEL was TRAINED under, when it differs '
+                         'from --vocab (the EVAL vocab). Run discovery + weight loading use '
+                         '--weight_vocab; loaders / kept / GT use --vocab. For SFO GSAT (a '
+                         'rBRICS-trained, vocab-independent GSAT scored under SFO). Refused for '
+                         'MoSE (its motif-gated head is sized by the vocab).')
+    ap.add_argument('--posthoc_vocab_override', default=None,
+                    help='POST-HOC atts path only: when composing art_dir, swap the eval-vocab '
+                         'path segment for this value. For SFO gnn/pg whose vocab-independent '
+                         'atts live under the rBRICS path inside --artifacts_root '
+                         '(e.g. --posthoc_vocab_override rbrics).')
     args = ap.parse_args()
 
     if args.method in ({'mage'} | READ_POSTHOC) and not args.artifacts_root:
         raise SystemExit('post-hoc / mage need saved atts — pass --artifacts_root')
+    if args.weight_vocab and args.method == 'mose':
+        raise SystemExit('--weight_vocab is not valid for MoSE: its motif-gated head is sized by '
+                         'the vocabulary, so a model trained on one fragmentation cannot be scored '
+                         'on another. Vocab-independent natives (GSAT) only.')
     device = torch.device('cuda' if (args.device == 'cuda'
                           or (args.device == 'auto' and torch.cuda.is_available())) else 'cpu')
-    want_base = _base_vocab(args.vocab)
+    want_base = _base_vocab(args.vocab)               # EVAL vocab (loaders / kept / GT / dest)
     want_filter = args.vocab.endswith('_filter')
+    # Discovery + weight loading key on the WEIGHT vocab (defaults to eval vocab -> unchanged).
+    _wt = args.weight_vocab or args.vocab
+    want_base_wt = _base_vocab(_wt)
+    want_filter_wt = _wt.endswith('_filter')
 
     dest = Path(args.dest); dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)                       # append-mode rollup: clear once
@@ -226,7 +254,7 @@ def main():
 
     for run_dir, meta in _iter_runs(args.ckpt_root, FAMILY_DIR[args.method], args.dataset):
         v = str(meta.get('vocab_variant', ''))
-        if _base_vocab(v) != want_base or v.endswith('_filter') != want_filter:
+        if _base_vocab(v) != want_base_wt or v.endswith('_filter') != want_filter_wt:
             continue
         if _run_tier(meta, run_dir) != args.gt_tier:
             continue
@@ -243,16 +271,28 @@ def main():
         fold = meta.get('fold')
         tag = f'{args.dataset}/{args.method}/{bb}/fold{fold}/{rule or "-"}'
         try:
-            art_dir = (Path(args.artifacts_root) / run_dir.relative_to(args.ckpt_root)
-                       if args.artifacts_root else run_dir)
+            rel = run_dir.relative_to(args.ckpt_root)
+            if args.posthoc_vocab_override:
+                # the run path carries the eval-vocab segment (e.g. size_frequency_optimization);
+                # the vocab-independent atts live under a different vocab segment in artifacts_root
+                # (e.g. rbrics). Swap that one path part so art_dir points at the real atts.
+                rel = Path(*[args.posthoc_vocab_override if p == want_base else p
+                             for p in rel.parts])
+            art_dir = (Path(args.artifacts_root) / rel if args.artifacts_root else run_dir)
+            # NATIVE reuse: model discovered under the weight vocab, but loaders / GT / motif
+            # aggregation must use the eval vocab -> override the vocab keys on a meta copy.
+            eval_meta = meta
+            if args.weight_vocab:
+                eval_meta = {**meta, 'vocab_variant': want_base, 'gt_vocab_variant': want_base}
             kept = _kept_for_fold(args.dataset, fold, args.vocab_root, args.data_root, want_base)
-            m = eval_one(args.method, run_dir, art_dir, meta, args, device, kept)
+            m = eval_one(args.method, run_dir, art_dir, eval_meta, args, device, kept)
+            src = getattr(eval_one, 'last_src', '?')
             out_rows.append(dict(
                 tier=args.gt_tier, dataset=args.dataset, gt_rule=(rule or '-'),
                 method=args.method, backbone=bb, fold=fold,
                 unk_mode=_run_unk_mode(meta, run_dir), **m,
                 run_path=str(run_dir.relative_to(args.ckpt_root))))
-            print(f'  [ok] {tag}')
+            print(f'  [ok] {tag} atts={src}')
             ok += 1
             _hdr = not dest.exists() or dest.stat().st_size == 0
             pd.DataFrame([out_rows[-1]]).to_csv(dest, mode='a', header=_hdr, index=False)
