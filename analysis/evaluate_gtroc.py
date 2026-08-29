@@ -18,23 +18,25 @@ WHAT IT IS
                     and the GT target; UNK = a node whose motif is not in the per-fold kept
                     list). One run -> both conditions from the same node scores + one keep mask.
 
-NODE SCORES (node-direct, as evaluate.py grades them; never a re-broadcast):
-    * native (mose / mose_U / gsat / motifsat) : model's own per-node attention via
-      model_node_att_fn (forward pass, deterministic). NOTE MoSE/Occlusion are motif-gated,
-      so every atom in a motif shares that motif's score — that is the model's real output.
-    * gnnexplainer / pgexplainer / motif_occlusion : the saved per-node atts from
-      explainer_importances.json under --artifacts_root (NOT recomputed — post-hoc atts are
-      stochastic; we read exactly what produced the paper).
-    * mage : mage_v2 is reconstructed from the saved mage_attention.pt (the json only holds
-      mage_official). Reload attention -> score_mage(attention_mean) -> _pi_to_node_atts.
+NODE SCORES — a single PURE READ for every method, NO forward pass, NO reconstruction, NO
+fallback. Each method's per-node atts are read from a persisted explainer_importances.json;
+if the file is missing/empty the cell FAILS LOUD (a wrong --artifacts_root / path mapping),
+rather than silently re-embedding.
+    * native (mose / mose_U / gsat) : read stem 'mose'/'gsat' from the co-located
+      eval/artifacts subtree (byte-identical to the paper's accumulation copy — verified).
+      NOTE MoSE is motif-gated, so every atom in a motif shares that motif's score — that is
+      the model's real output, preserved exactly as written.
+    * gnnexplainer / pgexplainer / motif_occlusion : read their own stem from
+      explainer_importances.json under --artifacts_root (posthoc_gtroc).
+    * mage : read stem 'mage_v2' (DISK_STEM) from the SAME posthoc_gtroc json — the mage_v2
+      per-node atts are persisted there; nothing is reconstructed.
 
 OUTPUT: one CSV row per (tier, dataset, gt_rule, method, backbone, fold, unk_mode) with
     gtroc_full_{train,valid,test,all} and gtroc_filt_{train,valid,test,all}.
 
-It writes NOTHING back into the run trees, changes NO existing file layout, and RE-RUNS NO
-models (except MAGE's forward pass, which is inherent to reconstructing mage_v2). CLI mirrors
-evaluate.py so the same (--method/--vocab/--gt_tier/--ckpt_root/--artifacts_root/...) select
-the same runs.
+It writes NOTHING back into the run trees, changes NO existing file layout, LOADS NO models,
+and RE-RUNS nothing. CLI mirrors evaluate.py so the same
+(--method/--vocab/--gt_tier/--ckpt_root/--artifacts_root/...) select the same runs.
 """
 import argparse
 from pathlib import Path
@@ -46,12 +48,11 @@ import torch
 # Reuse evaluate.py's machinery verbatim — do not re-implement loaders / AUC / alignment.
 from analysis.evaluate import (
     build_gt_loaders, split_lists_and_gt,                      # loaders + GT
-    read_saved_atts, load_native_model_and_scores, _load_vanilla,  # atts sources
+    read_saved_atts,                                           # the ONLY atts source (pure read)
     _keep_fn, gtroc_all, _np1,                                 # AUC primitives
     _iter_runs, FAMILY_DIR, POSTHOC, NATIVE, DISK_STEM,        # run enumeration
     _base_vocab, _run_backbone, _run_unk_mode, _run_tier, _gt_rule,
 )
-from SharedModules.evaluation.motif_eval import model_node_att_fn
 
 SPLITS = ('train', 'valid', 'test')
 INSTANCE_KEY = 'instance_gt_roc_node_auc_mean'   # gtroc_all sets this from _dnf_gtroc (planted)
@@ -59,49 +60,13 @@ INSTANCE_KEY = 'instance_gt_roc_node_auc_mean'   # gtroc_all sets this from _dnf
 READ_POSTHOC = {'gnnexplainer', 'pgexplainer', 'motif_occlusion'}
 
 
-# ── node-attribution extraction, per method (mirrors evaluate.py eval_run) ──────────────────
-def _atts_native(run_dir, meta, method, loaders, vocab, dmeta, device, tt, split_lists):
-    """Native per-node atts via the model's own attention (forward pass, deterministic)."""
-    model, _scores = load_native_model_and_scores(
-        run_dir, meta, method, loaders, vocab, dmeta, device, tt)
-    base = model_node_att_fn(model, device)
-    out = {}
-    for s in SPLITS:
-        d = {}
-        for gi, g in enumerate(split_lists[s]):
-            a = base(g)
-            if a is not None:
-                d[gi] = _np1(a)
-        out[s] = d
-    return out
-
-
+# ── node-attribution extraction: a single PURE-READ path for every method ───────────────────
+# There is deliberately NO forward-pass / reconstruction function here. Every method's per-node
+# atts are read from a persisted explainer_importances.json; a missing file fails loud upstream.
 def _atts_read(art_dir, method):
-    """Post-hoc per-node atts read from the saved explainer_importances.json (no recompute)."""
+    """Per-node atts read from the saved explainer_importances.json (mose/gsat/gnn/pg/occlusion by
+    their own stem; mage via DISK_STEM -> 'mage_v2'). No recompute, no fallback."""
     return read_saved_atts(art_dir, DISK_STEM.get(method, method))
-
-
-def _atts_mage(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, tt):
-    """mage_v2 per-node atts: reload mage_attention.pt, re-score attention_mean, broadcast to
-    nodes. (The json stores mage_official, not mage_v2 — so we reconstruct, exactly as the
-    now-removed evaluate.py.mage_reload_atts did.)"""
-    from SharedModules.baselines.mage import _MotifAttention, score_mage
-    from SharedModules.evaluation.split_eval import _pi_to_node_atts
-    p = Path(art_dir) / 'mage_attention.pt'
-    if not p.exists():
-        return {s: {} for s in SPLITS}
-    sd = torch.load(p, map_location='cpu', weights_only=False)
-    attn = _MotifAttention(sd['W.weight'].shape[0])
-    attn.load_state_dict(sd)
-    attn = attn.to(device).eval()
-    model = _load_vanilla(run_dir, meta, dmeta, device)
-    out = {}
-    for s in SPLITS:
-        sl = split_lists.get(s) or []
-        _sc, pi = score_mage(model, attn, sl, vocab, device, tt, return_per_instance=True,
-                             verbose=False, score_mode='attention_mean', embed_batch_size=256)
-        out[s] = {gi: _np1(a) for gi, a in _pi_to_node_atts(pi, sl).items()}
-    return out
 
 
 # ── per-fold kept motif ids (defines UNK for the FILTERED condition) ────────────────────────
@@ -165,23 +130,19 @@ def eval_one(method, run_dir, art_dir, meta, args, device, kept):
     if all(gt.get(s) is None for s in SPLITS):
         raise ValueError('no node-GT on any split (nothing to grade)')
 
-    # Read the persisted per-node atts FIRST for every method (mose/gsat under their eval/artifacts
-    # subtree, mage_v2 + post-hoc under posthoc_gtroc). A forward pass runs only as a fallback when
-    # nothing is on disk -> no needless re-embedding when the scores already exist.
+    # Read the persisted per-node atts for EVERY method — NO forward pass, NO reconstruction, NO
+    # fallback. mose/gsat live under their co-located eval/artifacts subtree; mage_v2 + post-hoc
+    # under posthoc_gtroc. If nothing is on disk we FAIL LOUD: a missing/empty atts file means the
+    # --artifacts_root / run->atts mapping is wrong, and silently re-embedding would both hide that
+    # error and be slow. Every cell must be a pure read.
+    stem = DISK_STEM.get(method, method)
     atts = _atts_read(art_dir, method)
-    if any(atts.get(s) for s in SPLITS):
-        src = 'read'
-    elif method in NATIVE:
-        atts = _atts_native(run_dir, meta, method, loaders, vocab, dmeta, device, tt, split_lists)
-        src = 'recompute'
-    elif method == 'mage':
-        atts = _atts_mage(run_dir, art_dir, meta, dmeta, vocab, split_lists, device, tt)
-        src = 'recompute'
-    elif method in READ_POSTHOC:
-        src = 'read'   # post-hoc has no recompute path; empty atts -> downstream NaN / fail-loud
-    else:
-        raise SystemExit(f'unsupported method {method}')
-    eval_one.last_src = src
+    if not any(atts.get(s) for s in SPLITS):
+        raise FileNotFoundError(
+            f'no persisted per-node atts for method={method} stem={stem} under {art_dir} '
+            f'(explainer_importances.json missing/empty). Refusing to forward-pass — '
+            f'check --artifacts_root and the run->atts path mapping.')
+    eval_one.last_src = 'read'
 
     row = {}
     for cond, unk in (('full', 'include'), ('filt', 'exclude')):
