@@ -123,10 +123,28 @@ def _combined(gt, atts, split_lists):
     return gl_all, att_all
 
 
+_LOADERS_CACHE = {}
+
+
+def _loaders_for(meta, args):
+    """(split_lists, gt) for this run, CACHED by (dataset, fold, vocab, gt_vocab). The loaders and
+    GT attachment depend only on the dataset/fold/vocab — NOT the backbone — so the 5 backbones of
+    a fold reuse ONE build instead of rebuilding it 5x. build_gt_loaders is the dominant per-run
+    cost (~2.7s BBBP, ~15s hERG); this cuts the 25 builds/invocation down to 5. Values unchanged;
+    the graph lists are read-only downstream (node_label / atts), never mutated, so sharing is safe."""
+    key = (meta.get('dataset'), meta.get('fold'), meta.get('vocab_variant'),
+           meta.get('gt_vocab_variant'), args.loader_batch_size)
+    hit = _LOADERS_CACHE.get(key)
+    if hit is None:
+        loaders, _vocab, _dmeta, _tt = build_gt_loaders(
+            meta, args.data_root, args.vocab_root, args.processed_root, args.loader_batch_size)
+        hit = split_lists_and_gt(loaders, meta)
+        _LOADERS_CACHE[key] = hit
+    return hit
+
+
 def eval_one(method, run_dir, art_dir, meta, args, device, kept):
-    loaders, vocab, dmeta, tt = build_gt_loaders(
-        meta, args.data_root, args.vocab_root, args.processed_root, args.loader_batch_size)
-    split_lists, gt = split_lists_and_gt(loaders, meta)
+    split_lists, gt = _loaders_for(meta, args)
     if all(gt.get(s) is None for s in SPLITS):
         raise ValueError('no node-GT on any split (nothing to grade)')
 
