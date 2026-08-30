@@ -214,6 +214,12 @@ def main():
                          '--weight_vocab; loaders / kept / GT use --vocab. For SFO GSAT (a '
                          'rBRICS-trained, vocab-independent GSAT scored under SFO). Refused for '
                          'MoSE (its motif-gated head is sized by the vocab).')
+    ap.add_argument('--atts_path_sub', default=None,
+                    help='NATIVE reuse: swap ONE path part (format OLD:NEW) when composing the atts '
+                         'dir, for when a model is discovered under one vocab segment but its '
+                         'vocab-independent atts are stored under another. For SFO GSAT: '
+                         '--weight_vocab rbrics finds the model under base_gsat/rbrics/, and '
+                         '--atts_path_sub rbrics:rbrics_filter points at the persisted atts.')
     ap.add_argument('--posthoc_vocab_override', default=None,
                     help='POST-HOC atts path only: when composing art_dir, swap the eval-vocab '
                          'path segment for this value. For SFO gnn/pg whose vocab-independent '
@@ -268,6 +274,13 @@ def main():
                 # (e.g. rbrics). Swap that one path part so art_dir points at the real atts.
                 rel = Path(*[args.posthoc_vocab_override if p == want_base else p
                              for p in rel.parts])
+            if args.atts_path_sub:
+                # NATIVE reuse where the model is discovered under one vocab segment but its
+                # (vocab-independent) atts are stored under another. e.g. GSAT models live under
+                # .../base_gsat/rbrics/... while the identical node atts are persisted under
+                # .../base_gsat/rbrics_filter/... . Swap that exact path part. Format OLD:NEW.
+                _old, _new = args.atts_path_sub.split(':', 1)
+                rel = Path(*[_new if p == _old else p for p in rel.parts])
             art_dir = (Path(args.artifacts_root) / rel if args.artifacts_root else run_dir)
             # NATIVE reuse: model discovered under the weight vocab, but loaders / GT / motif
             # aggregation must use the eval vocab -> override the vocab keys on a meta copy.
