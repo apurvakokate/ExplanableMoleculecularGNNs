@@ -18,7 +18,7 @@
 #             SKIPPED by every worker. Re-kick is MANUAL via base_status.py.
 #
 # ENV (from the launcher): POOL_DATASETS (req), DEVICE=cuda|cpu, plus optional
-#   BACKBONES, FOLDS, PRESETS, EPOCHS, SMOKE.
+#   BACKBONES, FOLDS, PRESETS, EPOCHS, PATIENCE, SMOKE.
 set -uo pipefail
 REPO=/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor
 SCRIPTS="$REPO/motifsat_paper_deliverables_v1/_scripts"
@@ -35,6 +35,7 @@ mkdir -p "$CLAIMS"
 WHO="$(hostname -s):${SLURM_JOB_ID:-$$}"; JOBID="${SLURM_JOB_ID:-$$}"
 
 EPOCHS="${EPOCHS:-500}"
+PATIENCE="${PATIENCE:-50}"
 BACKBONES="${BACKBONES:-GIN GCN GAT SAGE PNA}"
 FOLDS="${FOLDS:-0 1 2 3 4}"
 : "${POOL_DATASETS:?set POOL_DATASETS to the space-separated datasets for this pool}"
@@ -69,7 +70,8 @@ run_cell(){
         --dataset "$ds" --fold "$f" --backbone "$bb" \
         --data_root "$FOLDS_ROOT" --vocab_root "$VOCAB" --vocab_variant rbrics \
         --processed_root "$PROC" \
-        --out_dir "$dir" --final_out_dir --per_split_eval --epochs "$EPOCHS"
+        --out_dir "$dir" --final_out_dir --per_split_eval --epochs "$EPOCHS" \
+        --patience "$PATIENCE"
     local rc=$?
     if [ "$rc" -eq 0 ] && _complete "$dir" "$stem"; then return 0; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
