@@ -1,0 +1,20 @@
+# Method preset: INTER-MOTIF LOSS only (mechanism 1, between term only).
+#
+# Base-GSAT node extractor (atoms scored independently) + the between-motif
+# reward only (motifs pushed apart / discriminative), WITHOUT the within-motif
+# consistency penalty. Completes the loss-method factorial alongside
+# intra_consistency (within only) and intra_inter_loss (both). Meaningful here
+# because the node extractor produces genuine within-motif variance (unlike the
+# readout path, where within-variance is 0 by construction).
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/inter_loss.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: loss
+noise: none
+info_loss_level: node
+w_message: true
+motif_loss_coef: 1.0
+within_node_coef: 0.0
+between_motif_coef: 1.0

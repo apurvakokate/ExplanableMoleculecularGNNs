@@ -411,10 +411,14 @@ def evaluate_native_all_splits(
     importance files carry the same score set; only impact (per-split LOO) varies.
     """
     from .pipeline import EvalPipeline
+    from .motif_eval import model_node_att_fn, caches_from_motif_impact
     out_dir = Path(out_dir)
     rows_by_split: Dict[str, List[dict]] = {}
     inst_by_split: Dict[str, dict] = {}
     summary_by_split: Dict[str, dict] = {}
+    # Raw per-node atts per split, persisted so post-training evaluate.py can
+    # score GT-ROC artifact-only (no checkpoint reload / re-forward).
+    importances_json: Dict[str, dict] = {s: {} for s in SPLITS}
 
     for split in SPLITS:
         sl = split_lists.get(split)
@@ -443,10 +447,47 @@ def evaluate_native_all_splits(
         _write_importance(out_dir, method_name, split, grouped_rows)
         _write_impact(out_dir, method_name, split, grouped_rows)
 
+        # Persist raw per-node atts (importances) — same family-agnostic extractor
+        # GT-ROC uses, keyed by split-local graph index. Lets evaluate.py score
+        # GT-ROC from artifacts alone (no re-forward). None => model exposes no
+        # node attention (e.g. vanilla); those graphs are simply skipped.
+        _natt = model_node_att_fn(model, device)
+        _atts = {}
+        for _i, _g in enumerate(sl):
+            _a = _natt(_g)
+            if _a is not None:
+                _atts[_i] = _a
+        if _atts:
+            importances_json[split][method_name] = _atts_to_jsonable(_atts)
+        # Persist per-instance OWN impact (free — reuses the motif_impact just
+        # computed). Ante-hoc y-axis is the model's OWN weights, NOT the base=ones
+        # agnostic cache, so it is written under its own filename.
+        _sc, _own_impact = caches_from_motif_impact(impacts)
+        (out_dir / f'impact_cache_own_{split}.json').write_text(json.dumps(
+            {str(m): {str(g): float(v) for g, v in gm.items()}
+             for m, gm in _own_impact.items()}))
+
     write_grouped_pooled(out_dir, method_name, rows_by_split)
     write_instance(out_dir, method_name, inst_by_split)
     write_global_pooled(out_dir, 'importance', {method_name: rows_by_split})
     write_global_pooled(out_dir, 'impact', {method_name: rows_by_split})
+    # explainer_importances.json — merged + atomic, SAME schema/merge as the
+    # post-hoc path, so read_saved_atts / evaluate.py consume it identically and a
+    # per-method write never clobbers another method's atts.
+    import os as _os
+    _ei = out_dir / 'explainer_importances.json'
+    _prev = {}
+    if _ei.exists():
+        try:
+            _prev = (json.loads(_ei.read_text()) or {}).get('importances_by_split') or {}
+        except Exception:
+            _prev = {}
+    for _s, _by in importances_json.items():
+        if _by:
+            _prev.setdefault(_s, {}).update(_by)
+    _tmp = _ei.with_suffix('.json.tmp')
+    _tmp.write_text(json.dumps({'importances_by_split': _prev}))
+    _os.replace(_tmp, _ei)
     # summary_splits.json LAST + atomic — the completion marker (poll/skip_done key
     # on it), matching the post-hoc path; a run killed before this is redone.
     summary = {method_name: summary_by_split}
