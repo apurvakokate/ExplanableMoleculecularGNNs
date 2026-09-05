@@ -148,12 +148,17 @@ def resolve_info_loss_coef(
     dataset: str,
     info_loss_coef: Optional[float] = None,
 ) -> Tuple[float, bool]:
-    """Resolve the motif-IB info_loss_coef for a run.
+    """Resolve the IB info_loss_coef for a run.
 
     Explicit ``info_loss_coef`` (not None) always wins. Otherwise look up by
-    dataset, falling back to ``_INFO_LOSS_COEF_DEFAULT``. Returns
+    dataset; an UNKNOWN dataset RAISES ``KeyError`` (no silent fallback to
+    ``_INFO_LOSS_COEF_DEFAULT`` — see the raise below). Returns
     ``(info_loss_coef, from_table)`` where ``from_table`` is True iff the value
     came from the lookup — mirrors ``resolve_reg`` / ``resolve_gsat_r``.
+
+    Note: the resolved coefficient scales the IB term at every granularity
+    (node/motif/edge) in ``GSAT.compute_loss``; the per-dataset values were tuned
+    on the motif path but are not motif-specific.
     """
     if info_loss_coef is not None:
         return float(info_loss_coef), False

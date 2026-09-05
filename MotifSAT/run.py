@@ -38,7 +38,18 @@ from train import train_gsat
 
 def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
     from SharedModules.data.loader import NUM_CLASSES
+    # NUM_CLASSES is a SPARSE override table — only multi-output datasets are
+    # listed; binary/regression/single-task sets intentionally default to 1, so
+    # absence is NOT an error. But fail loud on the real inconsistency: a
+    # MultiLabel task that defaulted to a single head (dataset not registered),
+    # which otherwise crashes cryptically at loss time.
     num_classes = NUM_CLASSES.get(cfg.dataset, 1)
+    if task_type == 'MultiLabel' and num_classes == 1:
+        raise ValueError(
+            f"dataset {cfg.dataset!r} is a MultiLabel task but num_classes "
+            f"defaulted to 1 (not in NUM_CLASSES) — a multi-label task needs "
+            f"N>1 output heads. Register it in NUM_CLASSES."
+        )
     return GSAT(
         x_dim=meta.x_dim,
         hidden_dim=cfg.hidden_dim,
@@ -53,6 +64,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         pool_mode=cfg.pool_mode,
         extractor_hidden_mult=cfg.extractor_hidden_mult,
         extractor_dropout_p=cfg.extractor_dropout_p,
+        motif_scorer_norm=cfg.motif_scorer_norm,
         noise=cfg.noise,
         info_loss_level=cfg.info_loss_level,
         motif_info_size_normalize=cfg.motif_info_size_normalize,
@@ -167,23 +179,14 @@ def _aggregate_att_to_motif(
             batch = (data.batch if data.batch is not None
                      else torch.zeros(n, dtype=torch.long, device=device))
 
-            try:
-                out      = model(data.x, data.edge_index, batch, n2m,
-                                 getattr(data, "edge_attr", None))
-                # Prefer the clean (noise-free) soft attention for aggregation;
-                # the returned att is a soft sigmoid but at train time carries
-                # injected noise. node_att_soft is the noise-free probability.
-                node_att = None
-                if len(out) >= 3 and isinstance(out[2], dict) \
-                        and out[2].get("node_att_soft") is not None:
-                    node_att = out[2]["node_att_soft"]
-                if node_att is None:
-                    node_att = out[1]
-                if node_att is None:
-                    continue
-                node_score = node_att.view(-1).detach().cpu()
-            except Exception:
-                continue
+            # Node/motif path only (learn_edge_att is short-circuited above), so
+            # the model always returns aux['node_att_soft'] — the noise-free
+            # (clean) attention. No fallback and no exception-swallowing: a wrong
+            # return shape or a missing key is a real bug we want to surface, not
+            # a reason to silently drop the graph from the aggregation.
+            _, _, aux = model(data.x, data.edge_index, batch, n2m,
+                              getattr(data, "edge_attr", None))
+            node_score = aux["node_att_soft"].view(-1).detach().cpu()
 
             n2m_cpu = n2m.cpu()
             for mid in n2m_cpu[n2m_cpu >= 0].unique().tolist():
@@ -219,9 +222,12 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     cfg.decay_interval = _dec_int
     cfg.decay_r = _dec_r
 
-    # Per-dataset motif-IB strength (MotifSAT analogue of MOSE's ent/size_reg).
-    # Only applies to the motif info-loss path; an explicit --info_loss_coef
-    # (not None) always wins.
+    # Per-dataset IB strength (MotifSAT analogue of MOSE's ent/size_reg). The
+    # coefficient is applied to the IB term at EVERY granularity (node/motif/edge)
+    # in compute_loss; the per-dataset value was merely TUNED on the motif path.
+    # An explicit --info_loss_coef (not None) always wins. The print below is
+    # gated on info_loss_level=='motif' only to reduce noise, not because the
+    # coefficient is motif-specific.
     _coef, _coef_tbl = resolve_info_loss_coef(
         cfg.dataset, getattr(cfg, 'info_loss_coef', None))
     if _coef_tbl and cfg.info_loss_level == 'motif':
@@ -292,18 +298,8 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
           f"w_feat={cfg.w_feat} w_message={cfg.w_message} w_readout={cfg.w_readout} "
           f"(w_message is now opt-in, not forced True)")
 
-    # Guard (parity with MOSE): with no injection AND no edge-attention path the
-    # sampled/extracted attention is never applied in the 2nd forward pass, so it
-    # receives no task gradient and the explanation is inert — the model reduces
-    # to a plain backbone. learn_edge_att applies attention via edge_atten
-    # regardless of the w_* flags, so it is exempt.
-    if (not getattr(cfg, 'learn_edge_att', False)
-            and not (cfg.w_feat or cfg.w_message or cfg.w_readout)):
-        print("  [WARN] No attention injection enabled "
-              "(w_feat/w_message/w_readout all False) and learn_edge_att off: "
-              "the extractor attention is never applied, so it gets no task "
-              "gradient and the explanation is inert. Pass at least one --w_* "
-              "flag (or --learn_edge_att for base GSAT).")
+    # (The "no injection enabled" inert-attention case is now a hard raise in
+    # GSAT.__init__, which fires inside build_model above — no warning needed.)
 
     # Positive class weights
     pos_w = (compute_pos_weights(loaders["train"].dataset)
@@ -653,6 +649,25 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     return results
 
 
+def _cli_provided_dests(parser, argv):
+    """Return the set of argparse dests EXPLICITLY present on the command line.
+
+    Handles ``--flag``, ``--name value`` and ``--name=value``. Used so a --config
+    preset can be overridden only by args the user actually typed (argparse
+    defaults must not silently clobber the preset).
+    """
+    opt_to_dest = {}
+    for action in parser._actions:
+        for opt in action.option_strings:
+            opt_to_dest[opt] = action.dest
+    provided = set()
+    for tok in argv:
+        key = tok.split('=', 1)[0]
+        if key in opt_to_dest:
+            provided.add(opt_to_dest[key])
+    return provided
+
+
 def main():
     parser = argparse.ArgumentParser(description="MotifSAT")
     parser.add_argument("--config",          default=None)
@@ -682,6 +697,13 @@ def main():
     parser.add_argument("--extractor_dropout_p", type=float, default=0.5)
     parser.add_argument("--pool_mode",       default="max_mean",
                         choices=["mean", "max", "max_mean", "multi"])
+    parser.add_argument("--motif_scorer_norm", default=None,
+                        choices=["instance", "layer", "none"],
+                        help="Norm inside the MOTIF readout scorer MLP. Default "
+                             "'instance' = official GSAT (graph-wise InstanceNorm). "
+                             "'layer'/'none' address the concern that per-graph "
+                             "InstanceNorm over the few motif rows in a molecule is "
+                             "unstable. No effect for base GSAT / method=loss (no scorer).")
     parser.add_argument("--motif_info_size_normalize", action="store_true",
                         help="Divide motif-level info_loss by motif length.")
     parser.add_argument("--logit_clamp",     type=float, default=None,
@@ -789,7 +811,24 @@ def main():
     args = parser.parse_args()
 
     if args.config:
+        from SharedModules.data.dataset_routing import (
+            default_processed_base,
+            variant_processed_root,
+        )
         cfg = MotifSATConfig.from_yaml(args.config)
+        # Preset merge: a --config may be a METHOD-ONLY preset (motif_method,
+        # noise, coefs, ...). Any CLI arg the user *explicitly* typed overrides
+        # the preset, so dataset/backbone/roots come from the command line.
+        # Only explicitly-provided args win — argparse defaults never clobber the
+        # preset. processed_root is DERIVED (base + per-vocab subdir); recompute
+        # it below from the merged data_root/vocab_variant, never a stale preset.
+        _provided = _cli_provided_dests(parser, sys.argv[1:])
+        for _dest in _provided:
+            if (_dest in MotifSATConfig.__dataclass_fields__
+                    and _dest != 'processed_root'):
+                setattr(cfg, _dest, getattr(args, _dest))
+        _base_proc = default_processed_base(cfg.data_root, args.processed_root)
+        cfg.processed_root = variant_processed_root(_base_proc, cfg.vocab_variant)
     else:
         from SharedModules.data.dataset_routing import (
             default_processed_base,
@@ -806,6 +845,7 @@ def main():
             hidden_dim=args.hidden_dim, num_layers=args.num_layers,
             dropout=args.dropout,
             pool_mode=args.pool_mode,
+            motif_scorer_norm=args.motif_scorer_norm,
             extractor_dropout_p=args.extractor_dropout_p,
             motif_info_size_normalize=args.motif_info_size_normalize,
             logit_clamp=args.logit_clamp,

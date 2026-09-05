@@ -35,6 +35,7 @@ class MotifSATConfig:
     pool_mode: str = 'max_mean'        # mean | max | max_mean | multi (used by 'readout')
     extractor_hidden_mult: int = 2
     extractor_dropout_p: float = 0.5
+    motif_scorer_norm: Optional[str] = None  # motif readout scorer norm: instance | layer | none (REQUIRED for scorer runs; no default)
 
     # Stochasticity granularity for motif-scored paths (NOT extra logit noise).
     # none  = per-node extractor (base GSAT)
@@ -131,7 +132,21 @@ class MotifSATConfig:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     def variant_tag(self) -> str:
-        """Unique tag encoding all axes of variation — no two different configs can collide."""
+        """Folder-name tag encoding the architecture / method / regularization axes.
+
+        Encodes: backbone, motif_method, node_encoder, norm, graph_pool, injection
+        flags, noise, info_loss_level, use_gt, epochs, vocab_variant,
+        motif_scorer_norm, deterministic_att, and (via hp_suffix)
+        num_layers/hidden_dim/lr plus the regularization knobs (info_loss_coef,
+        motif_loss_coef, between/within coefs, dropout, weight_decay, init_r/final_r,
+        pool_mode, ...).
+
+        Does NOT encode seed, batch_size, patience, min_epochs, or
+        early_stop_metric — configs differing ONLY in those produce the SAME tag,
+        so per-seed / per-batch runs must be placed in distinct out_dirs by the
+        caller (e.g. via final_out_dir). dataset and fold live in the path, not the
+        tag.
+        """
         enc  = self.node_encoder
         # conv_normalize-FIRST (matches the model): explicit conv_normalize wins;
         # apply_layer_norm honored only when conv_normalize is 'none'. Keeps the
@@ -159,6 +174,18 @@ class MotifSATConfig:
             hp = ''
         pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
         base = f'{self.backbone}_{self.motif_method}_{enc}_{ln}{pool}_{inj}_{noise_str}_{il_str}_{gt}_{ep}_{frag}'
+        # Spell out the motif-scorer norm EXPLICITLY for every run that uses the
+        # scorer (readout / motif-noise) — no default is suppressed, so 'instance'
+        # is written just like 'layer'/'none'. Runs with no scorer (base GSAT /
+        # method=loss) omit it, since the norm is unused there.
+        if self.motif_method == 'readout' or self.noise in ('node', 'motif'):
+            base = f'{base}_mnorm-{self.motif_scorer_norm}'
+        # decay_r (IB anneal rate) is NOT captured by hp_suffix (only init_r/final_r
+        # are), so annealing (decay_r>0) vs no-annealing (decay_r=0) — and any
+        # anneal-rate change — would otherwise share a folder. Encode it here.
+        # (decay_interval is dataset-fixed, so it needn't be in the tag.)
+        if self.decay_r is not None:
+            base = f'{base}_dr{self.decay_r:g}'
         if getattr(self, 'deterministic_att', False):
             base = f'{base}_det'
         return f'{base}_{hp}' if hp else base

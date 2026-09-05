@@ -89,8 +89,19 @@ def _symmetrize_edge_att(edge_index: Tensor, edge_att: Tensor) -> Tensor:
     att = edge_att.view(-1)
     try:
         from torch_sparse import transpose
-    except ImportError:
-        return edge_att
+    except ImportError as e:
+        # Fail loudly: previously this silently returned the UN-symmetrized
+        # edge attention, so an undirected-graph edge-GSAT run (learn_edge_att=
+        # True) would train with ASYMMETRIC per-direction attention — a
+        # different model — with no warning. Raise instead. Only the edge path
+        # on undirected graphs reaches here; node/motif paths never call this.
+        raise ImportError(
+            "_symmetrize_edge_att requires torch_sparse to average edge "
+            "attention over (u,v)/(v,u) on undirected graphs, but it is not "
+            "installed. Refusing to silently train an asymmetric edge-attention "
+            "model (learn_edge_att=True). Install torch_sparse, or use a "
+            "node/motif attention path instead."
+        ) from e
     trans_idx, trans_val = transpose(edge_index, att, None, None, coalesced=False)
     trans_val_perm = _reorder_like(trans_idx, edge_index, trans_val)
     return ((att + trans_val_perm) / 2).view_as(edge_att)
@@ -172,6 +183,7 @@ class GSAT(nn.Module):
         pool_mode: str = 'max_mean',
         extractor_hidden_mult: int = 2,
         extractor_dropout_p: float = 0.5,
+        motif_scorer_norm: Optional[str] = None,  # motif scorer norm: instance|layer|none (REQUIRED for scorer runs; no default)
         # ── Noise / IB ──
         noise: str = 'none',
         info_loss_level: str = 'node',
@@ -244,6 +256,62 @@ class GSAT(nn.Module):
                 f"motif_loss_coef*within_node_coef and motif_loss_coef*between_motif_coef), or leave "
                 f"both sub-coefs at 0."
             )
+        # Fail loudly: info_loss_level='motif' needs a motif scorer, otherwise
+        # compute_loss SILENTLY falls back to the node-level info loss (motif_logits
+        # is None). No silent degradation.
+        if (info_loss_level == 'motif' and not learn_edge_att
+                and not _uses_motif_scorer(motif_method, noise)):
+            raise ValueError(
+                f"info_loss_level='motif' requires a motif scorer "
+                f"(motif_method='readout' or noise in {{'node','motif'}}); got "
+                f"motif_method={motif_method!r} noise={noise!r}. Without one, the "
+                f"motif info loss would silently degrade to node-level. Enable "
+                f"readout/motif-noise, or use info_loss_level='node'."
+            )
+        # Fail loudly: no injection channel AND no edge path => the sampled
+        # attention is never applied in the 2nd forward pass, so it gets no task
+        # gradient and the explanation is inert (the model reduces to a plain
+        # backbone). Same class of silent no-op as the learn_edge_att/w_message
+        # guard above, so it raises too (was previously only a run.py warning).
+        if not learn_edge_att and not (w_feat or w_message or w_readout):
+            raise ValueError(
+                "no attention injection enabled: w_feat/w_message/w_readout are "
+                "all False and learn_edge_att is False, so the extractor "
+                "attention is never applied and receives no task gradient (inert "
+                "explanation). Enable at least one of w_feat/w_message/w_readout, "
+                "or use learn_edge_att=True for the edge-attention path."
+            )
+        # Fail loudly: a partial decay schedule. anneal_r needs BOTH decay_interval
+        # and decay_r, or NEITHER (both None disables annealing). Exactly one set
+        # would silently NOT anneal (new_r stays init_r). Spelled out per case.
+        _only_interval = decay_interval is not None and decay_r is None
+        _only_decay_r  = decay_r is not None and decay_interval is None
+        if _only_interval or _only_decay_r:
+            raise ValueError(
+                f"decay_interval={decay_interval} and decay_r={decay_r} must be "
+                f"provided together: both None disables annealing, but exactly one "
+                f"set would silently NOT anneal. Provide both or neither."
+            )
+        # Fail loudly: an inverted IB schedule. final_r > init_r pins r=final_r from
+        # epoch 0 (the anneal max() clamps immediately) — never the intended decay.
+        if (init_r is not None and final_r is not None and final_r > init_r):
+            raise ValueError(
+                f"final_r={final_r} must be <= init_r={init_r}: final_r > init_r "
+                f"pins r=final_r from the first epoch (no annealing)."
+            )
+        # Fail loudly: the motif consistency loss operates on node_att, which is
+        # None on the edge path — so consistency coefs with learn_edge_att=True
+        # are a SILENT no-op (the inner gate in compute_loss skips). Same family
+        # as the inert-config guards above.
+        if learn_edge_att and (motif_loss_coef > 0 or within_node_coef > 0
+                               or between_motif_coef > 0):
+            raise ValueError(
+                "motif consistency loss (motif_loss_coef / within_node_coef / "
+                "between_motif_coef) requires node-level attention, but "
+                "learn_edge_att=True has no node_att — the consistency term would "
+                "be a silent no-op. Drop the consistency coefs, or use a "
+                "node/motif attention path (learn_edge_att=False)."
+            )
 
         self.motif_method = motif_method
         self.noise = noise
@@ -282,10 +350,17 @@ class GSAT(nn.Module):
 
         # Motif pool → MLP scorer (readout method or noise=node|motif)
         if _uses_motif_scorer(motif_method, noise):
+            if motif_scorer_norm is None:
+                raise ValueError(
+                    "motif_scorer_norm must be set explicitly (instance | layer | "
+                    "none) for a run that uses the motif scorer (motif_method="
+                    "'readout' or noise in {'node','motif'}) — there is no default."
+                )
             self.motif_scorer = MotifReadoutScorer(
                 in_dim=hidden_dim,
                 pool_mode=pool_mode,
                 dropout_p=extractor_dropout_p,
+                norm=motif_scorer_norm,
             )
         else:
             self.motif_scorer = None
@@ -330,18 +405,23 @@ class GSAT(nn.Module):
         Returns (node_logits [N,1], motif_logits [M,1]|None,
                  inverse_indices [N]|None, motif_batch [M]|None).
         """
-        if self.learn_edge_att:
-            return self.extractor(node_emb, batch), None, None, None
-
-        if (_uses_motif_scorer(self.motif_method, self.noise)
-                and nodes_to_motifs is not None
-                and self.motif_scorer is not None):
-            inv_idx, motif_batch, _ = compute_inverse_idx(
-                nodes_to_motifs, batch)
+        # Only called on the node/motif paths — forward computes edge attention
+        # from self.edge_extractor separately and never calls this when
+        # learn_edge_att is True. self.motif_scorer is not None iff readout /
+        # noise in {node,motif} (built under the same predicate in __init__), so
+        # it is the single condition selecting the motif path.
+        if self.motif_scorer is not None:
+            if nodes_to_motifs is None:
+                raise ValueError(
+                    "motif scorer active (motif_method='readout' or noise in "
+                    "{'node','motif'}) but nodes_to_motifs is None — motif "
+                    "vocabulary annotations are required on every graph.")
+            inv_idx, motif_batch, _ = compute_inverse_idx(nodes_to_motifs, batch)
             motif_logits, node_logits = self.motif_scorer(
                 node_emb, inv_idx, motif_batch)
             return node_logits, motif_logits, inv_idx, motif_batch
 
+        # Base node extractor (motif_method in {none,loss}, noise='none').
         return self.extractor(node_emb, batch), None, None, None
 
     def _sample_node_attention(
@@ -412,12 +492,6 @@ class GSAT(nn.Module):
             logits = self.clf.classify(graph_emb)
             return logits, nw, {'node_att': nw, 'node_att_soft': nw}
 
-        if self.motif_method == 'readout' and nodes_to_motifs is None:
-            raise ValueError(
-                "motif_method='readout' requires nodes_to_motifs on each graph "
-                "(motif vocabulary annotations from the data loader)."
-            )
-
         r = float(self.r.item())
 
         # Step 1: Backbone embedding (no attention injection yet)
@@ -425,21 +499,14 @@ class GSAT(nn.Module):
             x, edge_index, edge_attr=edge_attr, batch=batch
         )
 
-        # Step 2: Extractor → log-logits
-        node_logits, motif_logits, inv_idx, _motif_batch = self._get_node_logits(
-            node_emb, nodes_to_motifs, batch
-        )
-
-        if self.noise in ('node', 'motif') and motif_logits is None:
-            raise ValueError(
-                f"noise={self.noise!r} requires nodes_to_motifs (motif vocabulary "
-                f"annotations on each graph)."
-            )
-        edge_att = None
-        edge_att_mp = None
-        node_att_soft = None
-        edge_att_soft = None
-        motif_att = None
+        # Step 2/3: score → sample. The edge path scores edges from node_emb
+        # directly; the node/motif paths go through _get_node_logits, which is
+        # therefore computed ONLY when used (never on the edge path). The
+        # nodes_to_motifs-None validation now lives inside _get_node_logits (one
+        # local raise), so it is not duplicated here.
+        node_logits = motif_logits = inv_idx = None
+        edge_att = edge_att_mp = edge_att_soft = None
+        node_att_soft = motif_att = None
         lc = self.logit_clamp
         if self.learn_edge_att:
             src, dst = edge_index
@@ -455,6 +522,8 @@ class GSAT(nn.Module):
             edge_att_soft = edge_logits.sigmoid()
             node_att = None
         else:
+            node_logits, motif_logits, inv_idx, _ = self._get_node_logits(
+                node_emb, nodes_to_motifs, batch)
             node_att, node_att_soft, motif_att = self._sample_node_attention(
                 node_logits, motif_logits, inv_idx, self.training,
             )
@@ -514,26 +583,14 @@ class GSAT(nn.Module):
                     motif_att = aux['motif_att'].view(-1)
                 else:
                     motif_att = aux['motif_logits'].sigmoid().view(-1)
-                sw = None
-                if self.motif_info_size_normalize and motif_lengths is not None \
-                        and aux['inv_idx'] is not None:
-                    # Motif-instance size weights: take the per-node 1/len weight
-                    # and average it onto each motif row via inv_idx (nodes→motif).
-                    n = nodes_to_motifs.size(0) if nodes_to_motifs is not None else 0
-                    node_sw = motif_size_weights(
-                        nodes_to_motifs if nodes_to_motifs is not None
-                        else torch.zeros(n, dtype=torch.long),
-                        motif_lengths
-                    )
-                    try:
-                        from torch_scatter import scatter_mean as _sm
-                    except ImportError:
-                        from torch_geometric.utils import scatter as _tg
-                        def _sm(src, index, dim=0, dim_size=None):
-                            return _tg(src, index, dim=dim, dim_size=dim_size, reduce="mean")
-                    sw = _sm(node_sw, aux['inv_idx'], dim=0,
-                             dim_size=int(aux['inv_idx'].max().item()) + 1)
-                ib = info_loss(motif_att, r, sw)
+                # No size weighting on the motif path (sw=None). motif_att is
+                # already ONE value per motif, so info_loss's mean over the M
+                # motif rows is per-motif-equal BY CONSTRUCTION. Averaging the
+                # per-node 1/len weight onto motif rows collapses to 1/L_m and
+                # would re-introduce a spurious size penalty on large motifs, so
+                # motif_info_size_normalize has NO effect at motif granularity —
+                # it applies only to the node-level info loss below.
+                ib = info_loss(motif_att, r)
             elif aux['node_att'] is not None:
                 node_att_v = aux['node_att'].view(-1)
                 sw = None

@@ -166,19 +166,31 @@ class ExtractorMLP(nn.Module):
         dropout_p: float = 0.5,
         edge_mode: bool = False,
         hidden_mult: int = 2,  # kept for API compat; official widths are fixed
+        norm: str = 'instance',  # per-hidden-layer norm: instance | layer | none
     ):
         super().__init__()
         del hidden_mult  # official architecture uses fixed channel schedule
+        if norm not in ('instance', 'layer', 'none'):
+            raise ValueError(
+                f"unknown norm={norm!r}; expected one of instance | layer | none")
         channels = _gsat_mlp_channels(in_dim, edge_mode)
         layers: list[nn.Module] = []
         for i in range(1, len(channels)):
             layers.append(nn.Linear(channels[i - 1], channels[i], bias=True))
             if i < len(channels) - 1:
-                layers.append(InstanceNorm(channels[i]))
+                # norm choice. InstanceNorm is graph-wise (official GSAT, needs
+                # batch — routed by BatchSequential); LayerNorm/none are for the
+                # MOTIF scorer where per-graph InstanceNorm over the few motif
+                # rows in a graph is unstable. 'none' skips normalization.
+                if norm == 'instance':
+                    layers.append(InstanceNorm(channels[i]))
+                elif norm == 'layer':
+                    layers.append(nn.LayerNorm(channels[i]))
                 layers.append(nn.ReLU())
                 layers.append(nn.Dropout(dropout_p))
         self.net = BatchSequential(*layers)
         self.edge_mode = edge_mode
+        self.norm = norm
 
     def forward(self, x: Tensor, batch: Optional[Tensor] = None) -> Tensor:
         return self.net(x, batch)
@@ -200,12 +212,13 @@ class MotifReadoutScorer(nn.Module):
         pool_mode: str = 'mean',
         dropout_p: float = 0.5,
         hidden_mult: int = 2,
+        norm: str = 'none',
     ):
         super().__init__()
         del hidden_mult
         self.pooling = MotifPooling(pool_mode)
         pooled_dim = in_dim * self.pooling.out_mult
-        self.scorer = ExtractorMLP(pooled_dim, dropout_p=dropout_p)
+        self.scorer = ExtractorMLP(pooled_dim, dropout_p=dropout_p, norm=norm)
 
     def forward(
         self,
