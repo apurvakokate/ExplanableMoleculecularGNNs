@@ -60,6 +60,7 @@ def _make_gsat(**kwargs):
     defaults = dict(
         x_dim=NUM_ATOM_TYPES, hidden_dim=32, num_layers=2,
         backbone_name='GIN', num_classes=1,
+        motif_scorer_norm='instance',  # scorer runs REQUIRE an explicit norm (no default)
     )
     defaults.update(kwargs)
     return GSAT(**defaults)
@@ -283,7 +284,7 @@ class TestExtractorMLP(unittest.TestCase):
 
 class TestMotifReadoutScorer(unittest.TestCase):
     def test_output_shapes(self):
-        scorer = MotifReadoutScorer(in_dim=32, pool_mode='mean')
+        scorer = MotifReadoutScorer(in_dim=32, pool_mode='mean', norm='instance')
         emb = torch.randn(12, 32)
         inv = torch.tensor([0,0,0,1,1,1,2,2,2,3,3,3])
         motif_batch = torch.zeros(4, dtype=torch.long)
@@ -292,7 +293,7 @@ class TestMotifReadoutScorer(unittest.TestCase):
         self.assertEqual(n_logits.shape, (12, 1))
 
     def test_node_logits_broadcast_correctly(self):
-        scorer = MotifReadoutScorer(in_dim=16, pool_mode='mean')
+        scorer = MotifReadoutScorer(in_dim=16, pool_mode='mean', norm='instance')
         emb = torch.randn(6, 16)
         inv = torch.tensor([0, 0, 1, 1, 2, 2])
         motif_batch = torch.zeros(3, dtype=torch.long)
@@ -559,6 +560,16 @@ class TestConfigValidation(unittest.TestCase):
         b = _batch(2, 6, 3)
         with self.assertRaises(ValueError):
             m(b.x, b.edge_index, b.batch, None)
+
+    def test_scorer_requires_explicit_norm(self):
+        # motif_scorer_norm has NO default: a scorer run (readout / motif-noise)
+        # must set it explicitly, else the constructor raises.
+        with self.assertRaises(ValueError):
+            _make_gsat(motif_method='readout', motif_scorer_norm=None)
+        with self.assertRaises(ValueError):
+            _make_gsat(motif_method='none', noise='motif', motif_scorer_norm=None)
+        # non-scorer runs are unaffected (norm unused).
+        _make_gsat(motif_method='none', noise='none', motif_scorer_norm=None)
 
 
 class TestRegConfig(unittest.TestCase):
