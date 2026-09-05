@@ -1,0 +1,16 @@
+# Method preset: BASE GSAT (node extractor).
+#
+# This file defines only the METHOD. Dataset / backbone / fold / roots come from
+# the CLI and OVERRIDE anything here (run.py merges explicitly-passed CLI args on
+# top of the preset). Example:
+#
+#   python run.py --config MotifSAT/configs/base_gsat.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+#
+# Per-atom extractor, gate injected through message passing. No motif machinery.
+motif_method: none
+noise: none
+learn_edge_att: false
+info_loss_level: node
+w_message: true

@@ -196,6 +196,10 @@ def select_colour(df, smiles_col, hop, cov_lo, cov_hi, min_size, max_size, colou
 
     if colour is not None:
         chosen = colour
+        if chosen not in mol_has:          # explicit colour absent at this hop -> fail loud,
+            raise SystemExit(              # rather than silently emitting an all-negative dataset
+                f'--colour {chosen!r} not found at hop {hop} in any of the {n_ok} parsed '
+                f'molecules. Check the hop, or drop --colour to auto-select.')
     else:
         cands = []
         for c, rows in mol_has.items():
@@ -223,12 +227,18 @@ def select_colour(df, smiles_col, hop, cov_lo, cov_hi, min_size, max_size, colou
 def build_gt(df, smiles_col, group_col, hop, chosen, atom_colours):
     """Relabel by presence of `chosen` colour; node_imp = per-instance atom masks."""
     rows_out, node_imp = [], {}
+    n_skipped = 0
+    seen = Counter()
     for i, smi in enumerate(df[smiles_col]):
         cols = atom_colours.get(i)
         grp = df.iloc[i][group_col]
         if cols is None:
-            rows_out.append(dict(smiles=smi, label=0, group=grp))
+            # (#2) Unparsable SMILES: no graph, so no node mask can exist. Drop from BOTH the CSV
+            # and the npz so they stay in lockstep (a row without a mask KeyErrors / is silently
+            # dropped downstream). The docstring's "negatives get a zero column" is for PARSED negs.
+            n_skipped += 1
             continue
+        seen[smi] += 1
         mol = _mol(smi)
         n = mol.GetNumAtoms()
         hit_atoms = [a for a, c in cols.items() if c == chosen]
@@ -236,13 +246,26 @@ def build_gt(df, smiles_col, group_col, hop, chosen, atom_colours):
         rows_out.append(dict(smiles=smi, label=y, group=grp))
         if y:
             adj = _adj(mol)
-            comps = _connected_components(hit_atoms, adj)        # one column per instance
+            # (#1) GT = union of the hop-radius ego-graphs of the colour-carrying atoms, i.e. the
+            # substructure that actually DETERMINES the WL colour and the GNN's receptive field —
+            # paper Eq.10  V_{M_G} = ⋃_{v∈Ψ_G(c̄)} S_G^(ℓ)(v)  (Fig.3: "ℓ-radius ego-graphs of
+            # nodes with WL colour"). NOT just the carrier atoms. Instances = connected components.
+            region = set()
+            for a in hit_atoms:
+                region |= k_hop_atoms(adj, a, hop)
+            comps = _connected_components(region, adj)           # one column per instance
             arr = np.zeros((n, len(comps)), dtype=np.float32)
             for j, comp in enumerate(comps):
                 arr[comp, j] = 1.0
             node_imp[smi] = arr
         else:
             node_imp[smi] = np.zeros((n, 1), dtype=np.float32)   # negatives: no attribution
+    if n_skipped:                                                 # (#2)
+        print(f'  [gt] skipped {n_skipped} unparsable SMILES (dropped from both CSV and npz)')
+    dups = sum(1 for c in seen.values() if c > 1)                 # (#5)
+    if dups:
+        print(f'  [gt] WARNING: {dups} SMILES occur more than once; their npz masks collapse to a '
+              f'single entry, so npz key count < CSV row count (harmless only if truly identical).')
     return pd.DataFrame(rows_out), node_imp
 
 
@@ -251,6 +274,11 @@ def write_gt(out_root, gt_out, name, fold, df_out, node_imp):
     Path(gt_out).mkdir(parents=True, exist_ok=True)
     csv_p = Path(out_root) / f'{name}_{fold}.csv'
     df_out.to_csv(csv_p, index=False)
+    bad = [s for s in node_imp if '/' in s or '\\' in s]         # (#5) stereo-bond SMILES
+    if bad:
+        print(f'  [gt] WARNING: {len(bad)} SMILES keys contain "/" or "\\" (stereo bonds); '
+              f'npz archive names with slashes can fail to round-trip through np.load — verify '
+              f'they load back by key (e.g. {bad[0]!r}).')
     npz_p = Path(gt_out) / f'{name}_planted_gt.npz'
     np.savez_compressed(npz_p, **{smi: arr for smi, arr in node_imp.items()})
     return csv_p, npz_p

@@ -1,0 +1,19 @@
+# Method preset: MOTIF READOUT (mechanism 2).
+#
+# Pool atom embeddings -> per-motif MLP score -> sample once per motif
+# (noise=motif) -> broadcast the gate to the motif's atoms. Information
+# bottleneck at motif granularity (info_loss_level=motif).
+#
+# motif_scorer_norm: instance = official GSAT (graph-wise InstanceNorm). Set to
+# 'layer' or 'none' to A/B the concern that per-graph InstanceNorm over the few
+# motif rows in a molecule is unstable.
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/readout.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_scorer_norm: instance

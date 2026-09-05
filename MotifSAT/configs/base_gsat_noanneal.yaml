@@ -1,0 +1,19 @@
+# Method preset: BASE GSAT (node extractor), NO IB annealing.
+#
+# Same as base_gsat.yaml but decay_r=0, so the IB prior r stays constant at
+# init_r for all epochs (max(final_r, init_r - 0*steps) = init_r) instead of
+# decaying toward final_r. This is the reachable "no annealing" flavor:
+# decay_r=0 SURVIVES reg_config (which only fills None), whereas leaving decay
+# unset would be resolved to the per-dataset schedule and would anneal.
+# decay_interval is still filled by reg_config (unused when decay_r=0).
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/base_gsat_noanneal.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: none
+noise: none
+learn_edge_att: false
+info_loss_level: node
+w_message: true
+decay_r: 0.0

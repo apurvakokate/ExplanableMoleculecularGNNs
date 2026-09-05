@@ -1,0 +1,20 @@
+# Method preset: READOUT + INTER-MOTIF LOSS.
+#
+# Motif readout (mechanism 2) plus the between-motif spread term (mechanism 1,
+# inter only). within_node_coef is 0 on purpose: under readout + noise=motif a
+# motif's atoms share ONE gate, so within-motif variance is 0 by construction and
+# the intra term would be a no-op. The inter term (between-motif variance) is
+# still meaningful and is what this preset adds.
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/readout_inter.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_loss_coef: 1.0
+within_node_coef: 0.0
+between_motif_coef: 1.0
+motif_scorer_norm: instance

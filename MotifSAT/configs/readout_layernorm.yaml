@@ -1,0 +1,17 @@
+# Method preset: MOTIF READOUT with LAYER norm in the scorer.
+#
+# Same as readout.yaml but motif_scorer_norm=layer. LayerNorm normalizes each
+# motif's feature vector over its own channels (fixed C, independent of how many
+# motifs a molecule has) — vs the default graph-wise InstanceNorm, whose
+# statistics come from the few motif rows per graph. A/B against readout.yaml
+# (instance) and readout_nonorm.yaml (none).
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/readout_layernorm.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_scorer_norm: layer

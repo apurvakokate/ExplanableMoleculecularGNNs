@@ -1,0 +1,16 @@
+# Method preset: MOTIF READOUT with NO norm in the scorer.
+#
+# Same as readout.yaml but motif_scorer_norm=none — the scorer MLP has no
+# normalization layer at all. Baseline for the norm ablation: A/B against
+# readout.yaml (instance, graph-wise InstanceNorm) and readout_layernorm.yaml
+# (per-motif LayerNorm).
+#
+# Dataset / backbone / roots come from the CLI (they override this preset), e.g.:
+#   python run.py --config MotifSAT/configs/readout_nonorm.yaml \
+#       --dataset Mutagenicity --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant <variant>
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_scorer_norm: none
