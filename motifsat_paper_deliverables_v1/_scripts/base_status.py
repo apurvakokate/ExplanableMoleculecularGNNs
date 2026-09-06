@@ -57,9 +57,9 @@ def claim_jobid(claim_dir):
         return None
 
 
-def classify(out_root, live):
-    runs = os.path.join(out_root, 'base_runs')
-    claims = os.path.join(out_root, '_dispatch', 'claims')
+def classify(out_root, live, runs_name='base_runs', dispatch_name='_dispatch'):
+    runs = os.path.join(out_root, runs_name)
+    claims = os.path.join(out_root, dispatch_name, 'claims')
     rows = []
     for cid, preset, stem, ds, fold, bb, rel in nc.iter_cells():
         d = os.path.join(runs, rel)
@@ -85,9 +85,9 @@ def classify(out_root, live):
     return rows
 
 
-def load_last_rc(out_root):
+def load_last_rc(out_root, dispatch_name='_dispatch'):
     rc = {}
-    p = os.path.join(out_root, '_dispatch', 'failures.tsv')
+    p = os.path.join(out_root, dispatch_name, 'failures.tsv')
     if os.path.exists(p):
         for r in csv.DictReader(open(p), delimiter='\t'):
             rc[r['cell_id']] = r.get('rc', '')   # last occurrence wins
@@ -98,6 +98,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--out_root', default=os.environ.get('MOTIFSAT_DELIV_OUT', DEFAULT_OUT))
+    ap.add_argument('--runs', default='base_runs',
+                    help='run tree under out_root (base_runs | sfo_runs | ...)')
+    ap.add_argument('--dispatch', default='_dispatch',
+                    help='dispatch dir under out_root (_dispatch | _dispatch_sfo | ...)')
     ap.add_argument('--report', action='store_true')
     ap.add_argument('--reset', action='store_true')
     ap.add_argument('--apply', action='store_true', help='execute the reset (default: dry-run)')
@@ -110,8 +114,8 @@ def main():
     a = ap.parse_args()
 
     live = live_jobids()
-    rows = classify(a.out_root, live)
-    rc_map = load_last_rc(a.out_root)
+    rows = classify(a.out_root, live, a.runs, a.dispatch)
+    rc_map = load_last_rc(a.out_root, a.dispatch)
 
     def match(r):
         if a.preset and r['preset'] != a.preset: return False
@@ -127,8 +131,8 @@ def main():
         states = {s.strip() for s in a.states.split(',') if s.strip()}
         targets = [r for r in sel if r['state'] in states]
         print(f'reset: {len(targets)} cells eligible (states={sorted(states)}, apply={a.apply})')
-        base_runs = os.path.join(a.out_root, 'base_runs')
-        base_claims = os.path.join(a.out_root, '_dispatch', 'claims')
+        base_runs = os.path.join(a.out_root, a.runs)
+        base_claims = os.path.join(a.out_root, a.dispatch, 'claims')
         for r in targets:
             tag = 'DELETE' if a.apply else 'would delete'
             print(f'  {tag} {r["cell_id"]} [{r["state"]}] rc={rc_map.get(r["cell_id"], "-")}')
