@@ -171,7 +171,7 @@ class Connection:
 
 
 class FragmentedMol:
-    def __init__(self, mol, conf, frag_type="brics"):
+    def __init__(self, mol, conf, frag_type="brics", frag_bonds=None):
 
         Chem.WedgeMolBonds(mol, conf)
         self.mol = mol
@@ -182,6 +182,16 @@ class FragmentedMol:
         elif frag_type == "murcko":
             # print('using murcko')
             frag_bonds = find_murcko_link_bond(mol)
+        elif frag_type == "custom":
+            # LOCAL VENDORED EDIT (CLAUDE-EDIT-VERIFY): fragment on a caller-supplied bond list —
+            # atom-index pairs (a1, a2), the SAME format the brics branch produces after `b[0]`. Only
+            # the SOURCE of frag_bonds changes here; the bond removal, GetMolFrags, and connection
+            # construction below run IDENTICALLY to brics/murcko. This mirrors how the authors already
+            # swap brics<->murcko, and lets FragNet's own fragment graph use an externally-defined
+            # partition (our rbrics motifs) with no other change to the model or featurization.
+            if frag_bonds is None:
+                raise ValueError("frag_type='custom' requires frag_bonds=[(a1, a2), ...]")
+            frag_bonds = [(int(a1), int(a2)) for (a1, a2) in frag_bonds]
 
         rwmol = Chem.RWMol(mol)
 

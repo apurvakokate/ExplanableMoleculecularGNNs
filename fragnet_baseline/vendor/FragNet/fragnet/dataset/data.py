@@ -347,8 +347,12 @@ class CreateData:
         mol = args[2]
         conf = args[3]
         frag_type = args[4]
+        # LOCAL VENDORED EDIT (CLAUDE-EDIT-VERIFY): optional 6th arg = caller-supplied fragmentation
+        # bonds, forwarded only for frag_type='custom'. Absent -> None -> brics/murcko behave EXACTLY
+        # as before (fully backward compatible; the original callers pass a 5-element args list).
+        frag_bonds = args[5] if len(args) > 5 else None
 
-        graph = FragmentedMol(mol, conf, frag_type)
+        graph = FragmentedMol(mol, conf, frag_type, frag_bonds=frag_bonds)
 
         # cannot have two atoms at the same position. i assume that this occurs for [0,0,0] positions.
         # so, igonoring molecules where there are mutiple [0,0,0] coordinates.
