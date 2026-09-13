@@ -48,9 +48,13 @@ case "$phase" in
       python "$HERE/stage_a_fragnet_env/prep_data.py" \
           --graph_context "$WORK/$f/graph_context.json" \
           --out_dir "$WORK/$f" --vendor "$VENDOR"
+      # batch_size default raised 16 -> 256: the bs512 test proved a large batch trains Benzene to
+      # val AUC 1.0 in ~15 min (122 epochs) vs ~31 s/epoch at batch 16 (9,600 train / 16 = 600
+      # batches/epoch of tiny-kernel + single-threaded-collate overhead). 256 fits comfortably on an
+      # 8 GB GPU; override with BATCH_SIZE for a larger card (512 OOMs the old M60).
       python "$HERE/stage_a_fragnet_env/finetune_fragnet.py" \
           --work "$WORK/$f" --pt_ckpt "$PT_CKPT" --vendor "$VENDOR" \
-          --task clf --n_classes 1
+          --task clf --n_classes 1 --batch_size "${BATCH_SIZE:-256}"
       python "$HERE/stage_a_fragnet_env/export_attention.py" \
           --work "$WORK/$f" --vendor "$VENDOR" \
           --graph_context "$WORK/$f/graph_context.json" --impact own \

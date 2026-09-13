@@ -26,8 +26,13 @@ import torch
 
 def _load_models(ft_ckpt: str, device, n_classes=1):
     from fragnet.model.gat.gat2 import FragNetFineTune, FragNetViz
+    # Head dims MUST match finetune_fragnet.build_config's finetune.model, or the FTHead3 state_dict
+    # won't load: the checkpoint's predictor is 256->128->1024->1024->512->1 (h1=128,h2=1024,h3=1024,
+    # h4=512). FragNetFineTune's OWN defaults are h1..h4=256, which is the mismatch that bit us.
+    # Keep these in sync with finetune_fragnet.py (or, better, read <work>/config.yaml — see TODO).
     ft = FragNetFineTune(n_classes=n_classes, atom_features=167, frag_features=167,
-                         edge_features=17, num_layer=4, num_heads=4, emb_dim=128, fthead="FTHead3")
+                         edge_features=17, num_layer=4, num_heads=4, emb_dim=128,
+                         h1=128, h2=1024, h3=1024, h4=512, act="relu", fthead="FTHead3")
     ft.load_state_dict(torch.load(ft_ckpt, map_location=device))
     ft.to(device).eval()
     viz = FragNetViz(num_layer=4, emb_dim=128, num_heads=4, return_attentions=True)
