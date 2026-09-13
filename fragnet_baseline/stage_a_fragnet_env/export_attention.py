@@ -120,20 +120,22 @@ def _per_atom_atts(attn_atoms, n_atoms: int) -> np.ndarray:
 
 
 @torch.no_grad()
-def _own_impact(model, data, device, nodes_to_motifs, p_full: float) -> dict:
-    """|p_full - p_masked| per motif; ablation = zero the motif's atom feature rows (x_atoms). Motif
-    membership is our per-atom motif id, order-aligned to x_atoms (verified by atom_syms in caller)."""
+def _own_impact(model, data, device, nodes_to_motifs, heavy_idx, p_full: float) -> dict:
+    """|p_full - p_masked| per motif. Ablation = zero the motif's HEAVY-atom feature rows in x_atoms.
+    nodes_to_motifs is our per-(heavy-)atom motif id; heavy_idx[k] maps our atom k -> FragNet x_atoms
+    row (FragNet's x_atoms also holds trailing explicit H, which carry no motif and are left intact)."""
     n2m = np.asarray(nodes_to_motifs, dtype=int)
-    if n2m.shape[0] != int(data.x_atoms.shape[0]):
-        raise AssertionError(f"nodes_to_motifs {n2m.shape[0]} != x_atoms {int(data.x_atoms.shape[0])}")
+    heavy = np.asarray(heavy_idx, dtype=int)
+    if n2m.shape[0] != heavy.shape[0]:
+        raise AssertionError(f"nodes_to_motifs {n2m.shape[0]} != heavy atoms {heavy.shape[0]}")
     out = {}
     for mid in sorted({int(m) for m in n2m if m >= 0}):
-        mask = torch.as_tensor(n2m == mid, dtype=torch.bool)
-        if int(mask.sum()) == 0:
+        rows = heavy[n2m == mid]                      # FragNet x_atoms rows for this motif's heavy atoms
+        if rows.size == 0:
             continue
         d = data.clone()
         d.x_atoms = d.x_atoms.clone()
-        d.x_atoms[mask] = 0.0
+        d.x_atoms[torch.as_tensor(rows, dtype=torch.long)] = 0.0
         p_masked, _ = _forward(model, _batch1(d, device))
         out[int(mid)] = abs(p_full - p_masked)
     return out
@@ -163,20 +165,27 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
             row = ctx_by_idx[split].get(idx)
             if row is None:
                 raise KeyError(f"{split}: src_idx {idx} not in graph_context — handoff mismatch")
-            n_atoms = int(data.x_atoms.shape[0])
+            n_frag_atoms = int(data.x_atoms.shape[0])       # FragNet atom count (INCLUDES explicit H)
             fn_syms = list(data.atom_syms)
+            our_syms = list(row["atom_syms"])                # our graph: heavy atoms only
+            # FragNet keeps explicit H (added by get_3Dcoords for the 3D conformer); our graph is
+            # heavy-atom-only. Map via FragNet's HEAVY-atom subset, which MUST equal our sequence.
+            heavy_idx = [i for i, s in enumerate(fn_syms) if s != "H"]
+            heavy_syms = [fn_syms[i] for i in heavy_idx]
             # atom<->atom verification BEFORE using any per-atom quantity
-            if fn_syms != list(row["atom_syms"]):
-                j = next((k for k in range(min(len(fn_syms), len(row["atom_syms"])))
-                          if fn_syms[k] != row["atom_syms"][k]), -1)
+            if heavy_syms != our_syms:
+                j = next((k for k in range(min(len(heavy_syms), len(our_syms)))
+                          if heavy_syms[k] != our_syms[k]), -1)
                 raise AssertionError(
-                    f"{split} src_idx {idx}: ELEMENT MISMATCH at atom {j} — FragNet atom order "
-                    f"differs from ours; attention/impact would be misaligned.")
+                    f"{split} src_idx {idx}: HEAVY-ATOM ELEMENT MISMATCH at {j} — FragNet heavy atoms "
+                    f"({len(heavy_syms)}) differ from ours ({len(our_syms)}); mapping would be wrong.")
             pred, attn_atoms = _forward(model, _batch1(data, dev))
-            atts = _per_atom_atts(attn_atoms, n_atoms)
-            oi = _own_impact(model, data, dev, row["nodes_to_motifs"], pred) if impact == "own" else {}
-            out_split[str(idx)] = {"atts": atts.tolist(), "atom_syms": fn_syms, "pred": pred,
-                                   "own_impact": {str(k): v for k, v in oi.items()}, "n_atoms": n_atoms}
+            atts = _per_atom_atts(attn_atoms, n_frag_atoms)[heavy_idx]   # heavy-atom attention, our order
+            oi = (_own_impact(model, data, dev, row["nodes_to_motifs"], heavy_idx, pred)
+                  if impact == "own" else {})
+            out_split[str(idx)] = {"atts": atts.tolist(), "atom_syms": our_syms, "pred": pred,
+                                   "own_impact": {str(k): v for k, v in oi.items()},
+                                   "n_atoms": len(heavy_idx)}
         neutral[split] = out_split
         print(f"[export] {split}: {len(out_split)} graphs")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
