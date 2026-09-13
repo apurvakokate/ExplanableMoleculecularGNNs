@@ -2,14 +2,19 @@
 # Matches pnnl/FragNet requirements: Python 3.11, PyTorch 2.4, torch-scatter, RDKit.
 # Stage B runs in the existing `l2xgnn` env (not here).
 name: fragnet
+# Only 'defaults' for python+pip — conda 4.14's classic solver OOMs building the graph over
+# conda-forge, so rdkit is installed via pip (official PyPI wheel) instead, and the conda solve
+# stays trivial. torch/torch-scatter were already pip-side.
 channels:
-  - pytorch
-  - conda-forge
+  - defaults
 dependencies:
   - python=3.11
   - pip
-  - rdkit
   - pip:
+      # PyG prebuilt-wheel index so torch-scatter downloads a +pt24cu121 wheel (no source build,
+      # no nvcc on the CPU build node) — mirrors how l2xgnn did it (2.1.2+pt22cu121).
+      - --find-links https://data.pyg.org/whl/torch-2.4.0+cu121.html
+      - rdkit              # PyPI wheel (was a conda-forge dep → the OOM source); py3.11 wheels exist
       - torch==2.4.0
       - torch-scatter
       - numpy
