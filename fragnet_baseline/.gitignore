@@ -1,0 +1,14 @@
+# FragNet is VENDORED INTO THIS REPO (pinned commit bb9da67) so our local edits to it are tracked
+# and synced like any other file. Only the large model weights are excluded — they are kept on HPC
+# (the pretrained pt.pt lives at vendor/FragNet/fragnet/exps/pt/unimol_exp1s4/pt.pt there) and are
+# NOT committed.
+vendor/**/*.pt
+vendor/**/*.pth
+vendor/**/*.ckpt
+
+# Our intermediate handoff files + FragNet finetune outputs (not vendored source).
+work/
+*.pkl
+ft.pt
+*.log
+__pycache__/
