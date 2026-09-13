@@ -69,6 +69,7 @@ def our_node_symbols(graph) -> list:
     order. This is the ground truth for atom↔atom verification against FragNet. Our features are
     one-hot of atom.GetSymbol() indexed by ATOMS (dataset.py:_atom_features), node_encoder='onehot'
     is an identity passthrough, and node order is MolFromSmiles(smiles).GetAtoms() order."""
+    import torch
     global _ATOMS_INV
     if _ATOMS_INV is None:
         from SharedModules.data.dataset import ATOMS, NUM_ATOM_TYPES
