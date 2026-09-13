@@ -4,25 +4,24 @@ handoff consumed by Stage B, keyed by OUR split-local index (src_idx):
   {split: {str(src_idx): {"atts":[per-atom], "atom_syms":[per-atom element], "pred":float,
                           "own_impact":{motif_id: float}, "n_atoms":int}}}
 
-We use FragNet's OWN visualization model, fragnet.vizualize.model.FragNetFineTuneViz: a single forward
-returns (prediction, attn_atoms, attn_frags, attn_bonds, attn_fbonds). Per-atom attention is attn_atoms
-summed over the head dim — matching FragNet's own fragnet.vizualize.viz.vizualize_atom_weights, which
-does `summed_attn_weights_atoms.sum(1)`. This replaces an earlier hand-rolled transfer into gat2.py's
-FragNetViz, whose replacement last layer (FragNetLayerA) did not match the checkpoint.
+Model: FragNet's OWN fragnet.vizualize.model.FragNetFineTuneViz (one forward returns
+(prediction, attn_atoms, attn_frags, attn_bonds, attn_fbonds)). Per-atom attention is attn_atoms
+summed over the head dim (matches FragNet's vizualize_atom_weights). The architecture is read from the
+<work>/config.yaml finetune wrote (no drift); weights load via a shape-safe partial loader.
 
-The model architecture is read from the <work>/config.yaml that finetune_fragnet.py wrote, so it can
-NEVER drift from the checkpoint (an earlier drift — default head dims vs the trained h1..h4 — is exactly
-what bit us). Weights transfer via a shape-safe partial load (mirrors fragnet.vizualize.viz
-.load_partial_weights); we FAIL LOUD if the backbone or head did not transfer, so untrained attention
-or predictions can never slip through silently.
+FragNet keeps explicit H (get_3Dcoords adds them for the 3D conformer); our graph is heavy-atom-only.
+We map via FragNet's HEAVY-atom subset, which must equal our atom sequence (verified per graph).
 
-- atts       : per-atom attention (FragNet's native node-level importance).
-- atom_syms  : per-atom element (FragNet x_atoms order) — Stage B asserts this equals our graph's
-               element sequence, proving atom i == atom i (not just equal counts).
+BATCHED: forwards are batched across molecules (collate_fn of `batch_graphs` graphs per forward) for
+BOTH the base attention/prediction pass and the own-impact masked pass. A batch-1 implementation did
+~84k single-graph forwards (12k base + ~72k masked) at ~15% GPU util (per-call overhead, not compute);
+batching cuts that to ~1.3k forwards and fills the GPU. Correctness is unchanged — masking, the
+heavy-atom verification, and the output schema are identical; only the number of forwards differs.
+
+- atts       : per-atom attention (heavy atoms, our order).
+- atom_syms  : per-atom element (our heavy-atom sequence).
 - pred       : FragNetFineTuneViz prediction (sigmoid for classification).
-- own_impact : ante-hoc OWN impact = |p_full - p_masked|, ablating a motif's atoms (x_atoms rows
-               zeroed). Motif membership comes from OUR nodes_to_motifs (graph_context), order-aligned
-               to FragNet's atoms (verified via atom_syms before masking).
+- own_impact : ante-hoc OWN impact = |p_full - p_masked|, zeroing a motif's heavy-atom feature rows.
 """
 import argparse
 import json
@@ -65,7 +64,6 @@ def _load_model(ft_ckpt: str, device, cfg: dict):
         fthead=cfg.get("fthead", "FTHead3"))
     ckpt = torch.load(ft_ckpt, map_location=device)
     msd = model.state_dict()
-    # shape-safe partial transfer: keep only checkpoint tensors whose name AND shape match the model.
     transfer = {k: v for k, v in ckpt.items() if k in msd and v.shape == msd[k].shape}
     skipped = [k for k in ckpt if k not in transfer]
     msd.update(transfer)
@@ -75,8 +73,7 @@ def _load_model(ft_ckpt: str, device, cfg: dict):
     print(f"[export] FragNetFineTuneViz: transferred {len(transfer)}/{len(ckpt)} tensors "
           f"(backbone={n_bb}, head={n_head}); skipped={len(skipped)}")
     if skipped:
-        print(f"[export] NOTE skipped keys (name/shape mismatch — expected only attention-layer "
-              f"variant params, if any): {skipped}")
+        print(f"[export] NOTE skipped keys (name/shape mismatch): {skipped}")
     if n_bb == 0 or n_head == 0:
         raise RuntimeError(
             "FragNetFineTuneViz: backbone or head did not transfer from the checkpoint — attention "
@@ -85,67 +82,48 @@ def _load_model(ft_ckpt: str, device, cfg: dict):
     return model
 
 
-def _batch1(data, device):
+def _collate(datas, device):
+    """collate_fn a LIST of Data into one batched dict, on device."""
     from fragnet.dataset.data import collate_fn
-    b = collate_fn([data])
+    b = collate_fn(datas)
     if not isinstance(b, dict):
         raise TypeError("collate_fn did not return a dict batch — inspect fragnet/dataset/data.py")
     return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in b.items()}
 
 
-@torch.no_grad()
-def _forward(model, batch):
-    """One FragNetFineTuneViz forward -> (pred_prob, attn_atoms). pred_prob = sigmoid(logit)."""
-    out = model(batch)
-    if not (isinstance(out, (tuple, list)) and len(out) >= 2):
-        n = len(out) if hasattr(out, "__len__") else "?"
-        raise TypeError(f"FragNetFineTuneViz returned {type(out)} len {n} — expected "
-                        f"(pred, attn_atoms, attn_frags, attn_bonds, attn_fbonds).")
-    logit = out[0].view(-1)
-    return float(torch.sigmoid(logit[0])), out[1]
-
-
-def _per_atom_atts(attn_atoms, n_atoms: int) -> np.ndarray:
-    """Reduce attn_atoms to one scalar per atom by summing over the head dim — matches FragNet's own
-    vizualize_atom_weights (summed_attn_weights_atoms.sum(1)). Length must equal n_atoms (x_atoms order)."""
+def _reduce_heads(attn_atoms) -> torch.Tensor:
+    """Sum attn_atoms over the head dim(s) -> 1D [total_atoms] (FragNet's vizualize_atom_weights does
+    summed_attn_weights_atoms.sum(1))."""
     a = attn_atoms.detach().cpu().float()
     if a.dim() > 1:
         a = a.sum(dim=tuple(range(1, a.dim())))
-    a = a.view(-1).numpy()
-    if a.shape[0] != n_atoms:
-        raise AssertionError(
-            f"attn_atoms length {a.shape[0]} != n_atoms {n_atoms} — attention is not per-atom in "
-            f"x_atoms order; inspect FragNetFineTuneViz attn_atoms shape.")
-    return a
+    return a.view(-1)
 
 
 @torch.no_grad()
-def _own_impact(model, data, device, nodes_to_motifs, heavy_idx, p_full: float) -> dict:
-    """|p_full - p_masked| per motif. Ablation = zero the motif's HEAVY-atom feature rows in x_atoms.
-    nodes_to_motifs is our per-(heavy-)atom motif id; heavy_idx[k] maps our atom k -> FragNet x_atoms
-    row (FragNet's x_atoms also holds trailing explicit H, which carry no motif and are left intact)."""
-    n2m = np.asarray(nodes_to_motifs, dtype=int)
-    heavy = np.asarray(heavy_idx, dtype=int)
-    if n2m.shape[0] != heavy.shape[0]:
-        raise AssertionError(f"nodes_to_motifs {n2m.shape[0]} != heavy atoms {heavy.shape[0]}")
-    out = {}
-    for mid in sorted({int(m) for m in n2m if m >= 0}):
-        rows = heavy[n2m == mid]                      # FragNet x_atoms rows for this motif's heavy atoms
-        if rows.size == 0:
-            continue
-        d = data.clone()
-        d.x_atoms = d.x_atoms.clone()
-        d.x_atoms[torch.as_tensor(rows, dtype=torch.long)] = 0.0
-        p_masked, _ = _forward(model, _batch1(d, device))
-        out[int(mid)] = abs(p_full - p_masked)
-    return out
+def _run_batches(model, payload, batch_graphs, device):
+    """Forward `payload` (list of Data) in chunks of `batch_graphs`. Yields (chunk_slice, logits,
+    per_atom, atom_batch) per chunk: logits [n_chunk], per_atom [tot_atoms], atom_batch [tot_atoms]."""
+    for s in range(0, len(payload), batch_graphs):
+        chunk = payload[s:s + batch_graphs]
+        batch = _collate([d for d in chunk], device)
+        out = model(batch)
+        if not (isinstance(out, (tuple, list)) and len(out) >= 2):
+            n = len(out) if hasattr(out, "__len__") else "?"
+            raise TypeError(f"FragNetFineTuneViz returned {type(out)} len {n} — expected "
+                            f"(pred, attn_atoms, attn_frags, attn_bonds, attn_fbonds).")
+        logits = out[0].view(-1).detach().cpu()                 # [n_chunk]
+        per_atom = _reduce_heads(out[1])                        # [tot_atoms]
+        atom_batch = batch["batch"].detach().cpu().view(-1)     # [tot_atoms] graph index per atom
+        yield s, chunk, logits, per_atom, atom_batch
 
 
 def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
-           impact: str = "own", device: str = "auto") -> None:
+           impact: str = "own", device: str = "auto", batch_graphs: int = 64) -> None:
     from fragnet.dataset.dataset import load_pickle_dataset
     dev = torch.device("cuda" if (device == "cuda" or (device == "auto" and torch.cuda.is_available()))
                        else "cpu")
+    print(f"[export] device={dev} batch_graphs={batch_graphs} impact={impact}")
     ctx = json.loads(Path(graph_context).read_text())
     ctx_by_idx = {s: {int(r["idx"]): r for r in (ctx.get(s) or [])} for s in ("train", "valid", "test")}
 
@@ -159,33 +137,81 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
         if not p.exists():
             raise FileNotFoundError(f"missing FragNet pkl {p} — run prep_data.py/finetune first")
         ds = load_pickle_dataset(str(p))
-        out_split = {}
+
+        # --- resolve + verify every graph up front (fail loud) -------------------------------------
+        # items: per graph -> (data, idx, heavy_idx[list], our_syms[list], nodes_to_motifs[list])
+        items = []
         for data in ds:
             idx = int(data.src_idx)
             row = ctx_by_idx[split].get(idx)
             if row is None:
                 raise KeyError(f"{split}: src_idx {idx} not in graph_context — handoff mismatch")
-            n_frag_atoms = int(data.x_atoms.shape[0])       # FragNet atom count (INCLUDES explicit H)
             fn_syms = list(data.atom_syms)
-            our_syms = list(row["atom_syms"])                # our graph: heavy atoms only
-            # FragNet keeps explicit H (added by get_3Dcoords for the 3D conformer); our graph is
-            # heavy-atom-only. Map via FragNet's HEAVY-atom subset, which MUST equal our sequence.
+            our_syms = list(row["atom_syms"])                    # our graph: heavy atoms only
             heavy_idx = [i for i, s in enumerate(fn_syms) if s != "H"]
             heavy_syms = [fn_syms[i] for i in heavy_idx]
-            # atom<->atom verification BEFORE using any per-atom quantity
-            if heavy_syms != our_syms:
+            if heavy_syms != our_syms:                           # atom<->atom verification
                 j = next((k for k in range(min(len(heavy_syms), len(our_syms)))
                           if heavy_syms[k] != our_syms[k]), -1)
                 raise AssertionError(
                     f"{split} src_idx {idx}: HEAVY-ATOM ELEMENT MISMATCH at {j} — FragNet heavy atoms "
                     f"({len(heavy_syms)}) differ from ours ({len(our_syms)}); mapping would be wrong.")
-            pred, attn_atoms = _forward(model, _batch1(data, dev))
-            atts = _per_atom_atts(attn_atoms, n_frag_atoms)[heavy_idx]   # heavy-atom attention, our order
-            oi = (_own_impact(model, data, dev, row["nodes_to_motifs"], heavy_idx, pred)
-                  if impact == "own" else {})
-            out_split[str(idx)] = {"atts": atts.tolist(), "atom_syms": our_syms, "pred": pred,
-                                   "own_impact": {str(k): v for k, v in oi.items()},
-                                   "n_atoms": len(heavy_idx)}
+            items.append((data, idx, heavy_idx, our_syms, row["nodes_to_motifs"]))
+
+        # --- PASS 1: base forward (attention + prediction), batched across molecules ---------------
+        preds, atts_by_idx = {}, {}
+        base_payload = [it[0] for it in items]
+        for s, chunk, logits, per_atom, atom_batch in _run_batches(model, base_payload, batch_graphs, dev):
+            for gi, (data, idx, heavy_idx, our_syms, _n2m) in enumerate(items[s:s + len(chunk)]):
+                preds[idx] = float(torch.sigmoid(logits[gi]))
+                a = per_atom[atom_batch == gi].numpy()           # this graph's atoms, FragNet order (incl H)
+                if a.shape[0] != int(data.x_atoms.shape[0]):
+                    raise AssertionError(
+                        f"{split} src_idx {idx}: batched attention split gave {a.shape[0]} atoms != "
+                        f"x_atoms {int(data.x_atoms.shape[0])} — batch['batch'] misalignment.")
+                atts_by_idx[idx] = a[heavy_idx]                  # heavy-atom attention, our order
+
+        # --- PASS 2: own-impact, masked forwards batched ACROSS molecules --------------------------
+        oi_by_idx = {idx: {} for (_d, idx, _h, _s, _n) in items}
+        if impact == "own":
+            buf_data, buf_key = [], []                           # parallel: Data clone, (idx, mid)
+
+            def _flush():
+                if not buf_data:
+                    return
+                off = 0
+                for _s2, chunk, logits, _pa, _ab in _run_batches(model, buf_data, batch_graphs, dev):
+                    for k in range(len(chunk)):
+                        idx, mid = buf_key[off + k]
+                        oi_by_idx[idx][mid] = abs(preds[idx] - float(torch.sigmoid(logits[k])))
+                    off += len(chunk)
+                buf_data.clear(); buf_key.clear()
+
+            for (data, idx, heavy_idx, _our, n2m) in items:
+                n2m_a = np.asarray(n2m, dtype=int)
+                heavy = np.asarray(heavy_idx, dtype=int)
+                if n2m_a.shape[0] != heavy.shape[0]:
+                    raise AssertionError(f"{split} src_idx {idx}: nodes_to_motifs {n2m_a.shape[0]} "
+                                         f"!= heavy atoms {heavy.shape[0]}")
+                for mid in sorted({int(m) for m in n2m_a if m >= 0}):
+                    rows = heavy[n2m_a == mid]                   # FragNet x_atoms rows for this motif
+                    if rows.size == 0:
+                        continue
+                    d = data.clone()
+                    d.x_atoms = d.x_atoms.clone()
+                    d.x_atoms[torch.as_tensor(rows, dtype=torch.long)] = 0.0
+                    buf_data.append(d); buf_key.append((idx, int(mid)))
+                    if len(buf_data) >= batch_graphs:
+                        _flush()
+            _flush()
+
+        # --- assemble ------------------------------------------------------------------------------
+        out_split = {}
+        for (data, idx, heavy_idx, our_syms, _n2m) in items:
+            out_split[str(idx)] = {
+                "atts": atts_by_idx[idx].tolist(), "atom_syms": our_syms, "pred": preds[idx],
+                "own_impact": {str(m): v for m, v in oi_by_idx[idx].items()},
+                "n_atoms": len(heavy_idx)}
         neutral[split] = out_split
         print(f"[export] {split}: {len(out_split)} graphs")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -202,10 +228,12 @@ def main():
     ap.add_argument("--impact", choices=["own", "none"], default="own",
                     help="'none' = GT-ROC-only (skip own-impact masked re-forward)")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    ap.add_argument("--batch_graphs", type=int, default=64, help="graphs per batched forward")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     ft_ckpt = args.ft_ckpt or str(Path(args.work) / "ft.pt")
-    export(args.graph_context, args.work, ft_ckpt, args.out, impact=args.impact, device=args.device)
+    export(args.graph_context, args.work, ft_ckpt, args.out, impact=args.impact,
+           device=args.device, batch_graphs=args.batch_graphs)
 
 
 if __name__ == "__main__":
