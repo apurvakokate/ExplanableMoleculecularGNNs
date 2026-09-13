@@ -1,3 +1,4 @@
+# ========== CLAUDE-EDIT-VERIFY (grep token: CLAUDE-EDIT-VERIFY) — only change in this file ==========
 # --- imports (LOCAL VENDORED EDIT) --------------------------------------------------------------
 # Core model deps are hard imports; the plotting/drawing stack is OPTIONAL and guarded, so this
 # module can be imported purely to BUILD a model (FragNetFineTuneViz, for attention export) in an

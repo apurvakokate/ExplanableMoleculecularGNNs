@@ -237,6 +237,7 @@ if __name__ == "__main__":
     test_dataset2 = load_pickle_dataset(args.finetune.test.path)
 
 
+    # ========== CLAUDE-EDIT-VERIFY (grep token: CLAUDE-EDIT-VERIFY) — only change in this file ==========
     # LOCAL VENDORED EDIT: num_workers>0 + pin_memory overlap the single-threaded collation of the
     # heavy dual-graph Data objects with GPU compute (upstream left num_workers=0 -> GPU sat ~33-50%
     # util, dataloader-bound, even at large batch). 2 workers matches the 2 CPUs a 1-GPU job requests.
