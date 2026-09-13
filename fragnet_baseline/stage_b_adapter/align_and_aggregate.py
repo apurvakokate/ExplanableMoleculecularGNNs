@@ -125,7 +125,8 @@ def build_meta(dataset: str, fold: int, vocab_variant: str, regime: str) -> dict
 def load_our_graphs(dataset: str, fold: int, vocab_variant: str,
                     data_root: str, processed_root: str,
                     regime: str = "source", batch_size: int = 128,
-                    planted_root: Optional[str] = None, rule_id: Optional[str] = None):
+                    planted_root: Optional[str] = None, rule_id: Optional[str] = None,
+                    vocab_root: Optional[str] = None):
     """Returns (split_lists, gt, vocab, dmeta, task_type).
     - source/none: via evaluate.py's own loader (``processed_root`` is the BASE; the variant is
       appended internally, matching evaluate.py --processed_root semantics).
@@ -134,17 +135,17 @@ def load_our_graphs(dataset: str, fold: int, vocab_variant: str,
     if regime == "planted":
         if not (planted_root and rule_id):
             raise ValueError("planted regime requires planted_root and rule_id (e.g. 'dnf_k2_r1')")
-        return load_planted_graphs(dataset, fold, planted_root, rule_id, vocab_variant)
+        return load_planted_graphs(dataset, fold, planted_root, rule_id, vocab_variant, vocab_root)
     ev = _evaluate_module()
     meta = build_meta(dataset, fold, vocab_variant, regime)
     loaders, vocab, dmeta, task_type = ev.build_gt_loaders(
-        meta, data_root, None, processed_root, batch_size)
+        meta, data_root, vocab_root, processed_root, batch_size)
     split_lists, gt = ev.split_lists_and_gt(loaders, meta)
     return split_lists, gt, vocab, dmeta, task_type
 
 
 def load_planted_graphs(dataset: str, fold: int, planted_root: str, rule_id: str,
-                        vocab: str = "rbrics"):
+                        vocab: str = "rbrics", vocab_root: Optional[str] = None):
     """Planted regime — load the pre-cached relabelled graphs directly (verified layout
     2026-09-13): planted_v2/<ds>/<rule_id>/gt_cache/<ds>/fold{k}/<vocab>/relabel_<rule_id>/
     {train,valid,test}_with_gt.pt. Each Data carries the rule-derived y + node_label +
@@ -168,7 +169,7 @@ def load_planted_graphs(dataset: str, fold: int, planted_root: str, rule_id: str
     # planted graphs carry node_label → they ARE the GT eval lists
     gt = {s: split_lists[s] for s in split_lists}
     from SharedModules.data.vocab import load_vocab
-    vocab_obj = load_vocab(None, dataset, vocab)   # for motif_list (motif_smarts in rows)
+    vocab_obj = load_vocab(vocab_root, dataset, vocab)   # for motif_list (motif_smarts in rows)
     task_type = "BinaryClass"                      # planted DNF targets are binary (BBBP/hERG/Mutagenicity)
     return split_lists, gt, vocab_obj, None, task_type
 
@@ -248,14 +249,15 @@ def align(neutral: dict, split_lists: Dict[str, list]) -> Dict[str, Dict[int, np
 def dump_context(dataset: str, fold: int, vocab_variant: str,
                  data_root: str, processed_root: str, out_path: str,
                  regime: str = "source",
-                 planted_root: Optional[str] = None, rule_id: Optional[str] = None) -> None:
+                 planted_root: Optional[str] = None, rule_id: Optional[str] = None,
+                 vocab_root: Optional[str] = None) -> None:
     """Write graph_context.json for the FragNet env. Per split, per graph: VERBATIM SMILES (so
     FragNet featurizes the identical string → identical atom order), y (FragNet's training
     target — relabelled for planted), per-atom element symbols (for atom↔atom verification),
     nodes_to_motifs (so Stage A groups atoms into motifs for own-impact masking), and node_label."""
     split_lists, _gt, _vocab, _dmeta, _tt = load_our_graphs(
         dataset, fold, vocab_variant, data_root, processed_root,
-        regime=regime, planted_root=planted_root, rule_id=rule_id)
+        regime=regime, planted_root=planted_root, rule_id=rule_id, vocab_root=vocab_root)
     ctx: Dict[str, list] = {}
     for split, sl in split_lists.items():
         rows = []
@@ -297,6 +299,7 @@ def _main():
     d.add_argument("--data_root", required=True)
     d.add_argument("--processed_root", required=True)
     d.add_argument("--regime", default="source", choices=["source", "none", "planted"])
+    d.add_argument("--vocab_root", default=None, help="load_vocab root (e.g. .../vocab_final_v2)")
     d.add_argument("--planted_root", default=None, help="planted regime: planted_v2 root")
     d.add_argument("--rule_id", default=None, help="planted regime: e.g. dnf_k2_r1")
     d.add_argument("--out", required=True)
@@ -304,7 +307,7 @@ def _main():
     if args.cmd == "dump_context":
         dump_context(args.dataset, args.fold, args.vocab,
                      args.data_root, args.processed_root, args.out, regime=args.regime,
-                     planted_root=args.planted_root, rule_id=args.rule_id)
+                     planted_root=args.planted_root, rule_id=args.rule_id, vocab_root=args.vocab_root)
 
 
 if __name__ == "__main__":

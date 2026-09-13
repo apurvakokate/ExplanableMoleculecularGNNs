@@ -18,6 +18,8 @@ VOCAB="rbrics"                                        # comparison vocab (full);
 DATA_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS"
 # BASE processed root — build_gt_loaders appends the variant (rbrics) internally.
 PROC_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/processed_final_v2"
+# Vocab root (load_vocab reads <VOCAB_ROOT>/<dataset>/<variant>/...); same generation as final_v2.
+VOCAB_ROOT="/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/vocab_final_v2"
 # POC writes to a SCRATCH tree — NEVER the authoritative mose_replication_v2 during validation.
 # Production target (only AFTER the POC passes + we re-run to write there):
 #   mose_replication_v2/artifacts/source/${DATASET}/fragnet/...
@@ -60,7 +62,7 @@ case "$phase" in
     for f in $FOLDS; do
       python "$HERE/stage_b_adapter/align_and_aggregate.py" dump_context \
           --dataset "$DATASET" --fold "$f" --vocab "$VOCAB" --regime source \
-          --data_root "$DATA_ROOT" --processed_root "$PROC_ROOT" \
+          --data_root "$DATA_ROOT" --processed_root "$PROC_ROOT" --vocab_root "$VOCAB_ROOT" \
           --out "$WORK/$f/graph_context.json"
     done
     ;;
@@ -72,7 +74,7 @@ case "$phase" in
         echo "=== Stage B fold $f unk=$unk ==="
         python "$HERE/stage_b_adapter/emit_artifacts.py" \
             --dataset "$DATASET" --fold "$f" --vocab "$VOCAB" --unk "$unk" \
-            --data_root "$DATA_ROOT" --processed_root "$PROC_ROOT" \
+            --data_root "$DATA_ROOT" --processed_root "$PROC_ROOT" --vocab_root "$VOCAB_ROOT" \
             --neutral "$WORK/$f/fragnet_neutral.json" \
             --dest_root "$DEST_ROOT"
       done

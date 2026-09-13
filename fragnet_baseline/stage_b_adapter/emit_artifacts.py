@@ -54,16 +54,17 @@ def _pred_metrics(preds: Dict[int, float], graphs, task_type: str) -> dict:
 
 def emit(dataset: str, fold: int, vocab: str, unk: str,
          data_root: str, processed_root: str, neutral_path: str, dest_root: str,
-         regime: str = "source", planted_root: str = None, rule_id: str = None) -> dict:
+         regime: str = "source", planted_root: str = None, rule_id: str = None,
+         vocab_root: str = None) -> dict:
     ev = _evaluate_module()
     split_lists, gt, vocab_obj, dmeta, task_type = load_our_graphs(
         dataset, fold, vocab, data_root, processed_root, regime=regime,
-        planted_root=planted_root, rule_id=rule_id)
+        planted_root=planted_root, rule_id=rule_id, vocab_root=vocab_root)
 
     neutral = json.loads(Path(neutral_path).read_text())
     att_by_split = align(neutral, split_lists)          # {split: {gi: [N] atts}} — asserts alignment
 
-    kept = kept_set(dataset, fold, vocab, data_root) if unk == "exclude" else None
+    kept = kept_set(dataset, fold, vocab, data_root, vocab_root) if unk == "exclude" else None
     keep_fn = ev._keep_fn(kept, unk)
     do_gtroc = regime in ("source", "planted")
 
@@ -147,6 +148,7 @@ def _main():
     ap.add_argument("--vocab", required=True)
     ap.add_argument("--unk", required=True, choices=["include", "exclude"])
     ap.add_argument("--regime", default="source", choices=["source", "none", "planted"])
+    ap.add_argument("--vocab_root", default=None, help="load_vocab root (e.g. .../vocab_final_v2)")
     ap.add_argument("--planted_root", default=None, help="planted regime: planted_v2 root")
     ap.add_argument("--rule_id", default=None, help="planted regime: e.g. dnf_k2_r1")
     ap.add_argument("--data_root", required=True)
@@ -156,7 +158,7 @@ def _main():
     args = ap.parse_args()
     emit(args.dataset, args.fold, args.vocab, args.unk,
          args.data_root, args.processed_root, args.neutral, args.dest_root, regime=args.regime,
-         planted_root=args.planted_root, rule_id=args.rule_id)
+         planted_root=args.planted_root, rule_id=args.rule_id, vocab_root=args.vocab_root)
 
 
 if __name__ == "__main__":
