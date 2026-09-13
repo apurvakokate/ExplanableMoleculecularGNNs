@@ -1,0 +1,136 @@
+# FragNet baseline — integration plan & runbook
+
+FragNet (Panapitiya et al., [arXiv 2410.12156](https://arxiv.org/abs/2410.12156), JACS 2026;
+code [github.com/pnnl/FragNet](https://github.com/pnnl/FragNet)) added as the **closest
+ante-hoc baseline** to MoSE / MotifSAT / GSAT. This folder is **self-contained**: FragNet runs
+in its own conda env and shares none of our model/training code. The only bridge is the Stage-B
+adapter, which *imports* our evaluation functions as a library so the metrics are byte-identical
+to every other method.
+
+> **Status: all Stage A + Stage B files written and syntax-checked. No training/eval has been
+> run yet — the first run in the FragNet env validates the flagged internals (see below).**
+> Nothing here writes to git or to the HPC; the repo owner syncs, commits, and runs.
+>
+> Keying & atom mapping: the handoff is keyed by OUR split-local index (src_idx), NOT SMILES —
+> handles duplicate SMILES (Benzene fold0 has ~20) and FragNet molecule drops. SMILES is passed
+> VERBATIM so FragNet's heavy-atom order equals ours, and the atom↔atom mapping is VERIFIED, not
+> assumed: FragNet's per-atom element sequence must equal our decoded element sequence (one-hot →
+> ATOMS), which catches any reorder / H-inclusion / canonicalization drift.
+> VALIDATE-ON-FIRST-RUN (each fails loud, none silent): (1) FragNetViz backbone-weight transfer;
+> (2) attn_atom → per-atom reduction; (3) own-impact feature-zero ablation (or --impact none).
+> Confirmed: target_type='clsf' (BCE); exp1s 167-dim; planted loads *_with_gt.pt; pkls are
+> pickle.dump(list[Data]), load_pickle_dataset-compatible.
+
+---
+
+## 1. What FragNet is (verified against the repo)
+
+- A **GATv2-style dual-graph** model (atom graph + fragment graph). Core class `FragNet` in
+  `fragnet/model/gat/gat2.py`; attention is hand-implemented (`leakyrelu` → `scatter_softmax`).
+- **Ante-hoc / self-explaining**: interpretability is intrinsic. `FragNetViz(FragNet,
+  return_attentions=True)` returns `attn_atom, attn_frag, attn_bond`; **`attn_atom`** is the
+  per-atom importance we use.
+- **Pretrained weights ship in-repo**: `fragnet/exps/pt/unimol_exp1s4/pt.pt` (~5.0 MB, no Git-LFS).
+  We **finetune from `pt.pt`** (pretrained self-supervised on a UniMol-derived molecule set, not on
+  our datasets; it adapts by finetuning on our data/folds/labels).
+- Finetune entry: `train/finetune/finetune_gat2.py` → `FragNetFineTune(n_classes=…)` + a `Trainer`
+  (`target_type` = `clf`/`regr`), reading pre-featurized `.pkl` via `load_pickle_dataset`.
+- **Atom order = RDKit `GetIdx()`** (`fragnet/dataset/feature_utils.py:301`
+  `atom.SetAtomMapNum(atom.GetIdx())`), the same ordering our graphs use — so alignment is
+  identity, guarded by an assertion.
+
+## 2. Why FragNet is treated as NATIVE (not post-hoc)
+
+Because it is ante-hoc, it follows the **MoSE/MotifSAT/GSAT route: the model's OWN impact**, not the
+uniform-weight *agnostic* cache. Verified in `SharedModules/evaluation/split_eval.py:462‑468`:
+
+> *"Ante-hoc y-axis is the model's OWN weights, NOT the base=ones agnostic cache."* → `impact_cache_own_{split}.json`
+
+It cannot go through `analysis/evaluate.py`'s NATIVE branch literally (that reloads *our* model
+classes, incl. the in-progress MotifSAT modules). So we **reproduce** the native artifact set with
+our own writer/metric functions. FragNet does **not** use `final_v2`/vanilla models or any agnostic
+cache — it trains its own model and uses its own attention for both score and impact.
+
+## 3. Two-stage design (env-isolated)
+
+```
+Stage A  (FragNet conda env: py3.11 / torch 2.4 / torch-scatter)   — stage_a_fragnet_env/
+  prep_data.py        our Benzene fold SMILES+labels  ->  FragNet .pkl (via FragNet's featurizer)
+  finetune_fragnet.py finetune FragNetFineTune from pt.pt  ->  ft.pt   (classification head)
+  export_attention.py FragNetViz(ft.pt) per graph:  attn_atom  +  OWN-impact (per-motif masked
+                      re-forward, motifs from our nodes_to_motifs, ablation = zero atom features)
+                      +  prediction   ->  neutral per-graph JSON
+        │
+        │  neutral handoff (plain JSON, no shared objects):
+        │   our_env -> fragnet_env :  per-graph {canonical_smiles, node_order, nodes_to_motifs, node_label}
+        │   fragnet_env -> our_env :  per-graph {attn_atom, own_impact{mid:val}, pred}
+        ▼
+Stage B  (our l2xgnn env)                                          — stage_b_adapter/
+  align_and_aggregate.py  load our graphs; align FragNet atts to our node order (ASSERT);
+                          build att_by_i + kept-set (filtered)
+  emit_artifacts.py       reuse evaluate.py helpers (gtroc_all / score_cache_from_atts /
+                          instance_corr / grouped_corr_variants) + split_eval writers
+                          ->  the SAME artifact set, method_name='fragnet'
+```
+
+## 4. Exact resources & paths (verified)
+
+| Resource | Path |
+|---|---|
+| FragNet code + pretrained `pt.pt` | `vendor/FragNet/fragnet/exps/pt/unimol_exp1s4/pt.pt` (clone pinned) |
+| Benzene SMILES + labels (`data_root`) | `/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/Benzene_Verified_GT_{0,1}.csv` |
+| Processed graphs (`processed_root`) | `/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/processed_final_v2/rbrics/Benzene_Verified_GT_fold{0,1}` |
+| `vocab_root` / `gt_cache` | `None` / `None` — source-GT, native `node_label`, `gt_tier=source` |
+| Comparison vocab | **`rbrics`** (full) / **`rbrics_filter`** (filtered). Other variants are the fragmentation study, not this comparison. |
+| **dest_root** (where artifacts land, ingested by the harvest) | `/nfs/stak/users/kokatea/hpc-share/ChemIntuit/Claude+Cursor/mose_replication_v2/artifacts/source/Benzene_Verified_GT/fragnet/…/rbrics[_filter]/…/fold{0,1}/` (+ `rollups/source`) |
+
+Note: code/results live on `/nfs/stak/...`; data + processed on `/nfs/hpc/share/...` (both mounted).
+
+## 5. Full vs filtered (verified `evaluate.py:1028‑1050`)
+
+Controlled by `--unk`, not by separate vocabs:
+- **Full** = `--unk include` → `kept=None` → all motifs/atoms scored; dest under `rbrics`.
+- **Filtered** = `--unk exclude` → load `rbrics_filter`, `build_fold_annotation(csv=FOLDS/Benzene_Verified_GT_{fold}.csv, apply_threshold=True, threshold_pct=…)` → per-fold `kept` motif ids; non-kept dropped; dest under the sibling `rbrics_filter` segment.
+
+## 6. Per-motif score (verified `motif_eval.py:524` / `evaluate.py:353`)
+
+`score_cache_from_atts` / `build_motif_score_cache_from_atts`: per-(motif, graph) score =
+**mean of per-atom attribution over the motif's atoms** (`nodes_to_motifs == mid`); grouped score =
+mean over graphs. Max-pool emitted as a separate row, matching post-hoc node scorers. FragNet reuses
+these functions verbatim with `node_atts = attn_atom`.
+
+## 7. Table treatment
+
+FragNet is one fixed architecture → no GIN/GCN/SAGE/GAT/PNA axis. It enters as a **single reference
+line** per dataset (one value), **not** spread across the five backbone columns.
+
+## 8. POC scope
+
+`Benzene_Verified_GT`, **folds 0 and 1**, full pipeline + all artifacts, `--unk {include,exclude}`,
+`gt_tier=source`. **Done =** the atom-alignment assertion passes both folds; `summary_splits.json`
+has non-NaN node GT-ROC + grouped/instance Pearson; FragNet appears as a single reference line in a
+regenerated Benzene table. Then decide the full sweep.
+
+## 9. Risks / gates
+
+1. **Atom alignment** (#1): Stage B asserts `graph.num_nodes == len(atts)` and canonical-SMILES
+   match before trusting any number.
+2. **FragNet own-impact ablation** = zeroing the motif's atom features (analog of `_ablate_motif`);
+   sanity-check on fold 0 that impacts are finite and non-degenerate.
+3. **Classification head**: Benzene is binary; FragNet's shipped esol config is regression — we set
+   `target_type=clf` + `n_classes` (confirm FragNet's clf path at first run).
+4. **WIP isolation**: touches none of the MotifSAT WIP files; only existing-code edit is adding
+   `'fragnet'` to the table/harvest method list (deferred to harvest time).
+
+## 10. Run steps (on the HPC, after the owner syncs this folder)
+
+```bash
+# 0. one-time: clone FragNet (pinned) + build its env
+bash fragnet_baseline/run_poc.sh setup
+
+# 1. Stage A (FragNet env) — folds 0,1
+bash fragnet_baseline/run_poc.sh stage_a
+
+# 2. Stage B (l2xgnn env) — emit artifacts + rollup
+bash fragnet_baseline/run_poc.sh stage_b
+```

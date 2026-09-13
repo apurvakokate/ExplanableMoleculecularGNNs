@@ -1,0 +1,20 @@
+# FragNet (Stage A) conda env — ISOLATED from the l2xgnn pipeline env.
+# Matches pnnl/FragNet requirements: Python 3.11, PyTorch 2.4, torch-scatter, RDKit.
+# Stage B runs in the existing `l2xgnn` env (not here).
+name: fragnet
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - rdkit
+  - pip:
+      - torch==2.4.0
+      - torch-scatter
+      - numpy
+      - pandas
+      - pyyaml
+      - scikit-learn
+      # FragNet itself is installed from vendor/FragNet via `pip install -e .`
+      # (see run_poc.sh setup), which pulls any remaining repo-pinned deps.
