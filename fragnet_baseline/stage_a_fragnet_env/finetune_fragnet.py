@@ -16,9 +16,10 @@ import yaml
 
 
 def build_config(work: Path, pt_ckpt: str, target_type: str, n_classes: int,
-                 epochs: int, es_patience: int, lr: float, batch_size: int) -> dict:
+                 epochs: int, es_patience: int, lr: float, batch_size: int, seed: int = 42) -> dict:
     return {
         "exp_dir": str(work),
+        "seed": seed,            # REQUIRED: finetune_gat2.py calls seed_everything(args.seed) (top-level key)
         "model_version": "gat2",
         "device": "gpu",
         "atom_features": 167, "frag_features": 167, "edge_features": 17,
@@ -56,6 +57,7 @@ def main():
     ap.add_argument("--es_patience", type=int, default=30)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
     work = Path(args.work)
@@ -64,7 +66,7 @@ def main():
         if not (work / f"{s}.pkl").exists():
             raise FileNotFoundError(f"missing {work / f'{s}.pkl'} — run prep_data.py first")
     cfg = build_config(work, args.pt_ckpt, target_type, args.n_classes,
-                       args.epochs, args.es_patience, args.lr, args.batch_size)
+                       args.epochs, args.es_patience, args.lr, args.batch_size, seed=args.seed)
     cfg_path = work / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
     print(f"[finetune] config -> {cfg_path} (target_type={target_type})")

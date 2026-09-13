@@ -71,11 +71,16 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for split in ("train", "valid", "test"):
+        pkl = out_dir / f"{_SPLIT_OUT[split]}.pkl"
+        # Reuse a previously-featurized pkl (conformer embedding is the ~19-min/fold bottleneck).
+        # pickle.dump runs once at the end of a split, so an existing non-empty pkl = a complete split.
+        if pkl.exists() and pkl.stat().st_size > 0:
+            print(f"[prep_data] {split}: reuse cached {pkl} ({pkl.stat().st_size} bytes) — skip featurization")
+            continue
         rows = ctx.get(split) or []
         if not rows:
             raise ValueError(f"graph_context has no '{split}' rows")
         ds, dropped = featurize_split(rows, create_data, get_3Dcoords, args.frag_type)
-        pkl = out_dir / f"{_SPLIT_OUT[split]}.pkl"
         with open(pkl, "wb") as f:
             pickle.dump(ds, f)
         msg = f"[prep_data] {split}: featurized {len(ds)}/{len(rows)} -> {pkl}"

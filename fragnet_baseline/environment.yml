@@ -17,6 +17,13 @@ dependencies:
       - rdkit              # PyPI wheel (was a conda-forge dep → the OOM source); py3.11 wheels exist
       - torch==2.4.0
       - torch-scatter
+      - torch_geometric==2.6.1   # FragNet requirements.txt (gat2.py/data.py/dataset.py); 2.6 makes sparse/cluster optional
+      - pytorch_lightning        # finetune_gat2.py
+      - tensorboard              # SummaryWriter in finetune_gat2.py
+      - tqdm                     # dataset.py
+      - omegaconf                # finetune_gat2.py config (imported but absent from FragNet requirements.txt)
+      - scipy                    # train/utils.py
+      - lmdb                     # fragnet/dataset/utils.py module-top import (also absent from FragNet requirements.txt)
       - numpy
       - pandas
       - pyyaml
