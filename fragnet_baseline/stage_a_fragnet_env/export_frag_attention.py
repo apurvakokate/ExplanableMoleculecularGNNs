@@ -85,6 +85,29 @@ def _predict(model, batch, x_atoms, x_frags) -> float:
     return float(torch.sigmoid(logit[0]))
 
 
+@torch.no_grad()
+def _self_check(model, viz, sample, dev, tol: float = 1e-4) -> None:
+    """FIRST-RUN GUARD: our manual per-layer read-out MUST equal FragNet's stock forward, else the
+    manual loop diverges from the model and every per-layer number is untrustworthy. We compute the
+    stock predictions FIRST (layers still in stock config: only the last returns attention), THEN the
+    manual predictions (which flip return_attentions on all layers), and assert they match."""
+    theirs = []
+    for data in sample:
+        b = EA._collate([data], dev)
+        out = model(b)                                  # stock FragNetFineTuneViz forward
+        theirs.append(float(torch.sigmoid(out[0].view(-1)[0])))
+    for k, data in enumerate(sample):
+        b = EA._collate([data], dev)
+        _, _, x_atoms, x_frags = _forward_all_layers(viz, b)   # flips return_attentions on all layers
+        ours = _predict(model, b, x_atoms, x_frags)
+        if abs(ours - theirs[k]) > tol:
+            raise AssertionError(
+                f"SELF-CHECK FAILED on sample {k}: manual read-out {ours:.6f} != model(batch) "
+                f"{theirs[k]:.6f} (|diff|={abs(ours - theirs[k]):.2e} > {tol}). The manual per-layer "
+                f"forward diverges from FragNet — per-layer attention would be untrustworthy.")
+    print(f"[frag_export] SELF-CHECK OK: manual read-out == model(batch) on {len(sample)} graphs (tol {tol})")
+
+
 def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: str = "auto") -> None:
     from fragnet.dataset.dataset import load_pickle_dataset
     dev = torch.device("cuda" if (device == "cuda" or (device == "auto" and torch.cuda.is_available()))
@@ -101,6 +124,12 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
 
     work = Path(work)
     pkl_name = {"train": "train.pkl", "valid": "val.pkl", "test": "test.pkl"}
+    # first-run guard: prove the manual per-layer forward reproduces FragNet before trusting any layer
+    for _s, _fn in pkl_name.items():
+        _p = work / _fn
+        if _p.exists():
+            _self_check(model, viz, load_pickle_dataset(str(_p))[:3], dev)
+            break
     neutral = {}
     for split, fn in pkl_name.items():
         p = work / fn

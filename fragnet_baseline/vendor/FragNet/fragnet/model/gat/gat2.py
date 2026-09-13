@@ -160,7 +160,7 @@ class FragNetLayerA(nn.Module):
         # attention coefficients, should we use something like attn_probs[..., None]*(hj+ea_bonds) or
 
         node_feats_sum_b = scatter_add(
-            src=node_feats_b, index=target, dim=0
+            src=node_feats_b, index=target, dim=0, dim_size=num_nodes_b  # CLAUDE-EDIT-VERIFY dim_size: size scatter to declared node count (no-op for brics; needed when a node has no incoming edge)
         )  # get the sum of neighboring node features
         summed_attn_weights_bonds = scatter_add(
             attn_probs, source, dim=0
@@ -214,7 +214,7 @@ class FragNetLayerA(nn.Module):
             attn_probs[..., None] * hj
         )  # multiply the node features by the attention weights
         node_feats_sum_a = scatter_add(
-            src=node_features_atom_graph, index=target, dim=0
+            src=node_features_atom_graph, index=target, dim=0, dim_size=num_nodes_a  # CLAUDE-EDIT-VERIFY dim_size: size scatter to declared node count (no-op for brics; needed when a node has no incoming edge)
         )  # nodes in the bond graph are the edges in the atom graph
         summed_attn_weights_atoms = scatter_add(
             attn_probs, source, dim=0
@@ -263,7 +263,7 @@ class FragNetLayerA(nn.Module):
         # coefficients corresponding to the neighbors. [since we are considering edge features when finding the
         # attention coefficients, should we use something like attn_probs[..., None]*(hj+ea_bonds) or
         node_feats_sum_fb = scatter_add(
-            src=node_feats_fb, index=target, dim=0
+            src=node_feats_fb, index=target, dim=0, dim_size=num_nodes_fb  # CLAUDE-EDIT-VERIFY dim_size: size scatter to declared node count (no-op for brics; needed when a node has no incoming edge)
         )  # get the sum of neighboring node features
         summed_attn_weights_fbonds = scatter_add(
             attn_probs, source, dim=0
@@ -307,7 +307,7 @@ class FragNetLayerA(nn.Module):
             attn_probs[..., None] * hj
         )  # multiply the node features by the attention weights
         node_feats_sum_f = scatter_add(
-            src=node_features_frag_graph, index=target, dim=0
+            src=node_features_frag_graph, index=target, dim=0, dim_size=num_nodes_f  # CLAUDE-EDIT-VERIFY dim_size: size scatter to declared node count (no-op for brics; needed when a node has no incoming edge)
         )  # nodes in the bond graph are the edges in the atom graph
         summed_attn_weights_frags = scatter_add(
             attn_probs, source, dim=0
