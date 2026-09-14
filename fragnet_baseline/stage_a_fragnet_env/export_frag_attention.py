@@ -47,6 +47,21 @@ def _reduce_heads(a) -> np.ndarray:
     return a.view(-1).numpy()
 
 
+def _collate1(model, data, dev):
+    """collate ONE graph, fixing the single-connection degeneracy: a molecule with one fragment-bond
+    connection has 0 fbond-graph edges, and FragNet stores that edge-attr as an empty 1-D tensor (0,).
+    At batch-1 that hits the fbond edge Linear as a 0-feature input and crashes. Batched collate would
+    absorb it into a proper (E, F) tensor (an empty tensor concatenates cleanly), so we reproduce that
+    here: reshape the empty attr to (0, F). Result is identical to the batched path (0 fbond edges ->
+    zero fbond messages). No FragNet change."""
+    b = EA._collate([data], dev)
+    e = b.get("edge_attr_fbonds")
+    if torch.is_tensor(e) and e.dim() < 2:
+        F = model.pretrain.layers[0].edge_attr_fbond_embed.in_features
+        b["edge_attr_fbonds"] = e.new_zeros((0, F))
+    return b
+
+
 @torch.no_grad()
 def _forward_all_layers(viz, batch):
     """Replicate fragnet.vizualize.model.FragNetViz.forward, capturing EVERY layer's atom and fragment
@@ -93,11 +108,11 @@ def _self_check(model, viz, sample, dev, tol: float = 1e-4) -> None:
     manual predictions (which flip return_attentions on all layers), and assert they match."""
     theirs = []
     for data in sample:
-        b = EA._collate([data], dev)
+        b = _collate1(model, data, dev)
         out = model(b)                                  # stock FragNetFineTuneViz forward
         theirs.append(float(torch.sigmoid(out[0].view(-1)[0])))
     for k, data in enumerate(sample):
-        b = EA._collate([data], dev)
+        b = _collate1(model, data, dev)
         _, _, x_atoms, x_frags = _forward_all_layers(viz, b)   # flips return_attentions on all layers
         ours = _predict(model, b, x_atoms, x_frags)
         if abs(ours - theirs[k]) > tol:
@@ -157,7 +172,7 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
                 raise AssertionError(
                     f"{split} src_idx {idx}: nodes_to_motifs {len(n2m)} != heavy atoms {len(heavy)}")
 
-            batch = EA._collate([data], dev)
+            batch = _collate1(model, data, dev)
             atom_attn, frag_attn, x_atoms, x_frags = _forward_all_layers(viz, batch)
             pred = _predict(model, batch, x_atoms, x_frags)
 
