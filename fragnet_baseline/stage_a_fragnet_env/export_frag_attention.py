@@ -1,32 +1,27 @@
-"""Stage A (3b) — PER-LAYER native attention export (atom + fragment), for the attention-as-importance
-evaluation. Runs in the FragNet env.
+"""Stage A (3b) — PER-LAYER native attention export (atom + fragment) + per-motif OWN-IMPACT.
 
-We evaluate FragNet's ATTENTION scores themselves as importance (prediction-decoupled) — NOT the
-contribution (Property^unmasked - Property^masked), which measures the masking's effect on the output
-rather than the quality of the scores. So there is no own-impact / masked re-forward here.
+Runs in the FragNet env. For each graph (keyed by our src_idx) it emits FragNet's native attention at
+EVERY message-passing layer (atom-level and fragment-level, no cross-layer aggregation), the
+fragment->motif map, the prediction, AND the per-motif own-impact.
 
-For each graph (keyed by OUR src_idx) we emit FragNet's native attention at EVERY message-passing layer
-(no cross-layer aggregation — each layer is a distinct signal; last-layer attention did not localise
-while an intermediate layer did, so layers must be reported separately):
+Two evaluation axes (computed in Stage B from this file):
+  * GT-ROC (correctness): attention scores vs ground-truth atoms/motifs — attention only, NOT impact.
+  * Pearson (faithfulness): per-layer attention score vs OWN-IMPACT. own_impact is the ONLY use of the
+    masked re-forward here; it is never used as the importance for GT-ROC.
 
-  {split: {str(src_idx): {
-       "pred": float,
-       "atom_syms": [heavy-atom element, our order],
-       "n_atoms": int,               # heavy atoms
-       "n_frags": int,               # FragNet fragments (== our motif INSTANCES under frag_type=custom)
-       "frag_to_motif": {str(frag_idx): motif_id},   # each fragment -> our rbrics motif
-       "atom_att_by_layer": {str(layer): [per heavy atom, our order]},
-       "frag_att_by_layer": {str(layer): [per fragment]},
-  }}}
+own_impact[motif] = |p_full - p_masked|, zeroing the motif's HEAVY-atom feature rows (layer-independent;
+mirrors the atom-level path). Masked clones are pooled ACROSS molecules and flushed in batches of
+batch_graphs (the export_attention.py Path-A batching), so own-impact fills the GPU; each clone is
+still an independent single-motif mask, so only the number of forwards changes. The attention pass
+stays batch-1 per graph (keeps the per-layer/per-graph attention split trivially correct).
 
-FRAGMENT-level attention is meaningful only when the model was finetuned with frag_type='custom'
-(prep_data --frag_type custom), so FragNet's fragment graph == our rbrics motifs. `frag_to_motif` then
-maps each FragNet fragment to its motif (all heavy atoms in a fragment share one motif by construction);
-a repeated motif type appears as several fragments and is re-aggregated to the type in Stage B.
+Fragment attention is meaningful only for a model finetuned with frag_type='custom' (FragNet fragments
+== our rbrics motifs). frag_to_motif maps each fragment to its motif; repeated types re-aggregate to
+type in Stage B.
 
-FragNetViz is UNMODIFIED: we replicate its forward here (flipping return_attentions at runtime) so we
-can read every layer. The loop mirrors fragnet.vizualize.model.FragNetViz.forward exactly — validated:
-the last layer reproduces the native pipeline number.
+FragNetViz is UNMODIFIED: we replicate its forward here (flipping return_attentions at runtime) to read
+every layer. The loop mirrors fragnet.vizualize.model.FragNetViz.forward exactly — validated by the
+self-check (last layer == the stock model prediction).
 """
 import argparse
 import json
@@ -38,23 +33,13 @@ import torch
 import export_attention as EA          # reuse _read_model_cfg, _load_model, _collate (same dir)
 
 
-def _reduce_heads(a) -> np.ndarray:
-    """Sum an attention tensor over its head/trailing dims -> 1D per-node scalar (FragNet's
-    vizualize_atom_weights convention: summed_attn_weights.sum(1))."""
-    a = a.detach().cpu().float()
-    if a.dim() > 1:
-        a = a.sum(dim=tuple(range(1, a.dim())))
-    return a.view(-1).numpy()
-
-
-def _collate1(model, data, dev):
-    """collate ONE graph, fixing the single-connection degeneracy: a molecule with one fragment-bond
-    connection has 0 fbond-graph edges, and FragNet stores that edge-attr as an empty 1-D tensor (0,).
-    At batch-1 that hits the fbond edge Linear as a 0-feature input and crashes. Batched collate would
-    absorb it into a proper (E, F) tensor (an empty tensor concatenates cleanly), so we reproduce that
-    here: reshape the empty attr to (0, F). Result is identical to the batched path (0 fbond edges ->
-    zero fbond messages). No FragNet change."""
-    b = EA._collate([data], dev)
+def _collate(model, datas, dev):
+    """collate a LIST of graphs, fixing the single-connection degeneracy: a molecule with one
+    fragment-bond connection has 0 fbond-graph edges, whose edge-attr FragNet stores as an empty 1-D
+    tensor (0,). That crashes the fbond edge Linear (0-feature input). Batched collate normally absorbs
+    it into a proper (E, F) tensor; when the WHOLE list is degenerate it stays (0,), so we reshape to
+    (0, F). Identical to the batched path (0 fbond edges -> zero fbond messages). No FragNet change."""
+    b = EA._collate(datas, dev)
     e = b.get("edge_attr_fbonds")
     if torch.is_tensor(e) and e.dim() < 2:
         F = model.pretrain.layers[0].edge_attr_fbond_embed.in_features
@@ -62,20 +47,28 @@ def _collate1(model, data, dev):
     return b
 
 
+def _reduce_heads(a) -> np.ndarray:
+    """Sum an attention tensor over head/trailing dims -> 1D per-node scalar (FragNet's
+    vizualize_atom_weights convention: summed_attn_weights.sum(1))."""
+    a = a.detach().cpu().float()
+    if a.dim() > 1:
+        a = a.sum(dim=tuple(range(1, a.dim())))
+    return a.view(-1).numpy()
+
+
 @torch.no_grad()
 def _forward_all_layers(viz, batch):
-    """Replicate fragnet.vizualize.model.FragNetViz.forward, capturing EVERY layer's atom and fragment
-    attention. Returns (per_layer_atom_attn[list], per_layer_frag_attn[list], x_atoms, x_frags) where
-    x_atoms/x_frags are the final post-activation embeddings (for the read-out prediction)."""
+    """Replicate fragnet.vizualize.model.FragNetViz.forward, capturing every layer's atom and fragment
+    attention. Returns (per_layer_atom[list], per_layer_frag[list], x_atoms, x_frags) — x_atoms/x_frags
+    are the final post-activation embeddings (for the read-out prediction)."""
     xa = batch["x_atoms"]; ei = batch["edge_index"]; fi = batch["frag_index"]
     xf = batch["x_frags"]; ea = batch["edge_attr"]; a2f = batch["atom_to_frag_ids"]
     nfb = batch["node_features_bonds"]; eib = batch["edge_index_bonds_graph"]; eab = batch["edge_attr_bonds"]
     nffb = batch["node_features_fbonds"]; eifb = batch["edge_index_fbonds"]; eafb = batch["edge_attr_fbonds"]
     act = viz.act
     for L in viz.layers:
-        L.return_attentions = True     # runtime flip only — FragNetViz source is unchanged
+        L.return_attentions = True     # runtime flip only — FragNetViz source unchanged
     atom_attn, frag_attn = [], []
-    # layer 0 consumes the raw bond / fbond graph features (matches FragNetViz.forward exactly)
     o = viz.layers[0](xa, ei, ea, fi, xf, a2f, nfb, eib, eab, nffb, eifb, eafb)
     xa, xf, edf, fedf = o[0], o[1], o[2], o[3]
     atom_attn.append(o[4]); frag_attn.append(o[5])
@@ -90,44 +83,69 @@ def _forward_all_layers(viz, batch):
 
 @torch.no_grad()
 def _predict(model, batch, x_atoms, x_frags) -> float:
-    """Read-out prediction, replicating FragNetFineTuneViz.forward: sum-pool atoms and frags, concat,
-    FTHead. Uses the SAME final embeddings the per-layer forward produced (no second forward)."""
+    """Single-graph read-out prediction (replicates FragNetFineTuneViz.forward: sum-pool + FTHead)."""
     from torch_scatter import scatter_add
-    x_atoms_pooled = scatter_add(x_atoms, batch["batch"], dim=0)
-    x_frags_pooled = scatter_add(x_frags, batch["frag_batch"], dim=0)
-    cat = torch.cat((x_atoms_pooled, x_frags_pooled), 1)
-    logit = model.fthead(cat).view(-1)
+    xap = scatter_add(x_atoms, batch["batch"], dim=0)
+    xfp = scatter_add(x_frags, batch["frag_batch"], dim=0)
+    logit = model.fthead(torch.cat((xap, xfp), 1)).view(-1)
     return float(torch.sigmoid(logit[0]))
 
 
 @torch.no_grad()
+def _predict_batch(model, batch, x_atoms, x_frags) -> np.ndarray:
+    """Batched read-out predictions -> [num_graphs] probabilities."""
+    from torch_scatter import scatter_add
+    xap = scatter_add(x_atoms, batch["batch"], dim=0)
+    xfp = scatter_add(x_frags, batch["frag_batch"], dim=0)
+    logit = model.fthead(torch.cat((xap, xfp), 1)).view(-1)
+    return torch.sigmoid(logit).detach().cpu().numpy()
+
+
+@torch.no_grad()
+def _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev) -> None:
+    """Run ONE buffered batch of single-motif-masked clones, POOLED ACROSS molecules (each clone has
+    exactly one motif's heavy rows zeroed), and record own_impact[idx][mid] = |preds[idx] - p_masked|
+    for every clone. buf_data / buf_key are parallel; both are cleared in place. This is the Path-A
+    own-impact batching (export_attention.py) applied to the fragment export: it fills the GPU instead
+    of one small forward per molecule, and is numerically identical (each clone is still an independent
+    single-motif mask; only the number of forwards changes)."""
+    if not buf_data:
+        return
+    b = _collate(model, buf_data, dev)
+    _, _, xa, xf = _forward_all_layers(viz, b)
+    pm = _predict_batch(model, b, xa, xf)                    # [len(buf_data)] in buffer order
+    for k, (idx, mid) in enumerate(buf_key):
+        oi_by_idx[idx][mid] = abs(preds[idx] - float(pm[k]))
+    buf_data.clear(); buf_key.clear()
+
+
+@torch.no_grad()
 def _self_check(model, viz, sample, dev, tol: float = 1e-4) -> None:
-    """FIRST-RUN GUARD: our manual per-layer read-out MUST equal FragNet's stock forward, else the
-    manual loop diverges from the model and every per-layer number is untrustworthy. We compute the
-    stock predictions FIRST (layers still in stock config: only the last returns attention), THEN the
-    manual predictions (which flip return_attentions on all layers), and assert they match."""
+    """FIRST-RUN GUARD: our manual per-layer read-out MUST equal FragNet's stock forward. Compute the
+    stock predictions FIRST (layers in stock config), THEN the manual ones (which flip return_attentions
+    on all layers), and assert they match."""
     theirs = []
     for data in sample:
-        b = _collate1(model, data, dev)
-        out = model(b)                                  # stock FragNetFineTuneViz forward
+        b = _collate(model, [data], dev)
+        out = model(b)
         theirs.append(float(torch.sigmoid(out[0].view(-1)[0])))
     for k, data in enumerate(sample):
-        b = _collate1(model, data, dev)
-        _, _, x_atoms, x_frags = _forward_all_layers(viz, b)   # flips return_attentions on all layers
+        b = _collate(model, [data], dev)
+        _, _, x_atoms, x_frags = _forward_all_layers(viz, b)
         ours = _predict(model, b, x_atoms, x_frags)
         if abs(ours - theirs[k]) > tol:
             raise AssertionError(
                 f"SELF-CHECK FAILED on sample {k}: manual read-out {ours:.6f} != model(batch) "
-                f"{theirs[k]:.6f} (|diff|={abs(ours - theirs[k]):.2e} > {tol}). The manual per-layer "
-                f"forward diverges from FragNet — per-layer attention would be untrustworthy.")
+                f"{theirs[k]:.6f} (|diff|={abs(ours - theirs[k]):.2e} > {tol}).")
     print(f"[frag_export] SELF-CHECK OK: manual read-out == model(batch) on {len(sample)} graphs (tol {tol})")
 
 
-def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: str = "auto") -> None:
+def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: str = "auto",
+           batch_graphs: int = 64) -> None:
     from fragnet.dataset.dataset import load_pickle_dataset
     dev = torch.device("cuda" if (device == "cuda" or (device == "auto" and torch.cuda.is_available()))
                        else "cpu")
-    print(f"[frag_export] device={dev}")
+    print(f"[frag_export] device={dev} batch_graphs={batch_graphs}")
     ctx = json.loads(Path(graph_context).read_text())
     ctx_by_idx = {s: {int(r["idx"]): r for r in (ctx.get(s) or [])} for s in ("train", "valid", "test")}
 
@@ -139,7 +157,6 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
 
     work = Path(work)
     pkl_name = {"train": "train.pkl", "valid": "val.pkl", "test": "test.pkl"}
-    # first-run guard: prove the manual per-layer forward reproduces FragNet before trusting any layer
     for _s, _fn in pkl_name.items():
         _p = work / _fn
         if _p.exists():
@@ -152,6 +169,8 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
             raise FileNotFoundError(f"missing FragNet pkl {p} — run prep_data.py/finetune first")
         ds = load_pickle_dataset(str(p))
         out_split = {}
+        preds, oi_by_idx = {}, {}
+        buf_data, buf_key = [], []        # cross-molecule buffer of single-motif-masked clones
         for data in ds:
             idx = int(data.src_idx)
             row = ctx_by_idx[split].get(idx)
@@ -162,21 +181,20 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
             fn_syms = list(data.atom_syms)
             heavy = [i for i, s in enumerate(fn_syms) if s != "H"]
             heavy_syms = [fn_syms[i] for i in heavy]
-            if heavy_syms != our_syms:                     # atom<->atom verification (heavy atoms)
+            if heavy_syms != our_syms:
                 j = next((k for k in range(min(len(heavy_syms), len(our_syms)))
                           if heavy_syms[k] != our_syms[k]), -1)
                 raise AssertionError(
-                    f"{split} src_idx {idx}: HEAVY-ATOM ELEMENT MISMATCH at {j} — attention would be "
-                    f"misaligned.")
+                    f"{split} src_idx {idx}: HEAVY-ATOM ELEMENT MISMATCH at {j} — attention misaligned.")
             if len(n2m) != len(heavy):
                 raise AssertionError(
                     f"{split} src_idx {idx}: nodes_to_motifs {len(n2m)} != heavy atoms {len(heavy)}")
 
-            batch = _collate1(model, data, dev)
+            batch = _collate(model, [data], dev)
             atom_attn, frag_attn, x_atoms, x_frags = _forward_all_layers(viz, batch)
             pred = _predict(model, batch, x_atoms, x_frags)
+            preds[idx] = pred; oi_by_idx[idx] = {}
 
-            # per-layer atom attention, heavy subset in our order
             atom_by_layer = {}
             for L in range(n_layers):
                 a = _reduce_heads(atom_attn[L])
@@ -186,19 +204,19 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
                         f"{int(data.x_atoms.shape[0])}")
                 atom_by_layer[str(L)] = a[heavy].tolist()
 
-            # fragment -> our motif (each fragment's heavy atoms share one motif by construction).
-            # Use the COLLATED atom->fragment map (raw Data stores it as atom_id_frag_id; collate_fn
-            # exposes it as atom_to_frag_ids — exactly what the forward consumed). batch-1: indices are
-            # 0..n_atoms-1 / 0..n_frags-1, so no batch-offset bookkeeping.
             a2f_t = batch["atom_to_frag_ids"]
             a2f = (a2f_t.detach().cpu().numpy() if torch.is_tensor(a2f_t) else np.asarray(a2f_t)).astype(int).reshape(-1)
             n_frags = int(data.x_frags.shape[0])
             frag_to_motif = {}
-            for k, i in enumerate(heavy):                  # i = FragNet atom index of our heavy atom k
-                fid = int(a2f[i])
-                frag_to_motif.setdefault(str(fid), int(n2m[k]))
+            for k, i in enumerate(heavy):
+                fid = str(int(a2f[i])); mid = int(n2m[k])
+                if frag_to_motif.get(fid, mid) != mid:      # fragment already claimed by another motif
+                    raise AssertionError(
+                        f"{split} src_idx {idx}: fragment {fid} spans motifs {frag_to_motif[fid]} and "
+                        f"{mid} — FragNet fragmentation != our rbrics motifs (custom-alignment premise "
+                        f"violated); this fragment's attention cannot be attributed to a single motif.")
+                frag_to_motif[fid] = mid
 
-            # per-layer fragment attention (one scalar per fragment)
             frag_by_layer = {}
             for L in range(n_layers):
                 f = _reduce_heads(frag_attn[L])
@@ -207,10 +225,26 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
                         f"{split} src_idx {idx}: layer {L} frag-attn {f.shape[0]} != n_frags {n_frags}")
                 frag_by_layer[str(L)] = f.tolist()
 
+            # own_impact is attached after the split's buffer is fully flushed (below)
             out_split[str(idx)] = {
                 "pred": pred, "atom_syms": our_syms, "n_atoms": len(heavy), "n_frags": n_frags,
-                "frag_to_motif": frag_to_motif,
+                "frag_to_motif": frag_to_motif, "own_impact": None,
                 "atom_att_by_layer": atom_by_layer, "frag_att_by_layer": frag_by_layer}
+
+            # enqueue this molecule's single-motif-masked clones (exactly one motif zeroed each)
+            n2m_a = np.asarray(n2m, dtype=int); heavy_a = np.asarray(heavy, dtype=int)
+            for mid in sorted({int(m) for m in n2m_a if m >= 0}):
+                rows = heavy_a[n2m_a == mid]
+                if rows.size == 0:
+                    continue
+                d = data.clone(); d.x_atoms = d.x_atoms.clone()
+                d.x_atoms[torch.as_tensor(rows, dtype=torch.long)] = 0.0
+                buf_data.append(d); buf_key.append((idx, int(mid)))
+                if len(buf_data) >= batch_graphs:
+                    _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev)
+        _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev)   # tail of split
+        for idx_str, rec in out_split.items():
+            rec["own_impact"] = {str(m): v for m, v in oi_by_idx[int(idx_str)].items()}
         neutral[split] = out_split
         print(f"[frag_export] {split}: {len(out_split)} graphs")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -219,16 +253,19 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Stage A/3b: FragNet per-layer atom+fragment attention")
+    ap = argparse.ArgumentParser(description="Stage A/3b: FragNet per-layer atom+fragment attention + own-impact")
     ap.add_argument("--work", required=True)
     ap.add_argument("--vendor", required=True, help="vendored FragNet (CLI parity; fragnet is pip-installed)")
     ap.add_argument("--graph_context", required=True)
     ap.add_argument("--ft_ckpt", default=None, help="default: <work>/ft.pt")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    ap.add_argument("--batch_graphs", type=int, default=64,
+                    help="own-impact masked clones per batched forward (attention pass stays batch-1)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     ft_ckpt = args.ft_ckpt or str(Path(args.work) / "ft.pt")
-    export(args.graph_context, args.work, ft_ckpt, args.out, device=args.device)
+    export(args.graph_context, args.work, ft_ckpt, args.out, device=args.device,
+           batch_graphs=args.batch_graphs)
 
 
 if __name__ == "__main__":
