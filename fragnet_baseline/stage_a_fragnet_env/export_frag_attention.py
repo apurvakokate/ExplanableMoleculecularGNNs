@@ -82,57 +82,60 @@ def _forward_all_layers(viz, batch):
 
 
 @torch.no_grad()
-def _predict(model, batch, x_atoms, x_frags) -> float:
-    """Single-graph read-out prediction (replicates FragNetFineTuneViz.forward: sum-pool + FTHead)."""
+def _predict(model, batch, x_atoms, x_frags, is_clf: bool = True) -> float:
+    """Single-graph read-out prediction (replicates FragNetFineTuneViz.forward: sum-pool + FTHead).
+    is_clf → sigmoid (probability); regression → raw output (sigmoid would squash own-impact to ~0)."""
     from torch_scatter import scatter_add
     xap = scatter_add(x_atoms, batch["batch"], dim=0)
     xfp = scatter_add(x_frags, batch["frag_batch"], dim=0)
     logit = model.fthead(torch.cat((xap, xfp), 1)).view(-1)
-    return float(torch.sigmoid(logit[0]))
+    return float(torch.sigmoid(logit[0]) if is_clf else logit[0])
 
 
 @torch.no_grad()
-def _predict_batch(model, batch, x_atoms, x_frags) -> np.ndarray:
-    """Batched read-out predictions -> [num_graphs] probabilities."""
+def _predict_batch(model, batch, x_atoms, x_frags, is_clf: bool = True) -> np.ndarray:
+    """Batched read-out predictions -> [num_graphs] (probabilities if is_clf, else raw outputs)."""
     from torch_scatter import scatter_add
     xap = scatter_add(x_atoms, batch["batch"], dim=0)
     xfp = scatter_add(x_frags, batch["frag_batch"], dim=0)
     logit = model.fthead(torch.cat((xap, xfp), 1)).view(-1)
-    return torch.sigmoid(logit).detach().cpu().numpy()
+    out = torch.sigmoid(logit) if is_clf else logit
+    return out.detach().cpu().numpy()
 
 
 @torch.no_grad()
-def _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev) -> None:
+def _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev, is_clf) -> None:
     """Run ONE buffered batch of single-motif-masked clones, POOLED ACROSS molecules (each clone has
     exactly one motif's heavy rows zeroed), and record own_impact[idx][mid] = |preds[idx] - p_masked|
     for every clone. buf_data / buf_key are parallel; both are cleared in place. This is the Path-A
     own-impact batching (export_attention.py) applied to the fragment export: it fills the GPU instead
     of one small forward per molecule, and is numerically identical (each clone is still an independent
-    single-motif mask; only the number of forwards changes)."""
+    single-motif mask; only the number of forwards changes). is_clf matches preds' space (prob vs raw)."""
     if not buf_data:
         return
     b = _collate(model, buf_data, dev)
     _, _, xa, xf = _forward_all_layers(viz, b)
-    pm = _predict_batch(model, b, xa, xf)                    # [len(buf_data)] in buffer order
+    pm = _predict_batch(model, b, xa, xf, is_clf)            # [len(buf_data)] in buffer order
     for k, (idx, mid) in enumerate(buf_key):
         oi_by_idx[idx][mid] = abs(preds[idx] - float(pm[k]))
     buf_data.clear(); buf_key.clear()
 
 
 @torch.no_grad()
-def _self_check(model, viz, sample, dev, tol: float = 1e-4) -> None:
+def _self_check(model, viz, sample, dev, is_clf, tol: float = 1e-4) -> None:
     """FIRST-RUN GUARD: our manual per-layer read-out MUST equal FragNet's stock forward. Compute the
     stock predictions FIRST (layers in stock config), THEN the manual ones (which flip return_attentions
-    on all layers), and assert they match."""
+    on all layers), and assert they match. Same read-out space (sigmoid vs raw) on both sides."""
     theirs = []
     for data in sample:
         b = _collate(model, [data], dev)
         out = model(b)
-        theirs.append(float(torch.sigmoid(out[0].view(-1)[0])))
+        raw = out[0].view(-1)[0]
+        theirs.append(float(torch.sigmoid(raw) if is_clf else raw))
     for k, data in enumerate(sample):
         b = _collate(model, [data], dev)
         _, _, x_atoms, x_frags = _forward_all_layers(viz, b)
-        ours = _predict(model, b, x_atoms, x_frags)
+        ours = _predict(model, b, x_atoms, x_frags, is_clf)
         if abs(ours - theirs[k]) > tol:
             raise AssertionError(
                 f"SELF-CHECK FAILED on sample {k}: manual read-out {ours:.6f} != model(batch) "
@@ -153,14 +156,15 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
     model = EA._load_model(ft_ckpt, dev, cfg)
     viz = model.pretrain
     n_layers = len(viz.layers)
-    print(f"[frag_export] layers={n_layers}")
+    is_clf = (str(cfg.get("target_type", "clsf")) == "clsf")   # regression -> raw output, no sigmoid
+    print(f"[frag_export] layers={n_layers} target_type={cfg.get('target_type')} is_clf={is_clf}")
 
     work = Path(work)
     pkl_name = {"train": "train.pkl", "valid": "val.pkl", "test": "test.pkl"}
     for _s, _fn in pkl_name.items():
         _p = work / _fn
         if _p.exists():
-            _self_check(model, viz, load_pickle_dataset(str(_p))[:3], dev)
+            _self_check(model, viz, load_pickle_dataset(str(_p))[:3], dev, is_clf)
             break
     neutral = {}
     for split, fn in pkl_name.items():
@@ -192,7 +196,7 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
 
             batch = _collate(model, [data], dev)
             atom_attn, frag_attn, x_atoms, x_frags = _forward_all_layers(viz, batch)
-            pred = _predict(model, batch, x_atoms, x_frags)
+            pred = _predict(model, batch, x_atoms, x_frags, is_clf)
             preds[idx] = pred; oi_by_idx[idx] = {}
 
             atom_by_layer = {}
@@ -241,8 +245,8 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str, device: s
                 d.x_atoms[torch.as_tensor(rows, dtype=torch.long)] = 0.0
                 buf_data.append(d); buf_key.append((idx, int(mid)))
                 if len(buf_data) >= batch_graphs:
-                    _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev)
-        _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev)   # tail of split
+                    _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev, is_clf)
+        _flush_own_impact(model, viz, buf_data, buf_key, preds, oi_by_idx, dev, is_clf)   # tail of split
         for idx_str, rec in out_split.items():
             rec["own_impact"] = {str(m): v for m, v in oi_by_idx[int(idx_str)].items()}
         neutral[split] = out_split

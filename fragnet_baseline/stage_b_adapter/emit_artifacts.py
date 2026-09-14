@@ -62,7 +62,7 @@ def emit(dataset: str, fold: int, vocab: str, unk: str,
         planted_root=planted_root, rule_id=rule_id, vocab_root=vocab_root)
 
     neutral = json.loads(Path(neutral_path).read_text())
-    att_by_split = align(neutral, split_lists)          # {split: {gi: [N] atts}} — asserts alignment
+    att_by_split, dropped = align(neutral, split_lists)  # survivors + featurization drops; raises on misalignment
 
     kept = kept_set(dataset, fold, vocab, data_root, vocab_root) if unk == "exclude" else None
     keep_fn = ev._keep_fn(kept, unk)
@@ -71,7 +71,11 @@ def emit(dataset: str, fold: int, vocab: str, unk: str,
     rows_by_split, inst_by_split, summary, pergraph = {}, {}, {}, {}
     for s, sl in split_lists.items():
         if not sl:
-            continue
+            raise AssertionError(f"{s}: split_lists has 0 graphs — loader/fold problem (expected non-empty).")
+        surv, drop_s = att_by_split.get(s, {}), dropped.get(s, [])
+        if len(surv) + len(drop_s) != len(sl):             # every graph is a survivor or a counted drop
+            raise AssertionError(f"{s}: survivors {len(surv)} + dropped {len(drop_s)} != {len(sl)} graphs "
+                                 f"— a graph vanished without being counted.")
         rec = neutral.get(s) or {}
         # neutral is keyed by str(src_idx) == our split-local graph index gi (align() verified it)
         ic_cache: Dict[int, Dict[int, float]] = {}
@@ -102,6 +106,7 @@ def emit(dataset: str, fold: int, vocab: str, unk: str,
         inst_by_split[s] = ev.instance_corr(sc_cache, ic_cache, kept, unk)
         pergraph[s] = (sc_cache, ic_cache)
         summary[s] = _pred_metrics(preds, sl, task_type)
+        summary[s].update(n_survivors=len(surv), n_dropped=len(drop_s), n_total=len(sl))
 
     if do_gtroc:
         for s, block in ev._gtroc_summary(att_by_split, gt, split_lists, keep_fn, unk).items():
@@ -129,13 +134,19 @@ def emit(dataset: str, fold: int, vocab: str, unk: str,
 
     g_all = ev.grouped_corr_variants([dict(r) for s in split_lists for r in rows_by_split.get(s, [])])
     tsum = summary.get("test", {})
+    n_dropped = int(sum(len(v) for v in dropped.values()))
+    n_total = int(sum(len(sl) for sl in split_lists.values()))
     rollup = dict(dataset=dataset, method=METHOD, fold=int(fold), vocab=vocab, unk=unk,
                   grouped_pearson_u=g_all.get("pearson_u_exclunk"),
                   n_motifs=g_all.get("n_motifs_exclunk"),
                   gtroc_global=tsum.get("global_gt_roc_node_auc_mean", float("nan")),
                   gtroc_instance=tsum.get("instance_gt_roc_node_auc_mean", float("nan")),
-                  pred_auc=tsum.get("auc", float("nan")))
+                  pred_auc=tsum.get("auc", float("nan")),
+                  n_dropped=n_dropped, n_total=n_total)
     print(f"[emit] {dataset} fold{fold} unk={unk} -> {dest}")
+    print(f"       coverage {n_total - n_dropped}/{n_total} graphs (dropped {n_dropped}) "
+          f"per split: " + " ".join(f"{s}:{len(att_by_split.get(s, {}))}/{len(split_lists[s])}"
+                                     for s in split_lists))
     print(f"       n_motifs={rollup['n_motifs']} grouped_pearson_u={rollup['grouped_pearson_u']} "
           f"gtroc_instance={rollup['gtroc_instance']} pred_auc={rollup['pred_auc']}")
     return rollup

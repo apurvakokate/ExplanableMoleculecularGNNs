@@ -211,26 +211,30 @@ def align(neutral: dict, split_lists: Dict[str, list]) -> Dict[str, Dict[int, np
     molecule drops are both handled. FragNet featurized from the IDENTICAL (verbatim) SMILES, so
     its heavy-atom order equals ours and atts are already in our node order. The atom↔atom mapping
     is VERIFIED, not assumed: we assert FragNet's per-atom element sequence equals our decoded
-    element sequence (catches any H/reorder/canonicalization drift) plus the count. Returns
-    {split: {gi: [N] atts}}.
+    element sequence (catches any H/reorder/canonicalization drift) plus the count. A graph with NO
+    FragNet record (dropped in featurization — e.g. a failed 3D-conformer embed) is TOLERATED and
+    counted; a present-but-MISALIGNED record (wrong count/elements) still RAISES. Returns
+    (out={split:{gi:[N] atts}} survivors, dropped={split:[gi,...]}).
 
     neutral schema (Stage A): {split: {str(src_idx): {"atts":[...], "atom_syms":[...],
     "pred":float, "own_impact":{mid:val}, "n_atoms":int}}}.
     """
     out: Dict[str, Dict[int, np.ndarray]] = {}
     problems: List[str] = []
+    dropped: Dict[str, list] = {}
     for split, sl in split_lists.items():
         by_idx = (neutral.get(split) or {})
         out[split] = {}
+        drop = []
         for gi, g in enumerate(sl):
             rec = by_idx.get(str(gi))
-            if rec is None:
-                problems.append(f"{split}[{gi}] no FragNet record (dropped in featurization?)")
+            if rec is None:                                  # dropped in featurization — TOLERATE + count
+                drop.append(gi)
                 continue
             atts = np.asarray(rec["atts"], dtype=float)
             our_syms = our_node_symbols(g)
             fn_syms = list(rec.get("atom_syms") or [])
-            if atts.shape[0] != len(our_syms):
+            if atts.shape[0] != len(our_syms):               # MISALIGNMENT (present but wrong) — never tolerated
                 problems.append(f"{split}[{gi}] atom-count: FragNet {atts.shape[0]} vs graph {len(our_syms)}")
                 continue
             if fn_syms != our_syms:
@@ -239,12 +243,13 @@ def align(neutral: dict, split_lists: Dict[str, list]) -> Dict[str, Dict[int, np
                                 f"graph={our_syms[max(0,j-1):j+2]} — atom order differs, mapping untrustworthy")
                 continue
             out[split][gi] = atts
-    if problems:
+        dropped[split] = drop
+    if problems:                                             # only present-but-MISALIGNED records raise
         raise AssertionError(
-            "FragNet↔graph alignment failed (refusing to emit misaligned scores):\n  "
+            "FragNet↔graph MISALIGNMENT (refusing to emit misaligned scores):\n  "
             + "\n  ".join(problems[:20])
             + (f"\n  ...(+{len(problems) - 20} more)" if len(problems) > 20 else ""))
-    return out
+    return out, dropped
 
 
 def dump_context(dataset: str, fold: int, vocab_variant: str,

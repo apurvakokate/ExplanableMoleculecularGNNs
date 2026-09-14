@@ -41,10 +41,14 @@ def _read_model_cfg(work) -> dict:
             f"{p} not found — finetune_fragnet.py writes it; export needs the exact model dims to "
             f"rebuild FragNetFineTuneViz. No silent default: the head dims MUST match the checkpoint.")
     full = yaml.safe_load(p.read_text())
-    cfg = dict((full.get("finetune") or {}).get("model") or {})
+    ft = full.get("finetune") or {}
+    cfg = dict(ft.get("model") or {})
     for k in ("atom_features", "frag_features", "edge_features"):
         if full.get(k) is not None:
             cfg.setdefault(k, full[k])
+    # target_type drives the read-out activation: 'clsf' -> sigmoid, 'regr' -> raw output.
+    # Default 'clsf' preserves existing (classification) behaviour when the key is absent.
+    cfg["target_type"] = ft.get("target_type", "clsf")
     return cfg
 
 
@@ -129,6 +133,8 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
 
     cfg = _read_model_cfg(work)
     model = _load_model(ft_ckpt, dev, cfg)
+    is_clf = (str(cfg.get("target_type", "clsf")) == "clsf")   # regression -> raw output, no sigmoid squash
+    print(f"[export] target_type={cfg.get('target_type')} is_clf={is_clf}")
     work = Path(work)
     pkl_name = {"train": "train.pkl", "valid": "val.pkl", "test": "test.pkl"}
     neutral = {}
@@ -163,7 +169,7 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
         base_payload = [it[0] for it in items]
         for s, chunk, logits, per_atom, atom_batch in _run_batches(model, base_payload, batch_graphs, dev):
             for gi, (data, idx, heavy_idx, our_syms, _n2m) in enumerate(items[s:s + len(chunk)]):
-                preds[idx] = float(torch.sigmoid(logits[gi]))
+                preds[idx] = float(torch.sigmoid(logits[gi]) if is_clf else logits[gi])
                 a = per_atom[atom_batch == gi].numpy()           # this graph's atoms, FragNet order (incl H)
                 if a.shape[0] != int(data.x_atoms.shape[0]):
                     raise AssertionError(
@@ -183,7 +189,8 @@ def export(graph_context: str, work: str, ft_ckpt: str, out_path: str,
                 for _s2, chunk, logits, _pa, _ab in _run_batches(model, buf_data, batch_graphs, dev):
                     for k in range(len(chunk)):
                         idx, mid = buf_key[off + k]
-                        oi_by_idx[idx][mid] = abs(preds[idx] - float(torch.sigmoid(logits[k])))
+                        oi_by_idx[idx][mid] = abs(
+                            preds[idx] - float(torch.sigmoid(logits[k]) if is_clf else logits[k]))
                     off += len(chunk)
                 buf_data.clear(); buf_key.clear()
 

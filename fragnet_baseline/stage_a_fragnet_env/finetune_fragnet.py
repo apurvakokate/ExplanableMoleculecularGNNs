@@ -51,7 +51,8 @@ def main():
     ap.add_argument("--work", required=True, help="fold work dir (holds the pkls; ft.pt written here)")
     ap.add_argument("--pt_ckpt", required=True, help="path to pretrained pt.pt")
     ap.add_argument("--vendor", required=True, help="vendored pnnl/FragNet repo")
-    ap.add_argument("--task", choices=["clf", "regr"], default="clf")
+    ap.add_argument("--task", choices=["clf", "regr"], default="clf",
+                    help="clf -> BCE head/sigmoid; regr -> MSE head/raw output (esol, Lipophilicity)")
     ap.add_argument("--n_classes", type=int, default=1)
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--es_patience", type=int, default=30)

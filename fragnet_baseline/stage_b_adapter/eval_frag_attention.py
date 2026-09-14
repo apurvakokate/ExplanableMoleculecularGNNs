@@ -43,28 +43,32 @@ from align_and_aggregate import _evaluate_module, _np1, our_node_symbols, load_o
 METHOD = "fragnet_frag"
 
 
-def _align(neutral: dict, split_lists) -> dict:
-    """{split: {gi: rec}} with the same element-sequence verification as align() — refuse misaligned."""
-    out, problems = {}, []
+def _align(neutral: dict, split_lists):
+    """Returns ({split:{gi:rec}} survivors, {split:[gi,...]} dropped). Same element-sequence check as
+    align(): a MISSING record (dropped in featurization — e.g. a failed 3D-conformer embed) is
+    TOLERATED and counted; a present-but-MISALIGNED record (element mismatch) RAISES."""
+    out, problems, dropped = {}, [], {}
     for split, sl in split_lists.items():
         by_idx = neutral.get(split) or {}
         out[split] = {}
+        drop = []
         for gi, g in enumerate(sl):
             rec = by_idx.get(str(gi))
-            if rec is None:
-                problems.append(f"{split}[{gi}] no FragNet record (dropped in featurization?)")
+            if rec is None:                                  # dropped in featurization — TOLERATE + count
+                drop.append(gi)
                 continue
             our_syms = our_node_symbols(g)
             fn_syms = list(rec.get("atom_syms") or [])
-            if fn_syms != our_syms:
+            if fn_syms != our_syms:                          # MISALIGNMENT (present but wrong) — never tolerated
                 j = next((k for k in range(min(len(fn_syms), len(our_syms)))
                           if fn_syms[k] != our_syms[k]), -1)
                 problems.append(f"{split}[{gi}] ELEMENT MISMATCH at atom {j} — mapping untrustworthy")
                 continue
             out[split][gi] = rec
-    if problems:
-        raise AssertionError("FragNet↔graph alignment failed:\n  " + "\n  ".join(problems[:20]))
-    return out
+        dropped[split] = drop
+    if problems:                                             # only present-but-MISALIGNED records raise
+        raise AssertionError("FragNet↔graph MISALIGNMENT:\n  " + "\n  ".join(problems[:20]))
+    return out, dropped
 
 
 def _motif_scores(rec: dict, layer: int) -> dict:
@@ -185,21 +189,28 @@ def _pearson_block(sc_cache: dict, ic_cache: dict, kept, unk: str, prefix: str, 
     }
 
 
-def _pred_auc(aligned_split: dict, gl) -> float:
-    from sklearn.metrics import roc_auc_score
+def _pred_metrics(aligned_split: dict, graphs, task_type: str) -> dict:
+    """Task-aware prediction quality from FragNet's per-graph pred vs our y: AUC for classification,
+    RMSE+MAE for regression (esol/Lipophilicity). Mirrors emit_artifacts._pred_metrics."""
+    from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error
+    nan = float("nan")
     ys, ps = [], []
     for gi, rec in aligned_split.items():
-        y = getattr(gl[gi], "y", None)
+        y = getattr(graphs[gi], "y", None)
         if y is None:
-            continue
+            raise ValueError(f"graph {gi} has no label y — cannot score FragNet predictions")
         ys.append(float(_np1(y)[0])); ps.append(float(rec["pred"]))
-    if len(set(ys)) < 2:
-        return float("nan")
-    return float(roc_auc_score(ys, ps))
+    ys, ps = np.asarray(ys), np.asarray(ps)
+    if task_type == "Regression":
+        return {"pred_auc": nan, "pred_rmse": float(np.sqrt(mean_squared_error(ys, ps))),
+                "pred_mae": float(mean_absolute_error(ys, ps))}
+    auc = float(roc_auc_score(ys, ps)) if len(set(ys.tolist())) > 1 else nan
+    return {"pred_auc": auc, "pred_rmse": nan, "pred_mae": nan}
 
 
-COLS = ["dataset", "fold", "vocab", "unk", "method", "split", "layer", "n_graphs",
-        "atom_node_gtroc", "frag_node_gtroc", "frag_motif_gtroc", "pred_auc",
+COLS = ["dataset", "fold", "vocab", "unk", "regime", "task_type", "method", "split", "layer",
+        "n_graphs", "n_dropped", "n_total",
+        "atom_node_gtroc", "frag_node_gtroc", "frag_motif_gtroc", "pred_auc", "pred_rmse", "pred_mae",
         "atom_grp_pearson_u", "atom_grp_pearson_w", "atom_grp_spearman_u", "atom_grp_n_motifs",
         "atom_inst_pearson", "atom_inst_spearman", "atom_inst_n",
         "frag_grp_pearson_u", "frag_grp_pearson_w", "frag_grp_spearman_u", "frag_grp_n_motifs",
@@ -207,13 +218,16 @@ COLS = ["dataset", "fold", "vocab", "unk", "method", "split", "layer", "n_graphs
 
 
 def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path, dest_root,
-             vocab_root=None):
+             vocab_root=None, regime="source"):
     ev = _evaluate_module()
     split_lists, gt, vocab_obj, dmeta, task_type = load_our_graphs(
-        dataset, fold, vocab, data_root, processed_root, regime="source", vocab_root=vocab_root)
+        dataset, fold, vocab, data_root, processed_root, regime=regime, vocab_root=vocab_root)
     neutral = json.loads(Path(neutral_path).read_text())
-    aligned = _align(neutral, split_lists)
+    aligned, dropped = _align(neutral, split_lists)        # survivors + featurization drops (misalign raises)
 
+    # GT-ROC (correctness) needs source node_label; only computed for regime=source. For regime=none
+    # (real datasets, no node-GT) we emit Pearson (faithfulness) + prediction metrics only.
+    do_gtroc = (regime == "source")
     kept = kept_set(dataset, fold, vocab, data_root, vocab_root) if unk == "exclude" else None
     keep_fn = ev._keep_fn(kept, unk)
 
@@ -222,11 +236,20 @@ def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path,
 
     rows = []
     for s in ("train", "valid", "test"):
-        gl = gt.get(s)
-        asp = aligned.get(s) or {}
-        if not gl or not asp:
-            continue
-        pauc = _pred_auc(asp, gl)
+        sl = split_lists.get(s)                                # graph list (y + nodes_to_motifs)
+        gl = gt.get(s)                                         # node_label list; None for regime=none
+        asp = aligned.get(s) or {}                             # survivors (aligned FragNet records)
+        drop_s = dropped.get(s, [])                            # featurization drops (tolerated + reported)
+        # fail loud, never skip: _align raises on a MISALIGNED record; here every graph must be either a
+        # survivor or a counted drop — anything else means a graph vanished silently.
+        if not sl:
+            raise AssertionError(f"{s}: split_lists has 0 graphs — loader/fold problem (expected non-empty).")
+        if len(asp) + len(drop_s) != len(sl):
+            raise AssertionError(
+                f"{s}: survivors {len(asp)} + dropped {len(drop_s)} != {len(sl)} graphs — a graph vanished.")
+        if do_gtroc and not gl:                                # source but no GT graphs -> fail loud
+            raise AssertionError(f"{s}: regime=source but gt has no node_label graphs — cannot GT-ROC.")
+        pred_cols = _pred_metrics(asp, sl, task_type)          # layer-independent
         missing_oi = [gi for gi, rec in asp.items() if "own_impact" not in rec]
         if missing_oi:
             raise AssertionError(
@@ -235,17 +258,21 @@ def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path,
                 f"the Pearson columns are not silently empty.")
         ic_cache = _own_impact_cache(asp)                      # layer-independent
         for L in range(n_layers):
-            atom_by_i = _atom_att_by_i(asp, L)
-            frag_by_i = _frag_broadcast_by_i(asp, gl, L)
-            atom_sc = ev.score_cache_from_atts(atom_by_i, gl)  # {mid:{gi: mean atom att}}
-            frag_sc = _frag_sc_cache(asp, L)                   # {mid:{gi: native frag att}}
+            atom_by_i = _atom_att_by_i(asp, L)                 # atom attention (no GT needed)
             row = dict(
-                dataset=dataset, fold=int(fold), vocab=vocab, unk=unk, method=METHOD,
-                split=s, layer=L, n_graphs=len(asp),
-                atom_node_gtroc=ev._per_graph_mean_auc(atom_by_i, gl, "node_label", keep_fn),
-                frag_node_gtroc=ev._per_graph_mean_auc(frag_by_i, gl, "node_label", keep_fn),
-                frag_motif_gtroc=_frag_motif_auc_mean(asp, gl, L, keep_fn, ev),
-                pred_auc=pauc)
+                dataset=dataset, fold=int(fold), vocab=vocab, unk=unk, regime=regime,
+                task_type=task_type, method=METHOD, split=s, layer=L,
+                n_graphs=len(asp), n_dropped=len(drop_s), n_total=len(sl))
+            if do_gtroc:                                       # correctness axis (source node-GT only)
+                frag_by_i = _frag_broadcast_by_i(asp, gl, L)
+                row["atom_node_gtroc"] = ev._per_graph_mean_auc(atom_by_i, gl, "node_label", keep_fn)
+                row["frag_node_gtroc"] = ev._per_graph_mean_auc(frag_by_i, gl, "node_label", keep_fn)
+                row["frag_motif_gtroc"] = _frag_motif_auc_mean(asp, gl, L, keep_fn, ev)
+            else:
+                row["atom_node_gtroc"] = row["frag_node_gtroc"] = row["frag_motif_gtroc"] = ""
+            row.update(pred_cols)
+            atom_sc = ev.score_cache_from_atts(atom_by_i, sl)  # {mid:{gi: mean atom att}} (sl: always present)
+            frag_sc = _frag_sc_cache(asp, L)                   # {mid:{gi: native frag att}}
             row.update(_pearson_block(atom_sc, ic_cache, kept, unk, "atom", ev))
             row.update(_pearson_block(frag_sc, ic_cache, kept, unk, "frag", ev))
             rows.append(row)
@@ -258,22 +285,27 @@ def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path,
         for r in rows:
             w.writerow(r)
     (dest / "fragnet_frag_perlayer_metrics.json").write_text(json.dumps(rows, indent=2))
-    print(f"[eval_frag] {dataset} fold{fold} unk={unk} -> {dest}")
+    print(f"[eval_frag] {dataset} fold{fold} unk={unk} regime={regime} task={task_type} -> {dest}")
 
     def _f(v):
-        return float("nan") if v is None else float(v)
+        return float("nan") if v in (None, "") else float(v)
+    def _g(v):                                                 # GT-ROC cell: "n/a" when regime=none
+        return "  n/a" if v in (None, "") else ("%.3f" % float(v))
     for s in ("train", "valid", "test"):
         srows = [r for r in rows if r["split"] == s]
         if not srows:
             continue
-        print(f"  [{s}] n={srows[0]['n_graphs']}  (GT-ROC | instance-Pearson r | grouped-Pearson r)")
+        pm = (("rmse=%.3f mae=%.3f" % (_f(srows[0]["pred_rmse"]), _f(srows[0]["pred_mae"])))
+              if task_type == "Regression" else ("auc=%.3f" % _f(srows[0]["pred_auc"])))
+        cov = "%d/%d (dropped %d)" % (srows[0]["n_graphs"], srows[0]["n_total"], srows[0]["n_dropped"])
+        print(f"  [{s}] coverage {cov} pred[{pm}]  (GT-ROC | instance-Pearson r | grouped-Pearson r)")
         for r in srows:
-            print("    L%d  atom_node=%.3f frag_node=%.3f frag_motif=%.3f | "
-                  "atom_inst=%.3f frag_inst=%.3f | atom_grp=%.3f(n%s) frag_grp=%.3f(n%s)  auc=%.3f" % (
-                      r["layer"], r["atom_node_gtroc"], r["frag_node_gtroc"], r["frag_motif_gtroc"],
+            print("    L%d  atom_node=%s frag_node=%s frag_motif=%s | atom_inst=%.3f frag_inst=%.3f | "
+                  "atom_grp=%.3f(n%s) frag_grp=%.3f(n%s)" % (
+                      r["layer"], _g(r["atom_node_gtroc"]), _g(r["frag_node_gtroc"]), _g(r["frag_motif_gtroc"]),
                       _f(r["atom_inst_pearson"]), _f(r["frag_inst_pearson"]),
                       _f(r["atom_grp_pearson_u"]), r["atom_grp_n_motifs"],
-                      _f(r["frag_grp_pearson_u"]), r["frag_grp_n_motifs"], r["pred_auc"]))
+                      _f(r["frag_grp_pearson_u"]), r["frag_grp_n_motifs"]))
     return rows
 
 
@@ -283,6 +315,8 @@ def _main():
     ap.add_argument("--fold", type=int, required=True)
     ap.add_argument("--vocab", required=True)
     ap.add_argument("--unk", required=True, choices=["include", "exclude"])
+    ap.add_argument("--regime", default="source", choices=["source", "none"],
+                    help="source = compute GT-ROC (node-GT datasets); none = Pearson + pred only")
     ap.add_argument("--vocab_root", default=None)
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--processed_root", required=True)
@@ -290,7 +324,7 @@ def _main():
     ap.add_argument("--dest_root", required=True)
     args = ap.parse_args()
     evaluate(args.dataset, args.fold, args.vocab, args.unk, args.data_root, args.processed_root,
-             args.neutral, args.dest_root, vocab_root=args.vocab_root)
+             args.neutral, args.dest_root, vocab_root=args.vocab_root, regime=args.regime)
 
 
 if __name__ == "__main__":
