@@ -68,7 +68,15 @@ def featurize_split(rows, create_data, get_3Dcoords, frag_type):
             # nodes_to_motifs; FragNet's fragment/connection machinery is otherwise unchanged.
             if "nodes_to_motifs" not in r:
                 raise KeyError(f"src_idx {idx}: frag_type='custom' needs 'nodes_to_motifs' in graph_context")
-            frag_bonds = _frag_bonds_from_motifs(mol, r["nodes_to_motifs"])
+            try:
+                # FragNet's heavy-atom count must match our nodes_to_motifs, else the cut-bonds are
+                # misaligned. A per-molecule mismatch (FragNet parses the verbatim SMILES to a different
+                # heavy-atom count — e.g. a salt/disconnected SMILES or an RDKit normalization diff)
+                # cannot be aligned -> DROP it (counted). A SYSTEMATIC mismatch surfaces as a large
+                # dropped-graph count in the coverage report (the red flag), never as a silent loss.
+                frag_bonds = _frag_bonds_from_motifs(mol, r["nodes_to_motifs"])
+            except Exception:
+                dropped.append(idx); continue
             data = create_data.create_data_point([smiles, y, mol, conf, frag_type, frag_bonds])
         else:
             data = create_data.create_data_point([smiles, y, mol, conf, frag_type])
@@ -78,11 +86,10 @@ def featurize_split(rows, create_data, get_3Dcoords, frag_type):
         data.atom_syms = [a.GetSymbol() for a in mol.GetAtoms()]
         n_x = int(data.x_atoms.shape[0])
         if len(data.atom_syms) != n_x:
-            # x_atoms and our symbol list disagree -> FragNet kept Hs or reordered; fail loud so the
-            # atom↔atom verification in Stage B is never fed a misaligned symbol list.
-            raise AssertionError(
-                f"src_idx {idx}: atom_syms {len(data.atom_syms)} != x_atoms {n_x} "
-                f"(get_3Dcoords may have kept explicit H; inspect before trusting attention).")
+            # FragNet's x_atoms count disagrees with its mol atom count (kept explicit H / reordered) ->
+            # this molecule's attention can't be atom-aligned in Stage B -> DROP + count (per-molecule;
+            # a systematic case would show in the coverage report).
+            dropped.append(idx); continue
         out.append(data)
     return out, dropped
 
