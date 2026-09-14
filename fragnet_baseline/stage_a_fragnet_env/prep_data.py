@@ -50,7 +50,13 @@ def featurize_split(rows, create_data, get_3Dcoords, frag_type):
     out, dropped = [], []
     for r in rows:
         idx, smiles, y = int(r["idx"]), r["smiles"], r["y"]
-        mol = get_3Dcoords(smiles)                      # FragNet's own 3D embed (None on failure)
+        # get_3Dcoords may RETURN None or RAISE: a SMILES RDKit can't sanitize (e.g. hypervalent N in
+        # Mutagenicity/hERG nitro compounds) becomes None, and FragNet's AddHs(None) then throws. Either
+        # way this molecule cannot be featurized -> DROP it (counted), never let it abort the whole split.
+        try:
+            mol = get_3Dcoords(smiles)
+        except Exception:
+            dropped.append(idx); continue
         if mol is None:
             dropped.append(idx); continue
         try:
