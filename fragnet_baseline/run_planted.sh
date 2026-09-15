@@ -112,7 +112,7 @@ EOF
 $pre
 conda activate fragnet
 python $SA/finetune_fragnet.py --work "\$UW" --pt_ckpt $PT --vendor $VENDOR \\
-  --task clf --batch_size $BATCH_SIZE --device $FT_DEV
+  --task clf --epochs 10000 --es_patience 100 --batch_size $BATCH_SIZE --device $FT_DEV
 EOF
 
   cat > "$SBD/export.sbatch" <<EOF
