@@ -16,12 +16,13 @@ import yaml
 
 
 def build_config(work: Path, pt_ckpt: str, target_type: str, n_classes: int,
-                 epochs: int, es_patience: int, lr: float, batch_size: int, seed: int = 42) -> dict:
+                 epochs: int, es_patience: int, lr: float, batch_size: int, seed: int = 42,
+                 device: str = "gpu") -> dict:
     return {
         "exp_dir": str(work),
         "seed": seed,            # REQUIRED: finetune_gat2.py calls seed_everything(args.seed) (top-level key)
         "model_version": "gat2",
-        "device": "gpu",
+        "device": device,        # 'gpu' or 'cpu' — FragNet finetune_gat2 reads this
         "atom_features": 167, "frag_features": 167, "edge_features": 17,
         "fedge_in": 6, "fbond_edge_in": 6,
         "pretrain": {
@@ -53,6 +54,8 @@ def main():
     ap.add_argument("--vendor", required=True, help="vendored pnnl/FragNet repo")
     ap.add_argument("--task", choices=["clf", "regr"], default="clf",
                     help="clf -> BCE head/sigmoid; regr -> MSE head/raw output (esol, Lipophilicity)")
+    ap.add_argument("--device", choices=["gpu", "cpu"], default="gpu",
+                    help="cpu = train on CPU (for the GPU-vs-CPU throughput comparison)")
     ap.add_argument("--n_classes", type=int, default=1)
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--es_patience", type=int, default=30)
@@ -67,7 +70,8 @@ def main():
         if not (work / f"{s}.pkl").exists():
             raise FileNotFoundError(f"missing {work / f'{s}.pkl'} — run prep_data.py first")
     cfg = build_config(work, args.pt_ckpt, target_type, args.n_classes,
-                       args.epochs, args.es_patience, args.lr, args.batch_size, seed=args.seed)
+                       args.epochs, args.es_patience, args.lr, args.batch_size, seed=args.seed,
+                       device=args.device)
     cfg_path = work / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
     print(f"[finetune] config -> {cfg_path} (target_type={target_type})")

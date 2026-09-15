@@ -26,8 +26,10 @@ CONDA=/nfs/stak/users/kokatea/hpc-share/anaconda3/etc/profile.d/conda.sh
 GPU_PART=${GPU_PART:-preempt}
 CPU_PART=${CPU_PART:-share}
 BATCH_SIZE=${BATCH_SIZE:-256}
-MAXCC=${MAXCC:-75}                # array concurrency (GPU phases) — user targets 75 GPUs
-PREP_CORES=${PREP_CORES:-4}
+MAXCC=${MAXCC:-75}                # array concurrency — 75 GPUs (COMPUTE=gpu) or ~87 CPU slots (COMPUTE=cpu)
+PREP_CORES=${PREP_CORES:-2}
+COMPUTE=${COMPUTE:-gpu}           # gpu = finetune/export on GPU; cpu = on CPU (more slots available)
+FT_CPU_CORES=${FT_CPU_CORES:-2}   # cores for finetune/export when COMPUTE=cpu
 DATASETS="BBBP hERG Mutagenicity"     # all regime=planted, task=clf (DNF targets are binary)
 
 SBD=$BASE/_sbatch
@@ -61,6 +63,14 @@ PRE
 emit() {
   write_units
   local pre; pre=$(_preamble | sed "s#__UNITS__#$UNITS#; s#__BASE__#$BASE#; s#__CONDA__#$CONDA#")
+  # finetune/export resources + device depend on COMPUTE (gpu vs cpu)
+  local FT_PART FT_GRES FT_CORES FT_DEV EXP_DEV
+  if [ "$COMPUTE" = "cpu" ]; then
+    FT_PART=$CPU_PART; FT_GRES="gpu:0"; FT_CORES=$FT_CPU_CORES; FT_DEV=cpu; EXP_DEV=cpu
+  else
+    FT_PART=$GPU_PART; FT_GRES="gpu:1"; FT_CORES=2; FT_DEV=gpu; EXP_DEV=auto
+  fi
+  echo "[emit] COMPUTE=$COMPUTE -> finetune/export: -p $FT_PART --gres=$FT_GRES -c $FT_CORES (ft device=$FT_DEV, export device=$EXP_DEV)"
 
   cat > "$SBD/dump.sbatch" <<EOF
 #!/bin/bash
@@ -94,28 +104,28 @@ EOF
   cat > "$SBD/finetune.sbatch" <<EOF
 #!/bin/bash
 #SBATCH -J fp_ft
-#SBATCH -p $GPU_PART
-#SBATCH --gres=gpu:1
-#SBATCH -c 2
+#SBATCH -p $FT_PART
+#SBATCH --gres=$FT_GRES
+#SBATCH -c $FT_CORES
 #SBATCH -t 4:00:00
 #SBATCH -o $BASE/_logs/ft_%A_%a.log
 $pre
 conda activate fragnet
 python $SA/finetune_fragnet.py --work "\$UW" --pt_ckpt $PT --vendor $VENDOR \\
-  --task clf --batch_size $BATCH_SIZE
+  --task clf --batch_size $BATCH_SIZE --device $FT_DEV
 EOF
 
   cat > "$SBD/export.sbatch" <<EOF
 #!/bin/bash
 #SBATCH -J fp_exp
-#SBATCH -p $GPU_PART
-#SBATCH --gres=gpu:1
-#SBATCH -c 2
+#SBATCH -p $FT_PART
+#SBATCH --gres=$FT_GRES
+#SBATCH -c $FT_CORES
 #SBATCH -t 2:00:00
 #SBATCH -o $BASE/_logs/export_%A_%a.log
 $pre
 conda activate fragnet
-python $SA/export_frag_attention.py --work "\$UW" --vendor $VENDOR \\
+python $SA/export_frag_attention.py --work "\$UW" --vendor $VENDOR --device $EXP_DEV \\
   --graph_context "\$UW/graph_context.json" --out "\$UW/fragnet_frag_neutral.json" 2>&1 | grep -v "bond mask value"
 rc=\${PIPESTATUS[0]}
 if [ "\$rc" -eq 0 ] && [ -s "\$UW/fragnet_frag_neutral.json" ]; then
