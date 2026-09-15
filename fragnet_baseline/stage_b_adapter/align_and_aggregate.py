@@ -169,6 +169,8 @@ def load_planted_graphs(dataset: str, fold: int, planted_root: str, rule_id: str
         split_lists[s] = list(torch.load(p, weights_only=False))
     # planted graphs carry node_label → they ARE the GT eval lists
     gt = {s: split_lists[s] for s in split_lists}
+    if str(_REPO) not in sys.path:                 # planted bypasses load_our_graphs' _evaluate_module()
+        sys.path.insert(0, str(_REPO))             # (which sets this up) -> make SharedModules importable
     from SharedModules.data.vocab import load_vocab
     vocab_obj = load_vocab(vocab_root, dataset, vocab)   # for motif_list (motif_smarts in rows)
     task_type = "BinaryClass"                      # planted DNF targets are binary (BBBP/hERG/Mutagenicity)
