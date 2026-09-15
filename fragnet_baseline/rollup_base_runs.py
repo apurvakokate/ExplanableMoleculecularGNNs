@@ -36,9 +36,9 @@ def rollup(base: str, out_path: str = None) -> None:
             row["source_path"] = str(f.relative_to(base))
             all_rows.append(row)
         if r:
-            d, reg = r[0].get("dataset", "?"), r[0].get("regime", "?")
+            d, reg, rid = r[0].get("dataset", "?"), r[0].get("regime", "?"), r[0].get("rule_id", "")
             fold, unk = r[0].get("fold", "?"), r[0].get("unk", "?")
-            seen[(reg, d)].add((str(fold), str(unk)))
+            seen[(reg, d, rid)].add((str(fold), str(unk)))
     if "source_path" not in cols:
         cols.append("source_path")
 
@@ -53,34 +53,35 @@ def rollup(base: str, out_path: str = None) -> None:
     # featurization drops: n_dropped is per (regime,dataset,fold,split), repeated across layers+unk -> dedup
     seen_cell, drops = set(), defaultdict(int)
     for row in all_rows:
-        key = (row.get("regime"), row.get("dataset"), row.get("fold"), row.get("split"))
+        rid = row.get("rule_id", "")
+        key = (row.get("regime"), row.get("dataset"), rid, row.get("fold"), row.get("split"))
         if key in seen_cell:
             continue
         seen_cell.add(key)
         nd = row.get("n_dropped")
         try:
-            drops[(row.get("regime"), row.get("dataset"))] += int(nd) if nd not in (None, "") else 0
+            drops[(row.get("regime"), row.get("dataset"), rid)] += int(nd) if nd not in (None, "") else 0
         except (ValueError, TypeError):
             pass
     any_drop = {k: v for k, v in drops.items() if v}
     if any_drop:
-        print("[rollup] featurization drops (summed over folds × splits):")
-        for (reg, d), n in sorted(any_drop.items()):
-            print(f"    {reg:>6} / {d:<32} dropped {n}")
+        print(f"[rollup] featurization drops (summed over folds × splits) in {len(any_drop)} groups:")
+        for (reg, d, rid), n in sorted(any_drop.items()):
+            tag = f"{d}/{rid}" if rid else d
+            print(f"    {reg:>7} / {tag:<40} dropped {n}")
     else:
         print("[rollup] featurization drops: none")
 
-    print("[rollup] coverage (expected 5 folds × 2 unk = 10 cells per dataset):")
-    ok = True
-    for (reg, d) in sorted(seen):
-        have = seen[(reg, d)]
-        want = {(str(fo), u) for fo in range(EXPECT_FOLDS) for u in EXPECT_UNK}
-        missing = sorted(want - have)
-        flag = "OK" if not missing else f"MISSING {len(missing)}: {missing}"
-        if missing:
-            ok = False
-        print(f"    {reg:>6} / {d:<32} {len(have)}/10  {flag}")
-    print("[rollup] ALL COMPLETE" if ok else "[rollup] INCOMPLETE — see MISSING above")
+    # coverage: one (regime,dataset,rule_id) group per unit-set, each expects 5 folds × 2 unk = 10 cells.
+    # summarize + list only the INCOMPLETE groups (scales to 150 planted rules).
+    want = {(str(fo), u) for fo in range(EXPECT_FOLDS) for u in EXPECT_UNK}
+    incomplete = sorted(k for k in seen if (want - seen[k]))
+    print(f"[rollup] coverage: {len(seen) - len(incomplete)}/{len(seen)} (regime,dataset,rule) groups "
+          f"complete (each = 5 folds × 2 unk = 10 cells)")
+    for (reg, d, rid) in incomplete:
+        tag = f"{d}/{rid}" if rid else d
+        print(f"    INCOMPLETE {reg}/{tag}: {len(seen[(reg, d, rid)])}/10 missing {sorted(want - seen[(reg, d, rid)])}")
+    print("[rollup] ALL COMPLETE" if not incomplete else f"[rollup] {len(incomplete)} groups INCOMPLETE")
 
 
 def _main():

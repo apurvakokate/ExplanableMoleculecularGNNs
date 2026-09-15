@@ -208,9 +208,35 @@ def _pred_metrics(aligned_split: dict, graphs, task_type: str) -> dict:
     return {"pred_auc": auc, "pred_rmse": nan, "pred_mae": nan}
 
 
-COLS = ["dataset", "fold", "vocab", "unk", "regime", "task_type", "method", "split", "layer",
+def _gtroc_block(att_by_i, gl, keep_fn, prefix, ev):
+    """Full node-level GT-ROC via evaluate.py's gtroc_all (identical to MoSE's planted eval): node (fired
+    cause), DNF instance/global, family + spurious contrasts. gtroc_all guards each on _has_pos, so
+    source datasets yield node (+ instance/global aliased) and planted adds DNF/spurious/family. Returns
+    (fixed summary cols for the CSV, full dict incl per-motif spurious for the JSON)."""
+    g = ev.gtroc_all(att_by_i, gl, keep_fn)
+    def _v(k):
+        x = g.get(k)
+        return x if x is not None else ""
+    cols = {
+        f"{prefix}_node_gtroc": _v("gt_roc_node_auc_mean"),
+        f"{prefix}_dnf_instance": _v("instance_gt_roc_node_auc_mean"),
+        f"{prefix}_dnf_global": _v("global_gt_roc_node_auc_mean"),
+        f"{prefix}_family_roc": _v("family_roc_node_auc_mean"),
+        f"{prefix}_spurious_roc": _v("spurious_roc_node_auc_mean"),
+    }
+    return cols, g
+
+
+_GTROC_KEYS = ["atom_node_gtroc", "atom_dnf_instance", "atom_dnf_global", "atom_family_roc",
+               "atom_spurious_roc", "frag_node_gtroc", "frag_dnf_instance", "frag_dnf_global",
+               "frag_family_roc", "frag_spurious_roc", "frag_motif_gtroc"]
+
+
+COLS = ["dataset", "rule_id", "fold", "vocab", "unk", "regime", "task_type", "method", "split", "layer",
         "n_graphs", "n_dropped", "n_total",
-        "atom_node_gtroc", "frag_node_gtroc", "frag_motif_gtroc", "pred_auc", "pred_rmse", "pred_mae",
+        "atom_node_gtroc", "atom_dnf_instance", "atom_dnf_global", "atom_family_roc", "atom_spurious_roc",
+        "frag_node_gtroc", "frag_dnf_instance", "frag_dnf_global", "frag_family_roc", "frag_spurious_roc",
+        "frag_motif_gtroc", "pred_auc", "pred_rmse", "pred_mae",
         "atom_grp_pearson_u", "atom_grp_pearson_w", "atom_grp_spearman_u", "atom_grp_n_motifs",
         "atom_inst_pearson", "atom_inst_spearman", "atom_inst_n",
         "frag_grp_pearson_u", "frag_grp_pearson_w", "frag_grp_spearman_u", "frag_grp_n_motifs",
@@ -218,16 +244,17 @@ COLS = ["dataset", "fold", "vocab", "unk", "regime", "task_type", "method", "spl
 
 
 def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path, dest_root,
-             vocab_root=None, regime="source"):
+             vocab_root=None, regime="source", planted_root=None, rule_id=None):
     ev = _evaluate_module()
     split_lists, gt, vocab_obj, dmeta, task_type = load_our_graphs(
-        dataset, fold, vocab, data_root, processed_root, regime=regime, vocab_root=vocab_root)
+        dataset, fold, vocab, data_root, processed_root, regime=regime,
+        planted_root=planted_root, rule_id=rule_id, vocab_root=vocab_root)
     neutral = json.loads(Path(neutral_path).read_text())
     aligned, dropped = _align(neutral, split_lists)        # survivors + featurization drops (misalign raises)
 
-    # GT-ROC (correctness) needs source node_label; only computed for regime=source. For regime=none
-    # (real datasets, no node-GT) we emit Pearson (faithfulness) + prediction metrics only.
-    do_gtroc = (regime == "source")
+    # GT-ROC (correctness) needs a node_label. source (*_Verified_GT) and planted (fired-clause cause)
+    # both carry it -> compute GT-ROC. regime=none (real datasets, no node-GT) -> Pearson + pred only.
+    do_gtroc = regime in ("source", "planted")
     kept = kept_set(dataset, fold, vocab, data_root, vocab_root) if unk == "exclude" else None
     keep_fn = ev._keep_fn(kept, unk)
 
@@ -260,16 +287,20 @@ def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path,
         for L in range(n_layers):
             atom_by_i = _atom_att_by_i(asp, L)                 # atom attention (no GT needed)
             row = dict(
-                dataset=dataset, fold=int(fold), vocab=vocab, unk=unk, regime=regime,
-                task_type=task_type, method=METHOD, split=s, layer=L,
+                dataset=dataset, rule_id=(rule_id or ""), fold=int(fold), vocab=vocab, unk=unk,
+                regime=regime, task_type=task_type, method=METHOD, split=s, layer=L,
                 n_graphs=len(asp), n_dropped=len(drop_s), n_total=len(sl))
-            if do_gtroc:                                       # correctness axis (source node-GT only)
+            if do_gtroc:                                       # correctness axis (source + planted node-GT)
                 frag_by_i = _frag_broadcast_by_i(asp, gl, L)
-                row["atom_node_gtroc"] = ev._per_graph_mean_auc(atom_by_i, gl, "node_label", keep_fn)
-                row["frag_node_gtroc"] = ev._per_graph_mean_auc(frag_by_i, gl, "node_label", keep_fn)
+                a_cols, a_full = _gtroc_block(atom_by_i, gl, keep_fn, "atom", ev)   # node/DNF/family/spurious
+                f_cols, f_full = _gtroc_block(frag_by_i, gl, keep_fn, "frag", ev)
+                row.update(a_cols); row.update(f_cols)
                 row["frag_motif_gtroc"] = _frag_motif_auc_mean(asp, gl, L, keep_fn, ev)
+                row["atom_gtroc_full"] = a_full        # full dict (per-motif spurious) -> JSON only
+                row["frag_gtroc_full"] = f_full
             else:
-                row["atom_node_gtroc"] = row["frag_node_gtroc"] = row["frag_motif_gtroc"] = ""
+                for _k in _GTROC_KEYS:
+                    row[_k] = ""
             row.update(pred_cols)
             atom_sc = ev.score_cache_from_atts(atom_by_i, sl)  # {mid:{gi: mean atom att}} (sl: always present)
             frag_sc = _frag_sc_cache(asp, L)                   # {mid:{gi: native frag att}}
@@ -281,11 +312,14 @@ def evaluate(dataset, fold, vocab, unk, data_root, processed_root, neutral_path,
     dest = Path(dest_root) / f"unk-{unk}" / vocab_seg / f"fold{int(fold)}"
     dest.mkdir(parents=True, exist_ok=True)
     with open(dest / "fragnet_frag_perlayer_metrics.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=COLS); w.writeheader()
+        # extrasaction='ignore': rows carry atom_gtroc_full/frag_gtroc_full (per-motif spurious) that
+        # belong only in the JSON, not the fixed-column CSV.
+        w = csv.DictWriter(f, fieldnames=COLS, extrasaction="ignore"); w.writeheader()
         for r in rows:
             w.writerow(r)
     (dest / "fragnet_frag_perlayer_metrics.json").write_text(json.dumps(rows, indent=2))
-    print(f"[eval_frag] {dataset} fold{fold} unk={unk} regime={regime} task={task_type} -> {dest}")
+    _rid = f" rule={rule_id}" if rule_id else ""
+    print(f"[eval_frag] {dataset}{_rid} fold{fold} unk={unk} regime={regime} task={task_type} -> {dest}")
 
     def _f(v):
         return float("nan") if v in (None, "") else float(v)
@@ -315,8 +349,10 @@ def _main():
     ap.add_argument("--fold", type=int, required=True)
     ap.add_argument("--vocab", required=True)
     ap.add_argument("--unk", required=True, choices=["include", "exclude"])
-    ap.add_argument("--regime", default="source", choices=["source", "none"],
-                    help="source = compute GT-ROC (node-GT datasets); none = Pearson + pred only")
+    ap.add_argument("--regime", default="source", choices=["source", "none", "planted"],
+                    help="source/planted = compute GT-ROC (node-GT / fired-clause cause); none = Pearson + pred only")
+    ap.add_argument("--planted_root", default=None, help="planted regime: planted_v2 root")
+    ap.add_argument("--rule_id", default=None, help="planted regime: e.g. dnf_k2_r1")
     ap.add_argument("--vocab_root", default=None)
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--processed_root", required=True)
@@ -324,7 +360,8 @@ def _main():
     ap.add_argument("--dest_root", required=True)
     args = ap.parse_args()
     evaluate(args.dataset, args.fold, args.vocab, args.unk, args.data_root, args.processed_root,
-             args.neutral, args.dest_root, vocab_root=args.vocab_root, regime=args.regime)
+             args.neutral, args.dest_root, vocab_root=args.vocab_root, regime=args.regime,
+             planted_root=args.planted_root, rule_id=args.rule_id)
 
 
 if __name__ == "__main__":
