@@ -1,12 +1,15 @@
 """Aggregate the per-unit fragnet_frag_perlayer_metrics.csv files of a base_runs tree into one
 rollup.csv, and print a coverage report. Pure stdlib (csv) — runs in any env.
 
-Walks   <base>/<regime>/<dataset>/eval/unk-{include,exclude}/rbrics[_filter]/fold<k>/fragnet_frag_perlayer_metrics.csv
+Finds   every fragnet_frag_perlayer_metrics.csv anywhere under <base> (rglob — LAYOUT-AGNOSTIC).
+        base_runs tree:  <base>/<dataset>/eval/unk-{include,exclude}/rbrics[_filter]/fold<k>/...
+        planted  tree:   <base>/<dataset>/<rule_id>/eval/unk-{include,exclude}/rbrics[_filter]/fold<k>/...
 Writes  <base>/rollup.csv    (every row from every unit, union of columns, source_path appended)
 
-Each metrics row already self-identifies (dataset, fold, vocab, unk, regime, task_type, method, split,
-layer, …), so the rollup is a faithful concatenation; the coverage report flags missing (dataset, fold,
-unk) cells against the expected 5 folds × {include, exclude}.
+Grouping/coverage read the ROW CONTENT, not the path: each metrics row self-identifies (dataset, fold,
+vocab, unk, regime, task_type, method, split, layer, rule_id, …), so the rollup is a faithful
+concatenation regardless of directory layout; coverage flags missing (fold, unk) cells per
+(regime, dataset, rule_id) group against the expected 5 folds × {include, exclude}.
 """
 import argparse
 import csv

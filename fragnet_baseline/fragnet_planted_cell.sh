@@ -59,8 +59,11 @@ conda deactivate
 conda activate fragnet
 python $SA/prep_data.py --graph_context "$UW/graph_context.json" --out_dir "$UW" \
   --vendor $VENDOR --frag_type custom; rc=$?; [ $rc -ne 0 ] && fail prep $rc
+# FT_EPOCHS caps training: perfect-fit cells converge (AUC 1.0) by ~epoch 200 but FragNet's
+# early-stop watches val LOSS, which jitters near 0 and never trips patience -> they'd run to the
+# 12h wall and TIMEOUT (silent FAIL, no status). A cap well past convergence lets them finish.
 python $SA/finetune_fragnet.py --work "$UW" --pt_ckpt $PT --vendor $VENDOR \
-  --task clf --epochs 10000 --es_patience 100 --batch_size $BATCH_SIZE --device $FT_DEV
+  --task clf --epochs "${FT_EPOCHS:-10000}" --es_patience "${FT_ES_PATIENCE:-100}" --batch_size $BATCH_SIZE --device $FT_DEV
 rc=$?; [ $rc -ne 0 ] && fail finetune $rc
 python $SA/export_frag_attention.py --work "$UW" --vendor $VENDOR --device $EXP_DEV \
   --graph_context "$UW/graph_context.json" --out "$UW/fragnet_frag_neutral.json" 2>&1 | grep -v "bond mask value"

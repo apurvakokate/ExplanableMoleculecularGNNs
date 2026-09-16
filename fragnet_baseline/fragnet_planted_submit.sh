@@ -37,13 +37,18 @@ N=$(wc -l < "$MAN")
 [ "$N" -gt 1000 ] && echo "WARN: $N > MaxArraySize 1001 — split with ONLY_DS." >&2
 
 # ── device -> resources (GPU is the recommended mode; CPU is overflow) ──
+# PART: preempt-first per policy; override PART=share for CPU arrays — preempt STARVES CPU-only
+# arrays (they sit PD (Priority) with idle cores), share places them immediately (QOS cpu=512).
+PART=${PART:-preempt}
 if [ "$DEV" = cpu ]; then GRES="gpu:0"; TLIM=${TLIM:-48:00:00}; else GRES="gpu:1"; TLIM=${TLIM:-12:00:00}; fi
+[ "$DEV" = cpu ] && [ "$PART" = preempt ] && echo "[submit] NOTE: CPU on preempt tends to starve (Priority) — consider PART=share"
 ARRAY="0-$((N-1))%$MAXCC"
-echo "[submit] $N cells | DEV=$DEV | array $ARRAY | -p preempt --gres=$GRES -c 2 -t $TLIM --requeue"
+echo "[submit] $N cells | DEV=$DEV | array $ARRAY | -p $PART --gres=$GRES -c 2 -t $TLIM --requeue"
 echo "[submit] manifest=$MAN"
 
-CMD=(sbatch --parsable --array="$ARRAY" --gres="$GRES" -t "$TLIM"
-     --export=ALL,MANIFEST="$MAN",DEV="$DEV" "$FB/fragnet_planted_array.sbatch")
+# FT_EPOCHS/FT_ES_PATIENCE propagate to the cell (cap epochs for perfect-fit cells that never early-stop)
+CMD=(sbatch --parsable --array="$ARRAY" -p "$PART" --gres="$GRES" -t "$TLIM"
+     --export=ALL,MANIFEST="$MAN",DEV="$DEV",FT_EPOCHS="${FT_EPOCHS:-10000}",FT_ES_PATIENCE="${FT_ES_PATIENCE:-100}" "$FB/fragnet_planted_array.sbatch")
 if [ -n "${DRYRUN:-}" ]; then
   echo "[DRYRUN] ${CMD[*]}"; echo "[DRYRUN] head of manifest:"; head -5 "$MAN"; exit 0
 fi
