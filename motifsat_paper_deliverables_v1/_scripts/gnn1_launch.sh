@@ -24,24 +24,29 @@ W="$REPO/motifsat_paper_deliverables_v1/_scripts/gnn1_worker.sh"
 LOG="$REPO/motifsat_paper_deliverables_v1/_dispatch_gnn1/logs"; mkdir -p "$LOG"
 
 SMOKE="${SMOKE:-0}"
-GPU_PART="${GPU_PART:-preempt}"; CPU_PART="${CPU_PART:-preempt,share}"
+# preempt-first, with VERIFIED fallback (eecs/normal): SLURM places each job in the
+# earliest-available listed partition, preferring preempt (large, preemptible pool),
+# spilling only when it can't schedule. GPU fallback = dgx2 (≤16 GPU/user) + gpu
+# (≤8 GPU/user), both non-preemptible. CPU fallback = share (preempt starves CPU arrays).
+GPU_PART="${GPU_PART:-preempt,dgx2,gpu}"; CPU_PART="${CPU_PART:-preempt,share}"
 
 if [ "$SMOKE" = 1 ]; then
     NGPU="${NGPU:-1}"; NCPU="${NCPU:-4}"; CPU_CORES="${CPU_CORES:-2}"
     GPU_DATASETS="${GPU_DATASETS:-BBBP}"; CPU_DATASETS="${CPU_DATASETS:-Benzene_Verified_GT}"
 else
-    # FINAL: total 300 cores = 64 GPU workers (gpu:1 -c 2 = 128) + 86 CPU workers (-c 2 = 172).
-    NGPU="${NGPU:-64}"; NCPU="${NCPU:-86}"; CPU_CORES="${CPU_CORES:-2}"
-    # route by dataset size: big -> GPU, small -> CPU.
-    GPU_DATASETS="${GPU_DATASETS:-Benzene_Verified_GT hERG Alkane_Carbonyl_Verified_GT Mutagenicity}"
-    CPU_DATASETS="${CPU_DATASETS:-BBBP esol Lipophilicity Fluoride_Carbonyl_Verified_GT}"
+    # FINAL: 32 GPU workers (gpu:1 -c 2 = 64 GPU-side cores) + 150 CPU-only workers
+    #        (gpu:0 -c 2 = 300 CPU-only cores). Two SEPARATE core pools.
+    NGPU="${NGPU:-32}"; NCPU="${NCPU:-150}"; CPU_CORES="${CPU_CORES:-2}"
+    # route by dataset size: big -> GPU, small -> CPU (union = all 8, no overlap).
+    GPU_DATASETS="${GPU_DATASETS:-hERG Mutagenicity Lipophilicity}"
+    CPU_DATASETS="${CPU_DATASETS:-BBBP esol Benzene_Verified_GT Alkane_Carbonyl_Verified_GT Fluoride_Carbonyl_Verified_GT}"
 fi
 
 submit_pool(){  # n device part gres cores mem datasets tag
     local n=$1 dev=$2 part=$3 gres=$4 cores=$5 mem=$6 dss=$7 tag=$8 i ok=0
     [ "$n" -gt 0 ] || { echo "skip $tag (n=0)"; return 0; }
     for i in $(seq 1 "$n"); do
-        POOL_DATASETS="$dss" DEVICE="$dev" SMOKE="$SMOKE" \
+        POOL_DATASETS="$dss" DEVICE="$dev" SMOKE="$SMOKE" BACKFILL_DATASETS="${BACKFILL_DATASETS:-}" \
             sbatch --requeue -p "$part" --gres="$gres" -c "$cores" --mem="$mem" -t 12:00:00 \
                 -J "gnn1_${tag}" -o "$LOG/${tag}_%j.out" --export=ALL "$W" >/dev/null \
             && ok=$((ok+1)) || echo "  [FAIL submit] $tag #$i"
@@ -50,7 +55,9 @@ submit_pool(){  # n device part gres cores mem datasets tag
 }
 
 echo "=== gnn1-ablation deploy: SMOKE=$SMOKE  NGPU=$NGPU  NCPU=$NCPU ==="
-submit_pool "$NGPU" cuda "$GPU_PART" gpu:1 2            16G "$GPU_DATASETS" gpu
-submit_pool "$NCPU" cpu  "$CPU_PART" gpu:0 "$CPU_CORES" 8G  "$CPU_DATASETS" cpu
+# Tail-backfill: GPU workers, after draining the big datasets, pull the CPU datasets
+# too so no GPU idles at the end (claims coordinate across pools; safe).
+BACKFILL_DATASETS="$CPU_DATASETS" submit_pool "$NGPU" cuda "$GPU_PART" gpu:1 2            16G "$GPU_DATASETS" gpu
+BACKFILL_DATASETS=""              submit_pool "$NCPU" cpu  "$CPU_PART" gpu:0 "$CPU_CORES" 8G  "$CPU_DATASETS" cpu
 echo "=== deployed. Re-run to add workers. Status: gnn1_status.py --report ==="
 echo "=== failures -> $REPO/motifsat_paper_deliverables_v1/_dispatch_gnn1/failures.tsv ==="

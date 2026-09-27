@@ -43,6 +43,9 @@ EPOCHS="${EPOCHS:-500}"
 PATIENCE="${PATIENCE:-50}"
 BACKBONES="${BACKBONES:-GIN GCN GAT SAGE PNA}"
 FOLDS="${FOLDS:-0 1 2 3 4}"
+# Tail-backfill: datasets this worker pulls AFTER its own POOL_DATASETS are drained
+# (set by the launcher on the GPU pool = the CPU datasets, so GPUs don't idle at the end).
+BACKFILL_DATASETS="${BACKFILL_DATASETS:-}"
 : "${POOL_DATASETS:?set POOL_DATASETS to the space-separated datasets for this pool}"
 
 # Load the 32 configs as "config_id<TAB>flags" lines (single source = gnn1_grid.py).
@@ -67,6 +70,31 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREAD
 
 _complete(){ python3 "$SCRIPTS/native_complete.py" "$1" "$STEM" --quiet >/dev/null 2>&1; }
 
+# σ-collapse check (NON-FATAL): flag a degenerate gate — GNN1 scored every motif
+# alike (per-motif score σ ≈ 0), the signature we saw on the anchor's Benzene cell
+# (GT-ROC exactly 0.5). Logged to sigma_warnings.tsv + stderr; the cell still counts VALID.
+SIGMA_WARN="$DISPATCH/sigma_warnings.tsv"
+[ -s "$SIGMA_WARN" ] || printf 'ts\tcell_id\tscore_sigma\n' > "$SIGMA_WARN"
+_sigma_check(){  # $1=run_dir  $2=cell_id
+    local sd
+    sd=$(python3 - "$1" <<'PY' 2>/dev/null
+import sys, csv, os, statistics
+p = os.path.join(sys.argv[1], 'gsat_importance_test.csv')
+try:
+    xs = [float(r['score']) for r in csv.DictReader(open(p)) if r.get('score') not in (None, '')]
+except Exception:
+    sys.exit(0)
+if len(xs) >= 2:
+    print(f"{statistics.pstdev(xs):.3e}")
+PY
+)
+    [ -n "$sd" ] || return 0
+    if awk -v s="$sd" 'BEGIN{exit !(s+0 < 1e-4)}'; then
+        printf '%s\t%s\t%s\n' "$(date +%s)" "$2" "$sd" >> "$SIGMA_WARN"
+        echo "[σ-COLLAPSE WARN] $2 score_sigma=$sd (degenerate gate — all motifs scored alike)"
+    fi
+}
+
 run_cell(){
     local cfgid=$1 ds=$2 f=$3 bb=$4
     local flags="${CFG_FLAGS[$cfgid]:-}"
@@ -88,7 +116,7 @@ run_cell(){
         --out_dir "$dir" --final_out_dir --per_split_eval --epochs "$EPOCHS" \
         --patience "$PATIENCE"
     local rc=$?
-    if [ "$rc" -eq 0 ] && _complete "$dir"; then return 0; fi
+    if [ "$rc" -eq 0 ] && _complete "$dir"; then _sigma_check "$dir" "$cid"; return 0; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$(date +%s)" "$(hostname -s)" "$JOBID" "${DEVICE:-cuda}" "$cid" "$rc" >> "$FAILURES"
     touch "$CLAIMS/$cid/.failed"
@@ -96,13 +124,22 @@ run_cell(){
 }
 
 echo "worker $WHO DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] FOLDS=[$FOLDS] BB=[$BACKBONES] EPOCHS=$EPOCHS NCFG=$(echo $CONFIGS | wc -w)"
-for cfgid in $CONFIGS; do
-    for ds in $POOL_DATASETS; do
-        for f in $FOLDS; do
-            for bb in $BACKBONES; do
-                run_cell "$cfgid" "$ds" "$f" "$bb"
+run_pool(){  # $1 = space-separated datasets to sweep
+    local cfgid ds f bb
+    for cfgid in $CONFIGS; do
+        for ds in $1; do
+            for f in $FOLDS; do
+                for bb in $BACKBONES; do
+                    run_cell "$cfgid" "$ds" "$f" "$bb"
+                done
             done
         done
     done
-done
+}
+
+run_pool "$POOL_DATASETS"                 # this worker's own datasets first
+if [ -n "$BACKFILL_DATASETS" ]; then      # then mop up the other pool's datasets (tail-backfill)
+    echo "worker $WHO tail-backfill over [$BACKFILL_DATASETS]"
+    run_pool "$BACKFILL_DATASETS"
+fi
 echo "worker $WHO DONE."
