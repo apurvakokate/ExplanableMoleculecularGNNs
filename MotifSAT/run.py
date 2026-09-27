@@ -36,7 +36,7 @@ from model import GSAT
 from train import train_gsat
 
 
-def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
+def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
     from SharedModules.data.loader import NUM_CLASSES
     # NUM_CLASSES is a SPARSE override table — only multi-output datasets are
     # listed; binary/regression/single-task sets intentionally default to 1, so
@@ -50,6 +50,18 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
             f"defaulted to 1 (not in NUM_CLASSES) — a multi-label task needs "
             f"N>1 output heads. Register it in NUM_CLASSES."
         )
+    # Mechanism ③: the fragment-graph GNN needs the vocab size (identity
+    # embedding) and, for id_desc, a per-motif descriptor table from the SMARTS.
+    _num_motifs, _desc_table = 0, None
+    if cfg.motif_method == 'motif_emb':
+        if vocab is None:
+            raise ValueError(
+                "motif_method='motif_emb' needs the vocab (num_motifs + "
+                "descriptors) — call build_model(..., vocab=vocab).")
+        _num_motifs = vocab.num_motifs
+        if cfg.motif_feat == 'id_desc':
+            from motif_modules import build_motif_descriptors
+            _desc_table = build_motif_descriptors(vocab.motif_list)
     return GSAT(
         x_dim=meta.x_dim,
         hidden_dim=cfg.hidden_dim,
@@ -65,6 +77,14 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta) -> GSAT:
         extractor_hidden_mult=cfg.extractor_hidden_mult,
         extractor_dropout_p=cfg.extractor_dropout_p,
         motif_scorer_norm=cfg.motif_scorer_norm,
+        motif_feat=cfg.motif_feat,
+        motif_edge_feat=cfg.motif_edge_feat,
+        motif_edge_chem=cfg.motif_edge_chem,
+        motif_gnn_layers=cfg.motif_gnn_layers,
+        motif_gnn_norm=cfg.motif_gnn_norm,
+        motif_gnn_residual=cfg.motif_gnn_residual,
+        num_motifs=_num_motifs,
+        motif_desc_table=_desc_table,
         noise=cfg.noise,
         info_loss_level=cfg.info_loss_level,
         motif_info_size_normalize=cfg.motif_info_size_normalize,
@@ -291,7 +311,7 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         )
 
     # Model
-    model = build_model(cfg, task_type, meta)
+    model = build_model(cfg, task_type, meta, vocab=vocab)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Model: GSAT({tag})  params={n_params:,}")
     print(f"  [FIX#5 active] injection flags from CLI/config: "
@@ -704,6 +724,31 @@ def main():
                              "'layer'/'none' address the concern that per-graph "
                              "InstanceNorm over the few motif rows in a molecule is "
                              "unstable. No effect for base GSAT / method=loss (no scorer).")
+    # Mechanism ③ — fragment-graph GNN (motif_method='motif_emb')
+    parser.add_argument("--motif_feat", default="multihot",
+                        choices=["id_desc", "multihot"],
+                        help="GNN1 fragment-node features: 'id_desc' = motif-id "
+                             "embedding + SMARTS descriptors; 'multihot' = atom-type "
+                             "count vector (sum of constituent atom one-hots).")
+    parser.add_argument("--no_motif_edge_feat", dest="motif_edge_feat",
+                        action="store_false",
+                        help="Disable the motif-edge junction-multiplicity feature (variant D).")
+    parser.set_defaults(motif_edge_feat=True)
+    parser.add_argument("--motif_edge_chem", action="store_true",
+                        help="Use the 17-dim D-chemistry junction edge feature "
+                             "(multiplicity + bond-order + source/target attachment "
+                             "element) instead of the scalar multiplicity. Requires "
+                             "the edge feature on (GINE) and node_encoder='onehot'.")
+    parser.add_argument("--motif_gnn_layers", type=int, default=2,
+                        help="Depth of the motif-graph GNN (GNN1).")
+    parser.add_argument("--motif_gnn_norm", default="none",
+                        choices=["none", "layer"],
+                        help="GNN1 per-layer norm. Default 'none'; 'layer' = LayerNorm. "
+                             "NOT batch/instance (unstable when a molecule has one "
+                             "fragment, M=1). An ablation axis.")
+    parser.add_argument("--motif_gnn_residual", action="store_true",
+                        help="Enable GNN1 per-layer skip connection h = h + block(h). "
+                             "Default off (single-branch encoder; an ablation axis).")
     parser.add_argument("--motif_info_size_normalize", action="store_true",
                         help="Divide motif-level info_loss by motif length.")
     parser.add_argument("--logit_clamp",     type=float, default=None,
@@ -846,6 +891,12 @@ def main():
             dropout=args.dropout,
             pool_mode=args.pool_mode,
             motif_scorer_norm=args.motif_scorer_norm,
+            motif_feat=args.motif_feat,
+            motif_edge_feat=args.motif_edge_feat,
+            motif_edge_chem=args.motif_edge_chem,
+            motif_gnn_layers=args.motif_gnn_layers,
+            motif_gnn_norm=args.motif_gnn_norm,
+            motif_gnn_residual=args.motif_gnn_residual,
             extractor_dropout_p=args.extractor_dropout_p,
             motif_info_size_normalize=args.motif_info_size_normalize,
             logit_clamp=args.logit_clamp,

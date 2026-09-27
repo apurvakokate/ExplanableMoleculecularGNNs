@@ -1,0 +1,20 @@
+# Method preset: MECHANISM ③ — fragment-graph GNN, multihot features.
+#
+# A SEPARATE GNN (GNN1) runs over the fragment/motif graph — nodes = motif
+# instances, edges = inter-fragment bonds (junction multiplicity as edge feature),
+# node features = the atom-type count vector (sum of the constituent atoms'
+# one-hot features, DECOUPLED from the node GNN). GNN1 produces per-motif scores →
+# sampled per motif (noise='motif') → broadcast to atoms → gate the node GNN
+# (GNN2) which predicts. Both GNNs train jointly end-to-end (the gate is the
+# coupling). FULL vocab only — fails loud on any UNK atom.
+#
+#   python run.py --config MotifSAT/configs/motif_emb_multihot.yaml \
+#       --dataset BBBP --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant rbrics
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_feat: multihot
+motif_edge_feat: true
+motif_gnn_layers: 2

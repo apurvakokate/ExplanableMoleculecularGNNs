@@ -1,0 +1,18 @@
+# Method preset: MECHANISM ③ — fragment-graph GNN, id⊕desc features.
+#
+# Same two-GNN architecture as motif_emb_multihot, but GNN1's fragment-node
+# features F_m = a learned motif-identity embedding (A) ⊕ fixed per-motif RDKit
+# descriptors from the SMARTS (B: n_heavy, n_attach, n_rings, n_aromatic, and
+# per-element counts). Identity says WHICH motif; descriptors add chemistry.
+# DECOUPLED from the node GNN. FULL vocab only — fails loud on any UNK atom.
+#
+#   python run.py --config MotifSAT/configs/motif_emb_iddesc.yaml \
+#       --dataset BBBP --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant rbrics
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_feat: id_desc
+motif_edge_feat: true
+motif_gnn_layers: 2

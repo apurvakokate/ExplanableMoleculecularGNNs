@@ -36,6 +36,13 @@ class MotifSATConfig:
     extractor_hidden_mult: int = 2
     extractor_dropout_p: float = 0.5
     motif_scorer_norm: Optional[str] = None  # motif readout scorer norm: instance | layer | none (REQUIRED for scorer runs; no default)
+    # Mechanism ③ — fragment-graph GNN (motif_method='motif_emb')
+    motif_feat: str = 'multihot'       # id_desc | multihot — GNN1 node features F_m
+    motif_edge_feat: bool = True       # variant D: junction edge feature on/off (GINE vs GIN)
+    motif_edge_chem: bool = False      # D-chemistry: 17-dim junction feature (vs scalar multiplicity)
+    motif_gnn_layers: int = 2          # depth of the motif-graph GNN (GNN1)
+    motif_gnn_norm: str = 'none'       # GNN1 per-layer norm: none (default) | layer
+    motif_gnn_residual: bool = False   # GNN1 per-layer skip connection (default off)
 
     # Stochasticity granularity for motif-scored paths (NOT extra logit noise).
     # none  = per-node extractor (base GSAT)
@@ -178,8 +185,18 @@ class MotifSATConfig:
         # scorer (readout / motif-noise) — no default is suppressed, so 'instance'
         # is written just like 'layer'/'none'. Runs with no scorer (base GSAT /
         # method=loss) omit it, since the norm is unused there.
-        if self.motif_method == 'readout' or self.noise in ('node', 'motif'):
+        if self.motif_method != 'motif_emb' and (
+                self.motif_method == 'readout' or self.noise in ('node', 'motif')):
             base = f'{base}_mnorm-{self.motif_scorer_norm}'
+        # Mechanism ③: encode the fragment-graph feature/edge/depth choices so the
+        # motif_emb variants get distinct run dirs.
+        if self.motif_method == 'motif_emb':
+            _me = ('_medge-chem' if (self.motif_edge_feat and self.motif_edge_chem)
+                   else '_medge' if self.motif_edge_feat else '')
+            _mn = '' if self.motif_gnn_norm == 'none' else f'_mn-{self.motif_gnn_norm}'
+            _mr = '_mres' if self.motif_gnn_residual else ''
+            base = (f'{base}_mf-{self.motif_feat}{_me}_ml{self.motif_gnn_layers}'
+                    f'{_mn}{_mr}')
         # decay_r (IB anneal rate) is NOT captured by hp_suffix (only init_r/final_r
         # are), so annealing (decay_r>0) vs no-annealing (decay_r=0) — and any
         # anneal-rate change — would otherwise share a folder. Encode it here.

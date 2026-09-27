@@ -400,10 +400,43 @@ class TestGSAT(unittest.TestCase):
         with self.assertRaises(ValueError):
             _make_gsat(motif_method='node_emb')
 
-    def test_motif_emb_not_implemented(self):
-        # motif_emb is a reserved-but-unimplemented method.
-        with self.assertRaises(NotImplementedError):
-            _make_gsat(motif_method='motif_emb')
+    def test_motif_emb_multihot_shape(self):
+        # Mechanism ③: fragment-graph GNN (GNN1), multihot atom-count features.
+        logits, att, aux = self._fwd(motif_method='motif_emb', noise='motif',
+                                     info_loss_level='motif', motif_feat='multihot')
+        self.assertEqual(logits.shape, (4, 1))
+        self.assertIsNotNone(aux['motif_logits'])
+        self.assertIsNotNone(aux['motif_att'])
+
+    def test_motif_emb_iddesc_shape(self):
+        # id⊕desc features: identity embedding + per-motif descriptor table.
+        from motif_modules import MOTIF_DESC_DIM
+        m = _make_gsat(motif_method='motif_emb', noise='motif',
+                       info_loss_level='motif', motif_feat='id_desc',
+                       num_motifs=3, motif_desc_table=torch.randn(3, MOTIF_DESC_DIM))
+        m.eval()
+        b = _batch(4, 6, 3)
+        logits, att, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
+        self.assertEqual(logits.shape, (4, 1))
+        self.assertIsNotNone(aux['motif_logits'])
+
+    def test_motif_emb_requires_motif_noise(self):
+        with self.assertRaises(ValueError):
+            _make_gsat(motif_method='motif_emb', noise='node')
+
+    def test_motif_emb_iddesc_requires_num_motifs(self):
+        with self.assertRaises(ValueError):
+            _make_gsat(motif_method='motif_emb', noise='motif', motif_feat='id_desc')
+
+    def test_motif_emb_fails_loud_on_unk(self):
+        # MotifSAT trains on the FULL vocab (no UNK); a UNK atom must fail loud.
+        m = _make_gsat(motif_method='motif_emb', noise='motif',
+                       info_loss_level='motif', motif_feat='multihot')
+        m.eval()
+        b = _batch(4, 6, 3)
+        b.nodes_to_motifs[0] = -1
+        with self.assertRaises(ValueError):
+            m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
 
     def test_readout_method_shape(self):
         logits, att, aux = self._fwd(motif_method='readout')

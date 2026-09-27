@@ -1,0 +1,20 @@
+# Method preset: MECHANISM ③ base — fragment-graph GNN, method-family settings ONLY.
+#
+# This preset fixes ONLY the mechanism-③ method family (a separate GNN1 over the
+# fragment graph → per-motif scores → GSAT gate on GNN2). It deliberately does NOT
+# pin the five GNN1-design knobs (motif_feat, motif_edge_feat, motif_gnn_norm,
+# motif_gnn_residual, motif_gnn_layers): the GNN1-design ablation sets all five
+# EXPLICITLY on the command line, so every one of the 32 factorial cells shares
+# this base and differs only in the flags gnn1_worker.sh passes.
+#
+# FULL vocab only — fails loud on any UNK atom.
+#
+#   python run.py --config MotifSAT/configs/motif_emb_base.yaml \
+#       --motif_feat multihot --no_motif_edge_feat --motif_gnn_norm none \
+#       --motif_gnn_layers 2 \
+#       --dataset BBBP --backbone GIN --fold 0 \
+#       --data_root <FOLDS> --vocab_root <vocab> --vocab_variant rbrics
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true

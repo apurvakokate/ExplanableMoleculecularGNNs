@@ -30,6 +30,7 @@ from SharedModules.evaluation.metrics import evaluate_predictions
 from motif_modules import (
     ExtractorMLP, MotifReadoutScorer, MotifPooling,
     compute_inverse_idx, lift_motif_to_node,
+    MotifFeaturizer, MotifGNN, build_motif_graph, MOTIF_EDGE_CHEM_DIM,
 )
 from losses import info_loss, motif_consistency_loss, motif_size_weights
 
@@ -134,7 +135,10 @@ class GSAT(nn.Module):
         'readout'   — MotifReadoutScorer: pool node embeddings to motif level
                       (max+mean pooling), score each motif, broadcast the motif
                       score back to its atoms.
-        'motif_emb' — NOT IMPLEMENTED; raises NotImplementedError.
+        'motif_emb' — Mechanism ③: a SEPARATE GNN (GNN1, MotifGNN) over the fragment
+                      graph produces per-motif scores from F_m features (MotifFeaturizer:
+                      multihot | id_desc), which gate the node GNN (GNN2). Requires
+                      noise='motif'.
 
     noise : str
         'none'  — node-level extractor; independent Concrete sample per node.
@@ -184,6 +188,15 @@ class GSAT(nn.Module):
         extractor_hidden_mult: int = 2,
         extractor_dropout_p: float = 0.5,
         motif_scorer_norm: Optional[str] = None,  # motif scorer norm: instance|layer|none (REQUIRED for scorer runs; no default)
+        # ── Mechanism ③ (fragment-graph GNN; motif_method='motif_emb') ──
+        motif_feat: str = 'multihot',        # id_desc | multihot — GNN1 node features F_m
+        motif_edge_feat: bool = True,        # variant D: junction edge feature on/off (GINE vs GIN)
+        motif_edge_chem: bool = False,       # D-chemistry: 17-dim junction feature (vs scalar multiplicity)
+        motif_gnn_layers: int = 2,           # depth of the motif-graph GNN (GNN1)
+        motif_gnn_norm: str = 'none',        # GNN1 per-layer norm: none (default) | layer
+        motif_gnn_residual: bool = False,    # GNN1 per-layer skip connection (default off)
+        num_motifs: int = 0,                 # vocab size — required for motif_feat='id_desc'
+        motif_desc_table: Optional[Tensor] = None,  # [num_motifs, MOTIF_DESC_DIM] descriptors (id_desc)
         # ── Noise / IB ──
         noise: str = 'none',
         info_loss_level: str = 'node',
@@ -209,20 +222,36 @@ class GSAT(nn.Module):
     ):
         super().__init__()
 
-        if motif_method == 'motif_emb':
-            raise NotImplementedError(
-                "motif_method='motif_emb' is not implemented. Use 'readout' for "
-                "the motif-pooling scorer, or 'none'/'loss' for node-level "
-                "attention."
-            )
         # Explicit raises (not assert) so validation survives `python -O`, where
         # asserts are stripped — otherwise a removed method like 'node_emb' would
         # silently fall back to the base-GSAT extractor path.
-        if motif_method not in ('none', 'loss', 'readout'):
+        if motif_method not in ('none', 'loss', 'readout', 'motif_emb'):
             raise ValueError(
                 f"unknown motif_method={motif_method!r}; "
-                f"expected one of none | loss | readout"
+                f"expected one of none | loss | readout | motif_emb"
             )
+        # Mechanism ③: the fragment-graph GNN scores per motif → sampled per motif
+        # → broadcast, so it runs under noise='motif' (its info loss is motif-level).
+        if motif_method == 'motif_emb':
+            if noise != 'motif':
+                raise ValueError(
+                    f"motif_method='motif_emb' requires noise='motif' (GNN1 scores "
+                    f"per motif, sampled per motif then broadcast); got noise={noise!r}.")
+            if motif_feat not in ('id_desc', 'multihot'):
+                raise ValueError(
+                    f"unknown motif_feat={motif_feat!r}; expected id_desc | multihot")
+            if motif_edge_chem and not motif_edge_feat:
+                raise ValueError(
+                    "motif_edge_chem=True requires motif_edge_feat=True (the "
+                    "D-chemistry vector is a GINE edge feature).")
+            if motif_edge_chem and node_encoder != 'onehot':
+                raise ValueError(
+                    f"motif_edge_chem=True requires node_encoder='onehot' (element "
+                    f"bucketing reads the ATOMS one-hot); got node_encoder={node_encoder!r}.")
+            if motif_feat == 'id_desc' and num_motifs <= 0:
+                raise ValueError(
+                    "motif_feat='id_desc' needs num_motifs>0 for the identity "
+                    "embedding — pass vocab.num_motifs from run.py.")
         if noise not in ('none', 'node', 'motif'):
             raise ValueError(f"unknown noise={noise!r}; expected none | node | motif")
         if info_loss_level not in ('none', 'node', 'motif'):
@@ -315,6 +344,9 @@ class GSAT(nn.Module):
 
         self.motif_method = motif_method
         self.noise = noise
+        self.motif_feat = motif_feat
+        self.motif_edge_feat = motif_edge_feat
+        self.motif_edge_chem = motif_edge_chem
         self.info_loss_level = info_loss_level
         self.motif_info_size_normalize = motif_info_size_normalize
         self.w_feat = w_feat
@@ -348,8 +380,33 @@ class GSAT(nn.Module):
         # Node-level extractor (base GSAT path when noise='none')
         self.extractor = ExtractorMLP(hidden_dim, dropout_p=extractor_dropout_p)
 
-        # Motif pool → MLP scorer (readout method or noise=node|motif)
-        if _uses_motif_scorer(motif_method, noise):
+        # Motif attention producer. Three mutually-exclusive cases:
+        #   motif_emb (③): a SEPARATE GNN over the fragment graph (GNN1) whose
+        #     input features F_m are DECOUPLED from the node GNN (identity⊕desc,
+        #     or multihot atom counts). Produces per-motif logits.
+        #   readout / noise∈{node,motif}: pool the node GNN's embeddings → MLP.
+        #   else: no motif scorer (base-GSAT / loss path).
+        self.motif_scorer = None
+        self.motif_featurizer = None
+        self.motif_gnn = None
+        if motif_method == 'motif_emb':
+            self.motif_featurizer = MotifFeaturizer(
+                mode=motif_feat, num_motifs=num_motifs, x_dim=x_dim,
+                id_dim=hidden_dim, desc_table=motif_desc_table)
+            # edge_dim: None (GIN) | 1 (scalar multiplicity D) | 17 (D-chemistry).
+            if not motif_edge_feat:
+                _edge_dim = None
+            elif motif_edge_chem:
+                _edge_dim = MOTIF_EDGE_CHEM_DIM
+            else:
+                _edge_dim = 1
+            self.motif_gnn = MotifGNN(
+                in_dim=self.motif_featurizer.out_dim, hidden_dim=hidden_dim,
+                num_layers=motif_gnn_layers,
+                edge_dim=_edge_dim,
+                dropout=extractor_dropout_p,
+                norm=motif_gnn_norm, residual=motif_gnn_residual)
+        elif _uses_motif_scorer(motif_method, noise):
             if motif_scorer_norm is None:
                 raise ValueError(
                     "motif_scorer_norm must be set explicitly (instance | layer | "
@@ -362,8 +419,6 @@ class GSAT(nn.Module):
                 dropout_p=extractor_dropout_p,
                 norm=motif_scorer_norm,
             )
-        else:
-            self.motif_scorer = None
 
         # Edge attention extractor (learn_edge_att=True path)
         if learn_edge_att:
@@ -423,6 +478,48 @@ class GSAT(nn.Module):
 
         # Base node extractor (motif_method in {none,loss}, noise='none').
         return self.extractor(node_emb, batch), None, None, None
+
+    def _motif_emb_logits(
+        self,
+        x: Tensor,
+        edge_index: Tensor,
+        nodes_to_motifs: Optional[Tensor],
+        batch: Optional[Tensor],
+        edge_attr: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Mechanism ③: score motifs with GNN1 over the fragment graph.
+
+        Returns (node_logits [N,1], motif_logits [M,1], inv_idx [N], motif_batch [M]).
+        FAILS LOUD on any UNK atom — MotifSAT trains on the FULL (unfiltered) vocab,
+        which partitions every atom into a motif, so a ``nodes_to_motifs < 0`` here
+        means a filtered/partial vocabulary was passed.
+        """
+        if nodes_to_motifs is None:
+            raise ValueError(
+                "motif_method='motif_emb' requires nodes_to_motifs on every graph.")
+        if bool((nodes_to_motifs < 0).any()):
+            n_unk = int((nodes_to_motifs < 0).sum().item())
+            raise ValueError(
+                f"motif_method='motif_emb': {n_unk} atom(s) are UNK "
+                f"(nodes_to_motifs < 0). MotifSAT trains on the FULL vocab (no "
+                f"filtering), which assigns every atom to a motif; a UNK atom "
+                f"means a filtered/partial vocabulary was passed.")
+        inv_idx, motif_batch, motif_vocab_ids = compute_inverse_idx(
+            nodes_to_motifs, batch)
+        num_motifs = int(inv_idx.max().item()) + 1
+        Fm = self.motif_featurizer(x, inv_idx, motif_vocab_ids, num_motifs)
+        if not self.motif_edge_feat:
+            _edge_mode = 'none'
+        elif self.motif_edge_chem:
+            _edge_mode = 'chem'
+        else:
+            _edge_mode = 'mult'
+        m_edge_index, m_edge_attr = build_motif_graph(
+            inv_idx, edge_index, num_motifs, edge_mode=_edge_mode,
+            x=x, atom_edge_attr=edge_attr)
+        motif_logits = self.motif_gnn(Fm, m_edge_index, m_edge_attr)
+        node_logits = lift_motif_to_node(motif_logits, inv_idx)
+        return node_logits, motif_logits, inv_idx, motif_batch
 
     def _sample_node_attention(
         self,
@@ -494,39 +591,43 @@ class GSAT(nn.Module):
 
         r = float(self.r.item())
 
-        # Step 1: Backbone embedding (no attention injection yet)
-        _, node_emb = self.clf.get_embedding(
-            x, edge_index, edge_attr=edge_attr, batch=batch
-        )
-
-        # Step 2/3: score → sample. The edge path scores edges from node_emb
-        # directly; the node/motif paths go through _get_node_logits, which is
-        # therefore computed ONLY when used (never on the edge path). The
-        # nodes_to_motifs-None validation now lives inside _get_node_logits (one
-        # local raise), so it is not duplicated here.
+        # Step 2/3: score → sample. Three producers of the attention gate:
+        # mechanism ③ (GNN1 over the fragment graph), the edge extractor, or the
+        # node/motif scorer. ③ is independent of the node GNN, so it skips the
+        # step-1 embedding pass entirely.
         node_logits = motif_logits = inv_idx = None
         edge_att = edge_att_mp = edge_att_soft = None
-        node_att_soft = motif_att = None
+        node_att_soft = motif_att = node_att = None
         lc = self.logit_clamp
-        if self.learn_edge_att:
-            src, dst = edge_index
-            edge_logits = self.edge_extractor(
-                torch.cat([node_emb[src], node_emb[dst]], dim=-1),
-                batch[src],
-            )
-            edge_logits = _clamp_logits(edge_logits, lc)
-            edge_att = _concrete_sample(
-                edge_logits, self.training, logit_clamp=lc,
-                deterministic=self.deterministic_att)
-            edge_att_mp = _symmetrize_edge_att(edge_index, edge_att)
-            edge_att_soft = edge_logits.sigmoid()
-            node_att = None
-        else:
-            node_logits, motif_logits, inv_idx, _ = self._get_node_logits(
-                node_emb, nodes_to_motifs, batch)
+
+        if self.motif_method == 'motif_emb':
+            node_logits, motif_logits, inv_idx, _ = self._motif_emb_logits(
+                x, edge_index, nodes_to_motifs, batch, edge_attr=edge_attr)
             node_att, node_att_soft, motif_att = self._sample_node_attention(
-                node_logits, motif_logits, inv_idx, self.training,
-            )
+                node_logits, motif_logits, inv_idx, self.training)
+        else:
+            # Step 1: backbone embedding (no attention injection yet). Only the
+            # edge / node / readout producers need it.
+            _, node_emb = self.clf.get_embedding(
+                x, edge_index, edge_attr=edge_attr, batch=batch)
+            if self.learn_edge_att:
+                src, dst = edge_index
+                edge_logits = self.edge_extractor(
+                    torch.cat([node_emb[src], node_emb[dst]], dim=-1),
+                    batch[src],
+                )
+                edge_logits = _clamp_logits(edge_logits, lc)
+                edge_att = _concrete_sample(
+                    edge_logits, self.training, logit_clamp=lc,
+                    deterministic=self.deterministic_att)
+                edge_att_mp = _symmetrize_edge_att(edge_index, edge_att)
+                edge_att_soft = edge_logits.sigmoid()
+            else:
+                node_logits, motif_logits, inv_idx, _ = self._get_node_logits(
+                    node_emb, nodes_to_motifs, batch)
+                node_att, node_att_soft, motif_att = self._sample_node_attention(
+                    node_logits, motif_logits, inv_idx, self.training,
+                )
 
         # Step 4: Re-run backbone with attention injection
         graph_emb, node_emb_final = self.clf.get_embedding(
