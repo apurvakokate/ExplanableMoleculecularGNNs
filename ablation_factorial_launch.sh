@@ -5,7 +5,8 @@
 # self-balance and never duplicate a cell.
 #
 # Grid = node_encoder{onehot,linear} x conv_normalize{none,l2,layernorm} x graph_pool{add,mean}
-#        over 8 datasets x 5 folds x 5 backbones = 2,400 cells (~800 exist, ~1,600 to run).
+#        x unk_mode{fixed,learnable_shared}  (24 combos)
+#        over 8 datasets x 5 folds x 5 backbones = 4,800 cells (existing per-split arms skipped).
 # big datasets -> GPU, small -> CPU. preempt-first with fallback. mutag is NOT included.
 #
 # ENQUEUE-CHECK FIRST (prints commands, submits nothing that runs):

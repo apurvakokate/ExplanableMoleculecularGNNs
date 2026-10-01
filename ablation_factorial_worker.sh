@@ -7,9 +7,11 @@
 #   node_encoder  in {onehot, linear}
 #   conv_normalize in {none, l2, layernorm}
 #   graph_pool    in {add, mean}
-# = 12 combos. Base universe = rbrics_filter REAL: 8 datasets x 5 folds x 5 backbones = 200
-# (mutag EXCLUDED). Target = 2,400; ~800 already exist (onehot/none/add, onehot/none/mean,
-# onehot/l2/add, linear/none/add) and are skipped; ~1,600 to run.
+#   unk_mode      in {fixed, learnable_shared}
+# = 24 combos. Base universe = rbrics_filter REAL: 8 datasets x 5 folds x 5 backbones = 200
+# (mutag EXCLUDED). Target = 4,800; the existing unk-fixed/unk-learnable_shared arms with
+# per-split eval (onehot/none/add, onehot/none/mean, onehot/l2/add, linear/none/add) are
+# skipped; the rest run.
 #
 # NO-OVERWRITE — three independent guards:
 #   1. variant_tag encodes enc, norm and pool -> every combo lands in a DISTINCT dir.
@@ -41,7 +43,7 @@ DRY_RUN="${DRY_RUN:-0}"
 VOCABV=rbrics_filter                          # REAL rbrics only
 BACKBONES=(GIN GCN GAT PNA SAGE)              # GAT is heads=1 (project default)
 FOLDS=(0 1 2 3 4)
-ENCS=(onehot linear); NORMS=(none l2 layernorm); POOLS=(add mean)
+ENCS=(onehot linear); NORMS=(none l2 layernorm); POOLS=(add mean); UNKS=(fixed learnable_shared)
 # trees scanned by the cross-tree DONE-check (do NOT run into these; only OUT_ROOT is written)
 SCAN_TREES=("$REPO/final_v2/mose/$VOCABV" \
             "$REPO/ablation_v2/normal/mose/$VOCABV" \
@@ -50,8 +52,8 @@ SCAN_TREES=("$REPO/final_v2/mose/$VOCABV" \
 
 _poolsfx(){ [ "$1" = mean ] && echo "_pool-mean" || echo ""; }
 # tag leaf glob for one combo (hp suffix, if any, matched by trailing *)
-_tag(){ local bb=$1 enc=$2 norm=$3 pool=$4
-  echo "${bb}_${enc}_norm-${norm}$(_poolsfx "$pool")_wf+wr_unk-fixed_real_ep500_${VOCABV}*"; }
+_tag(){ local bb=$1 enc=$2 norm=$3 pool=$4 unk=$5
+  echo "${bb}_${enc}_norm-${norm}$(_poolsfx "$pool")_wf+wr_unk-${unk}_real_ep500_${VOCABV}*"; }
 # exists anywhere across SCAN_TREES (+ OUT_ROOT) for this ds/fold?
 _exists(){ local ds=$1 fold=$2 tag=$3 t
   for t in "${SCAN_TREES[@]}" "$OUT_ROOT/mose/$VOCABV"; do
@@ -65,15 +67,15 @@ for ds in $POOL_DATASETS; do
   case " $POOL_DATASETS " in *" $ds "*) ;; *) continue;; esac
   for fold in "${FOLDS[@]}"; do
     for bb in "${BACKBONES[@]}"; do
-      for enc in "${ENCS[@]}"; do for norm in "${NORMS[@]}"; do for pool in "${POOLS[@]}"; do
+      for enc in "${ENCS[@]}"; do for norm in "${NORMS[@]}"; do for pool in "${POOLS[@]}"; do for unk in "${UNKS[@]}"; do
         n_target=$((n_target+1))
-        tag=$(_tag "$bb" "$enc" "$norm" "$pool")
+        tag=$(_tag "$bb" "$enc" "$norm" "$pool" "$unk")
         _exists "$ds" "$fold" "$tag" && { n_skip=$((n_skip+1)); continue; }
         local_out="$OUT_ROOT/mose/$VOCABV"
-        cellid="mosefac__${ds}__f${fold}__${bb}__${enc}__${norm}__${pool}"
+        cellid="mosefac__${ds}__f${fold}__${bb}__${enc}__${norm}__${pool}__${unk}"
         cmd=(python3 MOSE-GNN/run.py --dataset "$ds" --fold "$fold" --backbone "$bb"
              --node_encoder "$enc" --conv_normalize "$norm" --graph_pool "$pool"
-             --w_feat --w_readout --unk_mode fixed --epochs 500 --per_split_eval
+             --w_feat --w_readout --unk_mode "$unk" --epochs 500 --per_split_eval
              --data_root "$FOLDS_ROOT" --vocab_root "$VOCAB" --vocab_variant "$VOCABV"
              --processed_root "$PROC" --out_dir "$local_out")
         if [ "$DRY_RUN" = 1 ]; then echo "[dry] $cellid :: ${cmd[*]}"; n_run=$((n_run+1)); continue; fi
@@ -83,7 +85,7 @@ for ds in $POOL_DATASETS; do
         if [ "$rc" -eq 0 ] && compgen -G "$local_out/$ds/fold$fold/$tag/$DONE_FILE" >/dev/null 2>&1; then continue; fi
         printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$WHO" "$cellid" "$rc" >> "$FAILURES"
         touch "$CLAIMS/$cellid/.failed"; echo "[FAIL rc=$rc] $cellid"
-      done; done; done
+      done; done; done; done
     done
   done
 done
