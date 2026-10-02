@@ -24,6 +24,23 @@ import argparse, glob, json, os, csv, sys
 import pandas as pd
 
 VOCAB = "rbrics_filter"
+
+
+def load_json_lenient(path):
+    """Tolerate a double-written summary.json (one valid object + trailing junk bytes from an
+    interrupted re-write) by decoding just the first JSON object via raw_decode."""
+    try:
+        raw = open(path).read()
+    except Exception:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(raw)
+            return obj
+        except Exception:
+            return None
 # metric columns to carry from summary.json (flat keys)
 TASK_COLS   = ["auc", "train_auc", "val_auc", "rmse", "mae", "rmse_orig", "mae_orig"]
 FAITH_COLS  = ["pearson", "spearman", "pearson_motif", "spearman_motif",
@@ -60,6 +77,7 @@ def is_factorial_cell(d):
     """A real-tier rbrics_filter MoSE wf+wr cell with the four axes populated."""
     return (d.get("family") == "mose"
             and d.get("vocab_variant") == VOCAB
+            and d.get("dataset") != "mutag"           # mutag is excluded from this factorial
             and not d.get("use_gt", False)
             and bool(d.get("w_feat")) and bool(d.get("w_readout")) and not d.get("w_message")
             and d.get("node_encoder") in ("onehot", "linear")
@@ -85,10 +103,9 @@ def main():
     for t in trees:
         for sj in glob.glob(f"{t}/*/fold*/*/summary.json"):
             n_seen += 1
-            try:
-                d = json.load(open(sj))
-            except Exception as e:
-                print(f"PARSE FAIL {sj}: {e}", file=sys.stderr); continue
+            d = load_json_lenient(sj)
+            if d is None:
+                print(f"PARSE FAIL {sj}", file=sys.stderr); continue
             if not is_factorial_cell(d):
                 continue
             cell_dir = os.path.dirname(sj)
