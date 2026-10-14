@@ -1468,7 +1468,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         _pool_pct = (float(_pm.group(1)) if _pm else 0.0)
         _n_bad = 0
         if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_fg', 'bf_recur',
-                                  'size_frequency_optimization')):
+                                  'size_frequency_optimization', 'fm_bpe')):
             # SETTLED FCOL linker tier: MDL SELECTION (or BPE) over a chemistry candidate pool
             # (Hussain-Rea + rBRICS/BRICS/RECAP + singletons; KRIMP select + prune), over a
             # frozen partition. Replaces the old bottom-up cascade_bpe_linker merge. Flags:
@@ -1483,6 +1483,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 import ring_grow_bpe as _ml
             elif method.startswith('ring_grow_mdl'):
                 import ring_grow_mdl as _ml       # rings + bounded 1-2-hop growth + KRIMP-MDL selection
+            elif method.startswith('fm_bpe'):
+                import fm_bpe as _ml              # FM-BPE: frequency-MDL BPE from finest blocks
             elif method.startswith('ring_mdl'):
                 import ring_mdl as _ml
             elif method.startswith('crush_direct'):
@@ -1498,7 +1500,17 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 import recur_frag as _ml         # FROZEN consensus-vote arm (self-contained)
             else:
                 import mdl_linker as _ml
-            if method.startswith('size_frequency_optimization'):
+            if method.startswith('fm_bpe'):
+                # FM-BPE. Name encodes the arm: theta<X> ('p'='.', default 1.0) = lambda/b;
+                # 'union' = SFO-pool start (else atomic finest); 'grow' = growable rings (else frozen
+                # bare-ring tokens). b fixed to 1.0 (only the ratio matters). Keys -> rekey_structural.
+                _tm = _re.search(r'theta([0-9]+(?:p[0-9]+)?)', method)
+                _theta = float(_tm.group(1).replace('p', '.')) if _tm else 1.0
+                _start = 'union' if 'union' in method else 'atomic'
+                _freeze = 'grow' not in method
+                _raw = _ml.build(smiles_all, lam=_theta, b=1.0, max_merges=600, verbose=True,
+                                 freeze_rings=_freeze, start=_start)
+            elif method.startswith('size_frequency_optimization'):
                 _raw = _ml.build(smiles_all, method=method, groups=groups_all,
                                  dataset=dataset, verbose=True)
             elif method.startswith('bf_recur'):
