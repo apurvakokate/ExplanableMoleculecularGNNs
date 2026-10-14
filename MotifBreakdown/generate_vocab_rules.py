@@ -1430,7 +1430,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                     'rdkit_fg_first', 'rdkit_fg_first_mdl', 'conservative_ertl_ring_mdl',
                     'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct',
                     'lm_strict', 'lm_bde', 'lm_bde_g4', 'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg',
-                    'bf_recur', 'bf_recur_peel', 'size_frequency_optimization'):
+                    'bf_recur', 'bf_recur_peel', 'size_frequency_optimization') or method.startswith('fm_bpe'):
         # ---- functional-group-first fragmentation (fg_first_frag.py) — FINAL DESIGN -----------
         # Keying (settled Jul 2026): rings are the ONLY exception — substituent-agnostic canonical
         # SMILES (ring:c1ccccc1), whole fused systems (whole_ring_systems=True; a broken remnant is
@@ -1712,7 +1712,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     # motif_stats) is consistently prefix-free. Collision-checked (fails loud — no silent merging).
     _prefix_map = None
     if method.startswith(('conservative_ertl_ring', 'ring_mdl', 'mdl_only', 'ring_grow_bpe', 'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_fg', 'bf_recur',
-                                  'size_frequency_optimization')):
+                                  'size_frequency_optimization', 'fm_bpe')):
         def _strip_pref(_k):
             for _p in ('ring:', 'fg:', 'chain:', 'frag:'):
                 if _k.startswith(_p):
@@ -2136,7 +2136,8 @@ Examples:
                             'conservative_ertl_ring_mdl', 'ring_mdl', 'mdl_only', 'ring_grow_bpe',
                             'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_bde_g4',
                             'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg', 'bf_recur', 'bf_recur_peel',
-                            'size_frequency_optimization'],
+                            'size_frequency_optimization',
+                            'fm_bpe_theta1', 'fm_bpe_union_theta1', 'fm_bpe_grow_theta1'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],
