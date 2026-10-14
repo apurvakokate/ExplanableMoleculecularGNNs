@@ -175,27 +175,48 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
 
 
 # ───────────────────────────── vocab-pipeline entry point ──────────────────────
-def build(smiles_all: Sequence[str], head_source: str = 'none', linker_method: str = 'mdl',
+_TRAINVAL = {'training', 'train', 'valid', 'validation', 'val'}
+
+
+def build(smiles_all: Sequence[str], groups=None, head_source: str = 'none', linker_method: str = 'mdl',
           break_fused_rings: bool = False, lam: float = 1.0, b: float = 1.0,
           max_atoms: int | None = None, max_merges: int = 8000, verbose: bool = False,
           freeze_rings: bool = True, start: str = 'atomic'
           ) -> List[List[Tuple[str, Set[int]]]]:
     """Per-mol [(key, set(atoms))] aligned to smiles_all. head_source/linker_method/break_fused_rings
     accepted for call-compatibility and ignored. lam == theta (b fixed to 1.0 is the natural choice).
-    freeze_rings (default True) -> bare ring tokens; start 'atomic' (default) or 'union' (SFO pool)."""
-    idx: List[int] = []
-    valid: List[str] = []
+    freeze_rings (default True) -> bare ring tokens; start 'atomic' (default) or 'union' (SFO pool).
+
+    HELD-OUT TEST (proper per-fold CV): merge rules are LEARNED on train+val only (`groups` in
+    {training,valid}) and then REPLAYED per-molecule onto the whole set, so test co-occurrences never
+    influence which merges happen — the vocabulary is genuinely fold-specific and matches SFO's
+    train+val-driven selection. If `groups` is None the rules are learned on all molecules (legacy)."""
+    valid: List[Tuple[int, str]] = []
     for i, s in enumerate(smiles_all):
         if Chem.MolFromSmiles(s) is not None:
-            valid.append(s)
-            idx.append(i)
+            valid.append((i, s))
         else:
             print(f"[fm_bpe] WARN unparseable SMILES at row {i}: {s!r}", file=sys.stderr)
 
-    _, graphs = learn_fm_bpe(valid, lam=lam, b=b, max_atoms=max_atoms, max_merges=max_merges,
-                              verbose=verbose, freeze_rings=freeze_rings, start=start)
+    if groups is not None:
+        learn_smi = [s for (i, s) in valid if str(groups[i]) in _TRAINVAL]
+        if not learn_smi:
+            learn_smi = [s for (_, s) in valid]
+    else:
+        learn_smi = [s for (_, s) in valid]
+    if verbose:
+        print(f"[fm_bpe] learning merges on {len(learn_smi)} train+val mols of {len(valid)} total; "
+              f"start={start} freeze_rings={freeze_rings}", flush=True)
 
+    rules, _ = learn_fm_bpe(learn_smi, lam=lam, b=b, max_atoms=max_atoms, max_merges=max_merges,
+                            verbose=verbose, freeze_rings=freeze_rings, start=start)
+    rule_pairs = [r[0] for r in rules]                     # (M1,M2) type-pairs in learned order
+
+    # REPLAY the learned merges onto EVERY molecule (train/val/test), per-molecule, deterministically.
     covers: List[List[Tuple[str, Set[int]]]] = [[] for _ in smiles_all]
-    for gi, i in enumerate(idx):
-        covers[i] = [(k, set(at)) for k, at in graphs[gi].fragments()]
+    for i, s in valid:
+        g = _finest_graph(Chem.MolFromSmiles(s), freeze_rings=freeze_rings, start=start)
+        for p in rule_pairs:
+            g.apply_merge(p)
+        covers[i] = [(k, set(at)) for k, at in g.fragments()]
     return covers
