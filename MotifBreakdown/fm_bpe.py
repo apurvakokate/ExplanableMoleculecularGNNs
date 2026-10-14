@@ -51,15 +51,26 @@ RDLogger.DisableLog('rdApp.*')
 
 # ───────────────────────────── finest starting state ───────────────────────────
 def _union_cut_bonds(mol: Chem.Mol):
-    """Union-of-fragmenters acyclic cut set (the SFO-style pool boundary): every bond that ANY of the
-    six schemes (RECAP/BRICS-smirks/CRUSH/BRICS-rdkit/rBRICS/FG-boundary) proposes. Rings never cut."""
-    import boundary_frag as _bf
-    votes, _ = _bf.scheme_votes(mol)
-    cut = set()
-    for bi in votes:                                    # every voted bond (>=1 scheme)
+    """SFO's EXACT union-of-fragmenters cut set — the same blocks SFO's exact-cover starts from —
+    via xcover.exp1_candidate_inventory.segment_to_fixpoint (BRICS + rBRICS + RECAP + CRUSH, unioned
+    and refined to a fixpoint). Using SFO's own block builder (not a separate scheme set) makes the
+    union arm a clean criterion-vs-SFO comparison: identical admissible boundaries, only the merge
+    rule differs. These schemes never cut ring bonds. (Deps xcover + crush_smirks_rules are the ones
+    SFO itself uses, already deployed — no extra module needed.)"""
+    import os, sys
+    _mb = os.path.dirname(os.path.abspath(__file__))
+    _xc = os.path.join(_mb, 'xcover')
+    for _p in (_mb, _xc):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+    import exp1_candidate_inventory as _X
+    rules = _X._ensure_rules(_mb)
+    cuts, _base, _rounds = _X.segment_to_fixpoint(mol, rules)
+    out = set()
+    for bi in cuts:                                     # SFO union-of-fragmenters bonds (fixpoint)
         b = mol.GetBondWithIdx(bi)
-        cut.add(frozenset((b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
-    return cut
+        out.add(frozenset((b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
+    return out
 
 
 def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic') -> _MolGraph:
