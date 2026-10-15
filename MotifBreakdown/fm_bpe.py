@@ -120,7 +120,7 @@ def _local_pairs(g: _MolGraph, type_size: Dict[str, int]) -> Counter:
 
 
 def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
-                  max_atoms: int | None = None, max_merges: int = 8000, verbose: bool = False,
+                  max_atoms: int | None = None, max_merges: int | None = None, verbose: bool = False,
                   freeze_rings: bool = True, start: str = 'atomic'):
     """Greedy BPE under dC = lam*(|M1|+|M2|) - f12*b. Returns (rules, graphs) where graphs are the
     merged per-molecule covers and rules = [(pair_type, dC, f12, merged_size), ...] in merge order.
@@ -141,7 +141,9 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
         f12.update(lp)
 
     rules: List[Tuple[Tuple[str, str], float, int, int]] = []
-    for step in range(max_merges):
+    # max_merges=None => uncapped: the greedy loop stops naturally when no pair has dC<0
+    # (the ``best_p is None`` break below), which always terminates for the fixed-b cost.
+    for step in range(max_merges if max_merges is not None else 10**9):
         best_p, best_dC, best_msz = None, 0.0, 0             # accept only dC < 0, pick most negative
         for p, c in f12.items():
             if c <= 0:
@@ -180,7 +182,7 @@ _TRAINVAL = {'training', 'train', 'valid', 'validation', 'val'}
 
 def build(smiles_all: Sequence[str], groups=None, head_source: str = 'none', linker_method: str = 'mdl',
           break_fused_rings: bool = False, lam: float = 1.0, b: float = 1.0,
-          max_atoms: int | None = None, max_merges: int = 8000, verbose: bool = False,
+          max_atoms: int | None = None, max_merges: int | None = None, verbose: bool = False,
           freeze_rings: bool = True, start: str = 'atomic'
           ) -> List[List[Tuple[str, Set[int]]]]:
     """Per-mol [(key, set(atoms))] aligned to smiles_all. head_source/linker_method/break_fused_rings

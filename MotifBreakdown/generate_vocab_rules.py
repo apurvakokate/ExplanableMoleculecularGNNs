@@ -1508,7 +1508,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 _theta = float(_tm.group(1).replace('p', '.')) if _tm else 1.0
                 _start = 'union' if 'union' in method else 'atomic'
                 _freeze = 'grow' not in method
-                _raw = _ml.build(smiles_all, groups=groups_all, lam=_theta, b=1.0, max_merges=600,
+                _raw = _ml.build(smiles_all, groups=groups_all, lam=_theta, b=1.0, max_merges=None,
                                  verbose=True, freeze_rings=_freeze, start=_start)
             elif method.startswith('size_frequency_optimization'):
                 _raw = _ml.build(smiles_all, method=method, groups=groups_all,
