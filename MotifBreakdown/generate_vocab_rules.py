@@ -2137,7 +2137,8 @@ Examples:
                             'ring_grow_mdl', 'crush_direct', 'lm_strict', 'lm_bde', 'lm_bde_g4',
                             'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg', 'bf_recur', 'bf_recur_peel',
                             'size_frequency_optimization',
-                            'fm_bpe_theta1', 'fm_bpe_union_theta1', 'fm_bpe_grow_theta1'],
+                            'fm_bpe_theta1', 'fm_bpe_union_theta1', 'fm_bpe_grow_theta1',
+                            'fm_bpe_theta0p25', 'fm_bpe_theta0p5', 'fm_bpe_theta2'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],
