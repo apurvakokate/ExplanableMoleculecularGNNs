@@ -49,6 +49,7 @@ all RAISE — nothing is skipped or given an empty cover.
 """
 from __future__ import annotations
 
+import copy
 import math
 import sys
 from collections import Counter
@@ -154,7 +155,8 @@ def _local_pairs(g: _MolGraph, type_size: Dict[str, int]) -> Counter:
 
 def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
                   max_atoms: int | None = None, max_merges: int | None = None, verbose: bool = False,
-                  freeze_rings: bool = True, start: str = 'atomic', cost: str = 'fixed_b'):
+                  freeze_rings: bool = True, start: str = 'atomic', cost: str = 'fixed_b',
+                  start_graphs: Sequence[_MolGraph] | None = None):
     """Greedy BPE. Returns (rules, graphs) where graphs are the merged per-molecule covers and
     rules = [(pair_type, dC, f12, merged_size, n_mols), ...] in merge order; n_mols = number of
     molecules the merge touched (= the pair's molecule support at the moment it fired).
@@ -164,6 +166,11 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
                       N = total fragment occurrences, V = distinct fragment types present.
     freeze_rings / start are passed to _finest_graph (see there).
 
+    start_graphs (optional, speed only): the _finest_graph(...) of each molecule, pre-built by the
+    caller with the SAME freeze_rings/start. They are deep-copied (never mutated), so repeated calls
+    (e.g. a lambda search) skip the expensive union-start rebuild; the result is identical to building
+    them here. Must align 1:1 with `smiles` (checked: count and per-molecule atom coverage).
+
     Incremental: the global adjacency-pair count (and, for full_mdl, the per-type occurrence count)
     is maintained exactly, re-scanning ONLY the graphs a merge actually touches. Output is identical
     to a full recount."""
@@ -171,11 +178,23 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
         raise ValueError(f"unknown cost {cost!r}; expected 'fixed_b' or 'full_mdl'")
     full = cost == 'full_mdl'
     graphs: List[_MolGraph] = []
-    for s in smiles:
-        m = Chem.MolFromSmiles(s)
-        if m is None:
-            raise ValueError(f"learn_fm_bpe: unparseable SMILES {s!r} (no silent skip)")
-        graphs.append(_finest_graph(m, freeze_rings=freeze_rings, start=start))
+    if start_graphs is not None:
+        if len(start_graphs) != len(smiles):
+            raise ValueError(f"learn_fm_bpe: {len(start_graphs)} start_graphs for {len(smiles)} SMILES")
+        for k, (s, g0) in enumerate(zip(smiles, start_graphs)):
+            m = Chem.MolFromSmiles(s)
+            if m is None:
+                raise ValueError(f"learn_fm_bpe: unparseable SMILES {s!r} (no silent skip)")
+            if (m.GetNumAtoms() != g0.mol.GetNumAtoms()
+                    or sorted(a for at in g0.atoms for a in at) != list(range(m.GetNumAtoms()))):
+                raise ValueError(f"learn_fm_bpe: start_graphs[{k}] does not match SMILES {s!r}")
+            graphs.append(copy.deepcopy(g0))
+    else:
+        for s in smiles:
+            m = Chem.MolFromSmiles(s)
+            if m is None:
+                raise ValueError(f"learn_fm_bpe: unparseable SMILES {s!r} (no silent skip)")
+            graphs.append(_finest_graph(m, freeze_rings=freeze_rings, start=start))
     if not graphs:
         raise ValueError("learn_fm_bpe: no molecules to learn from")
 

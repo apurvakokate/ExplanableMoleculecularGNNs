@@ -56,10 +56,13 @@ def _coverage(cnt, size, tot_atoms, cut):
 GRID = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0]
 
 
-def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings):
+def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings, start_graphs):
     t0 = time.time()
+    # start_graphs = the finest graphs built ONCE in main(); learn_fm_bpe deep-copies them, so every
+    # probe starts from the identical state without re-running the union-start segmentation.
     rules, graphs = fm_bpe.learn_fm_bpe(learn_smi, lam=lam, max_merges=None, verbose=False,
-                                        freeze_rings=freeze_rings, start=start, cost='full_mdl')
+                                        freeze_rings=freeze_rings, start=start, cost='full_mdl',
+                                        start_graphs=start_graphs)
     cnt, size, tot = _counts_and_atoms(graphs)
     new_bad = [k for k, c in cnt.items() if c > 0 and k not in finest_cnt and c < cut]
     demoted = [k for k, c0 in finest_cnt.items() if c0 >= cut and 0 < cnt.get(k, 0) < cut]
@@ -110,7 +113,7 @@ def main():
 
     probes, merges_at = [], {}
     def P(lam):
-        rec, merges = probe(learn_smi, lam, cut, finest_cnt, args.start, freeze_rings)
+        rec, merges = probe(learn_smi, lam, cut, finest_cnt, args.start, freeze_rings, finest)
         probes.append(rec); merges_at[lam] = merges
         print(f'  probe {rec}', flush=True)
         return rec['ok']
