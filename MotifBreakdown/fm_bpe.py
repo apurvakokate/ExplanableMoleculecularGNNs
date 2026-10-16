@@ -7,7 +7,9 @@ are NOT frozen, so the FM-BPE criterion alone decides every merge (amide/ester/.
 if the data pays for them). Rings may GROW outward but never split.
 
 Merge criterion (FM-BPE, fixed-b form). For an adjacent fragment-TYPE pair (M1, M2) with corpus
-co-occurrence count f12 and heavy-atom sizes |M1|, |M2|:
+count f12 and heavy-atom sizes |M1|, |M2|. f12 = number of merges that would ACTUALLY happen
+(node-disjoint adjacencies; see _local_pairs), NOT raw adjacencies — so each counted co-occurrence
+removes exactly one token and N_after = N - f12 holds exactly:
 
     dC(M1,M2) = lambda * (|M1| + |M2|)  -  f12 * b          merge iff dC < 0
 
@@ -41,8 +43,9 @@ Top-level: build(smiles_all, lam, b=1.0, max_atoms=None) -> per-mol [(key, set(a
 smiles_all, IDENTICAL format to ring_mdl.build / mdl_linker.build so the vocab call site is unchanged.
 head_source / linker_method / break_fused_rings are accepted for call-compatibility and ignored.
 
-NO FALLBACK on keying/cover errors (fails loudly, like ring_mdl / mdl_only). Unparseable SMILES are
-skipped with a warning and get an empty cover so index alignment to smiles_all is preserved.
+NO FALLBACK on keying/cover errors (fails loudly, like ring_mdl / mdl_only). Unparseable SMILES,
+a missing/mismatched `groups`, an empty train+val set, or a selected merge that applies nowhere
+all RAISE — nothing is skipped or given an empty cover.
 """
 from __future__ import annotations
 
@@ -123,13 +126,29 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
 
 # ───────────────────────────── greedy advisor-MDL merge ────────────────────────
 def _local_pairs(g: _MolGraph, type_size: Dict[str, int]) -> Counter:
-    """Counter of this graph's adjacent fragment-TYPE pairs (sorted); also records each type's size."""
-    lp: Counter = Counter()
-    for i, j, _ in g.linker_adjacencies():                   # all adjacencies (nothing frozen)
+    """Counter of this graph's REALIZABLE merges per fragment-TYPE pair (sorted); also records each
+    type's size.
+
+    f12 counts the merges apply_merge(pair) would ACTUALLY perform in this graph, not raw
+    adjacencies. Adjacencies of one pair type overlap when they share a node (CF3: three *C-*F bonds
+    share the carbon; a *C*-*C*-*C* chain: two bonds share the middle): merging one turns the shared
+    node into a NEW, larger type, so the other adjacencies no longer match the pair. apply_merge scans
+    adjacencies in bond order, merges the first match and rescans, and a merged node can never match
+    the same pair again (its key has more atoms than either part). Its result is therefore exactly a
+    greedy node-disjoint matching over that pair's adjacencies in bond order — computed here.
+    learn_fm_bpe asserts applied == counted every step."""
+    by_type: Dict[Tuple[str, str], List[Tuple[int, int]]] = {}
+    for i, j, _ in g.linker_adjacencies():                   # bond order, same as apply_merge
         a, c = g.ident[i], g.ident[j]
         type_size.setdefault(a, len(g.atoms[i]))
         type_size.setdefault(c, len(g.atoms[j]))
-        lp[tuple(sorted((a, c)))] += 1
+        by_type.setdefault(tuple(sorted((a, c))), []).append((i, j))
+    lp: Counter = Counter()
+    for p, edges in by_type.items():
+        used: Set[int] = set()
+        for i, j in edges:
+            if i not in used and j not in used:
+                used.add(i); used.add(j); lp[p] += 1
     return lp
 
 
@@ -203,23 +222,27 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
         applied = 0
         n_mols = 0
         for gi, g in enumerate(graphs):                      # only graphs containing best_p change
-            if gpairs[gi].get(best_p, 0) == 0:
+            exp_g = gpairs[gi].get(best_p, 0)
+            if exp_g == 0:
                 continue
             n_mols += 1
             f12.subtract(gpairs[gi])                         # remove this graph's old contribution
             if full:
                 tcount.subtract(gtypes[gi])
-            applied += g.apply_merge(best_p)                 # BPE: merge best_p everywhere in g
+            got_g = g.apply_merge(best_p)                    # BPE: merge best_p everywhere in g
+            if got_g != exp_g:
+                raise RuntimeError(f"learn_fm_bpe: step {step} pair {best_p} graph {gi}: counted "
+                                   f"{exp_g} realizable merges but apply_merge did {got_g}")
+            applied += got_g
             gpairs[gi] = _local_pairs(g, type_size)          # rescan ONLY this graph
             f12.update(gpairs[gi])                           # add its new contribution
             if full:
                 gtypes[gi] = Counter(k for k, _ in g.fragments())
                 tcount.update(gtypes[gi])
-        if applied == 0:
-            # f12[best_p] > 0 but no graph could apply it -> the pair counts and the graphs
-            # disagree. That is a bookkeeping bug, not a stopping condition: fail loudly.
-            raise RuntimeError(f"learn_fm_bpe: merge {best_p} has f12={cnt} but applied to 0 "
-                               f"graphs (touched {n_mols}) at step {step}")
+        if applied != cnt:
+            # counted f12 and the merges actually performed disagree -> bookkeeping bug: fail loudly.
+            raise RuntimeError(f"learn_fm_bpe: merge {best_p} has f12={cnt} but applied {applied} "
+                               f"(touched {n_mols} graphs) at step {step}")
         rules.append((best_p, best_dC, cnt, best_msz, n_mols))
         if verbose and (step < 15 or step % 25 == 0):
             print(f"  merge {step:3d}: {best_p[0]:>14s} + {best_p[1]:<14s} "

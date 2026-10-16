@@ -1168,7 +1168,8 @@ def _load_csv(data_root: str, dataset: str, fold: int) -> pd.DataFrame:
             f"Columns: {df.columns.tolist()}")
     df = df.rename(columns={label_col: 'label'})
     if 'group' not in df.columns:
-        df['group'] = 'training'
+        # FAIL LOUD: defaulting every row to 'training' would let test molecules shape the vocab
+        raise KeyError(f"No 'group' (split) column in {path}; refusing to treat all rows as training")
     if dataset == 'mutag':
         bad = df['smiles'].isna() | (df['smiles'].astype(str).str.strip() == '') \
             | (df['smiles'].astype(str).str.lower() == 'nan')
@@ -1318,6 +1319,21 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         labels_all = labels_all.astype(int)
     groups_all = smdf['group'].tolist()
     n_all      = len(smdf)
+    # FAIL LOUD (all methods): an unparseable SMILES is never skipped / given an empty cover —
+    # a silently dropped molecule changes the motif counts and misaligns the graph lookup.
+    # RDKit-VERSION NOTE (2026-10-16, open item, deliberately left as-is): parseability depends on the
+    # RDKit version. HPC l2xgnn = rdkit 2023.09.6 parses ALL 8 benchmark datasets (0 unparseable).
+    # A newer local rdkit 2026.03.3 REJECTS 2 Mutagenicity SMILES (hypervalent [N+2] beside [C-2]:
+    # '[CH-2][N+2](C)(C)(Cl)Cc1ccccc1', 'CC(C)[N+2](C)(Br)([C-2]COC(=O)C1c2ccccc2Oc2ccccc21)C(C)C').
+    # Do NOT turn such molecules into whole-molecule motifs or parse with sanitize=False: there is no
+    # RDKit graph for MoSE to assign motifs to, and a lenient parse diverges from the training loader
+    # and the rBRICS/SFO baselines. Fix = run under the HPC rdkit version (canonical motif keys are
+    # version-dependent too); cleaning them out of Mutagenicity would be a dataset decision.
+    _unparseable = [(i, s) for i, s in enumerate(smiles_all)
+                    if not isinstance(s, str) or Chem.MolFromSmiles(s) is None]
+    if _unparseable:
+        raise ValueError(f"{dataset} fold{fold}: {len(_unparseable)} unparseable SMILES "
+                         f"(rows, first 5: {_unparseable[:5]}); refusing to skip them")
 
     # Resolve threshold
     resolved_pct: Optional[float] = None

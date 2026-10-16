@@ -92,6 +92,9 @@ def main():
     n_tv = len(tv)                                   # loader uses len(trainval rows)
     cut = int(args.threshold_pct * n_tv)
     learn_smi = tv['smiles'].astype(str).tolist()
+    # Parseability is RDKit-version dependent: HPC rdkit 2023.09.6 parses all 8 datasets; local rdkit
+    # 2026.03.3 rejects 2 Mutagenicity SMILES (see the RDKit-VERSION NOTE in generate_vocab_rules.py).
+    # Authoritative lambda* = HPC env. Never skip or leniently parse them here.
     _bad = [s for s in learn_smi if Chem.MolFromSmiles(s) is None]
     if _bad:
         raise ValueError(f'{len(_bad)} unparseable train+val SMILES (no silent skip), e.g. {_bad[:3]}')
@@ -141,6 +144,8 @@ def main():
     accepted = (status == 'refined') and not non_monotone
     out = dict(dataset=args.dataset, fold=args.fold, threshold_pct=args.threshold_pct,
                n_trainval=n_tv, global_cut=cut, cost='full_mdl', start=args.start,
+               f12_count='realizable',          # node-disjoint merges (fm_bpe._local_pairs), not raw adjacencies
+               rdkit_version=Chem.rdBase.rdkitVersion,
                freeze_rings=freeze_rings,
                lambda_star=(lam_star if accepted else None),   # None => vocab stage refuses
                lambda_candidate=lam_star, accepted=accepted, status=status,
