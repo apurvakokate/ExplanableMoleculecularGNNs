@@ -431,6 +431,30 @@ def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
             top_bottom=results.get('top_bottom'),
         )
 
+    # Per-graph artifacts for forward-pass-free model-level analysis (written last so a failure
+    # here can never lose the outputs above). per_graph_<split>.csv = one row per graph in loader
+    # order (the same index as impact_cache_own_<split>.json); 'pred' is sigmoid prob for
+    # BinaryClass, raw model output (normalised target units) for Regression.
+    # node_motif_<split>.json = graph_idx -> per-node motif id (-1 = UNK/filtered).
+    import csv as _csv
+    from SharedModules.evaluation.motif_eval import _get_probs
+    model.eval()
+    for _split, _lst in (('train', train_list), ('valid', valid_list), ('test', test_list)):
+        _probs = _get_probs(model, _lst, device, task_type)
+        _nm = {}
+        with open(out_dir / f'per_graph_{_split}.csv', 'w', newline='') as _f:
+            _w = _csv.writer(_f)
+            _w.writerow(['graph_idx', 'smiles', 'y', 'pred'])
+            for _gi, _d in enumerate(_lst):
+                _y = (float(_d.y.view(-1)[0].item())
+                      if getattr(_d, 'y', None) is not None else float('nan'))
+                _w.writerow([_gi, getattr(_d, 'smiles', ''), _y, _probs[_gi]])
+                _n2m = getattr(_d, 'nodes_to_motifs', None)
+                _nm[_gi] = [int(v) for v in _n2m.view(-1).tolist()] if _n2m is not None else None
+        with open(out_dir / f'node_motif_{_split}.json', 'w') as _f:
+            json.dump(_nm, _f)
+    print(f'  [artifacts] per_graph_*.csv + node_motif_*.json -> {out_dir}')
+
     return results
 
 

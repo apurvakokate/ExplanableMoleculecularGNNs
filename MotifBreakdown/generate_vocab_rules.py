@@ -1274,7 +1274,8 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                 rule_tiers: bool = False,
                 head_source: str = 'ertl',
                 linker_method: str = 'mdl',
-                break_fused_rings: bool = False):
+                break_fused_rings: bool = False,
+                fm_lambda: Optional[float] = None):
     """Run the full pipeline for one dataset with given settings.
 
     Args:
@@ -1290,7 +1291,11 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                             N_trainval). Typical range 0.001–0.009.
                             If None and apply_threshold=True, the value is
                             looked up from CHOSEN_THRESHOLD[variant][dataset].
+        fm_lambda         — FM-BPE only: explicit lambda (e.g. lambda* from
+                            fm_bpe_lambda_star.py). Overrides the theta<X> in the
+                            method name.
     """
+    _fm_meta = None   # FM-BPE run record (lambda, cost, merge rules) -> fm_bpe_meta.json
     # variant_override lets the caller set a canonical output name (e.g.
     # "rbrics_old") independently of the internal method string
     # (e.g. "rbrics_old_filter"). When not provided the name is auto-generated.
@@ -1316,6 +1321,9 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
 
     # Resolve threshold
     resolved_pct: Optional[float] = None
+    if method.startswith('fm_bpe') and apply_threshold and threshold_pct is None:
+        raise ValueError(f"{method}: --apply_threshold needs an explicit --threshold_pct "
+                         f"(no CHOSEN_THRESHOLD fallback for FM-BPE)")
     if apply_threshold:
         if threshold_pct is not None:
             resolved_pct = threshold_pct
@@ -1503,13 +1511,29 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             if method.startswith('fm_bpe'):
                 # FM-BPE. Name encodes the arm: theta<X> ('p'='.', default 1.0) = lambda/b;
                 # 'union' = SFO-pool start (else atomic finest); 'grow' = growable rings (else frozen
-                # bare-ring tokens). b fixed to 1.0 (only the ratio matters). Keys -> rekey_structural.
+                # bare-ring tokens); '_full' = full-MDL cost (uniform log|V| code) instead of fixed b.
+                # --fm_lambda overrides theta<X> (used for the per-dataset lambda*). b fixed to 1.0.
+                # Keys -> rekey_structural.
                 _tm = _re.search(r'theta([0-9]+(?:p[0-9]+)?)', method)
-                _theta = float(_tm.group(1).replace('p', '.')) if _tm else 1.0
+                if _tm and fm_lambda is not None:
+                    raise ValueError(f"{method}: lambda given twice (theta in name AND --fm_lambda)")
+                if _tm:
+                    _theta = float(_tm.group(1).replace('p', '.'))
+                elif fm_lambda is not None:
+                    _theta = float(fm_lambda)
+                else:
+                    raise ValueError(f"{method}: no lambda (no theta<X> in name and no --fm_lambda); "
+                                     f"refusing to default")
                 _start = 'union' if 'union' in method else 'atomic'
                 _freeze = 'grow' not in method
-                _raw = _ml.build(smiles_all, groups=groups_all, lam=_theta, b=1.0, max_merges=None,
-                                 verbose=True, freeze_rings=_freeze, start=_start)
+                _cost = 'full_mdl' if '_full' in method else 'fixed_b'
+                _raw, _fm_rules = _ml.build(smiles_all, groups=groups_all, lam=_theta, b=1.0,
+                                            max_merges=None, verbose=True, freeze_rings=_freeze,
+                                            start=_start, cost=_cost, return_rules=True)
+                _fm_meta = dict(method=method, cost=_cost, lam=_theta, b=1.0, start=_start,
+                                freeze_rings=_freeze, fold=fold, n_merges=len(_fm_rules),
+                                rules=[dict(m1=r[0][0], m2=r[0][1], dC=r[1], f12=r[2],
+                                            merged_size=r[3], n_mols=r[4]) for r in _fm_rules])
             elif method.startswith('size_frequency_optimization'):
                 _raw = _ml.build(smiles_all, method=method, groups=groups_all,
                                  dataset=dataset, verbose=True)
@@ -1526,6 +1550,14 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
             mol_frags_tracked = []
             for _s, _mf in zip(smiles_all, _raw):
                 _m = Chem.MolFromSmiles(_s)
+                if method.startswith('fm_bpe'):
+                    # fail loud: no empty-cover placeholder; the cover must partition the atoms
+                    if _m is None:
+                        raise ValueError(f'{method}: unparseable SMILES {_s!r}')
+                    _flat = [a for _k, at in _mf for a in at]
+                    if sorted(_flat) != list(range(_m.GetNumAtoms())):
+                        raise ValueError(f'{method}: cover is not an exact atom partition for {_s!r} '
+                                         f'({len(_flat)} assigned / {_m.GetNumAtoms()} atoms)')
                 if _m is None:
                     mol_frags_tracked.append([]); _n_bad += 1; continue
                 if method.startswith('size_frequency_optimization'):
@@ -2011,6 +2043,13 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
     graph_df.to_csv(vdir / 'stats_graphs.csv',  index=False)
     _write_stats_summary(motif_df, graph_df, vdir)
     print(f"    Stats → {vdir}/stats_motifs.csv  stats_graphs.csv")
+    if _fm_meta is not None:
+        import json as _json
+        _fm_meta['threshold_pct'] = resolved_pct
+        with open(vdir / 'fm_bpe_meta.json', 'w') as _f:
+            _json.dump(_fm_meta, _f, indent=1)
+        print(f"    FM-BPE meta → {vdir}/fm_bpe_meta.json  (lam={_fm_meta['lam']} "
+              f"cost={_fm_meta['cost']} merges={_fm_meta['n_merges']})")
 
     meta['elapsed'] = round(time.time() - t0, 1)
     print(f"    ({meta['elapsed']}s)")
@@ -2138,7 +2177,8 @@ Examples:
                             'lm_fg', 'lm_bde_fg', 'lm_bde_g4_fg', 'bf_recur', 'bf_recur_peel',
                             'size_frequency_optimization',
                             'fm_bpe_theta1', 'fm_bpe_union_theta1', 'fm_bpe_grow_theta1',
-                            'fm_bpe_theta0p25', 'fm_bpe_theta0p5', 'fm_bpe_theta2'],
+                            'fm_bpe_theta0p25', 'fm_bpe_theta0p5', 'fm_bpe_theta2',
+                            'fm_bpe_full_union'],
                    help='Fragmentation algorithm(s) to use (default: all). fg_first_mdl adds '
                         'data-driven MDL-BPE linker cutting (cascade_bpe_linker) on top of fg_first.')
     p.add_argument('--head_source', default='ertl', choices=['ertl', 'rbrics', 'none'],
@@ -2194,6 +2234,9 @@ Examples:
                         '(e.g. 0.002 = 0.2%; typical 0.001-0.009); '
                         'cutoff = int(value * N_trainval). '
                         'Only used when --apply_threshold is set.')
+    p.add_argument('--fm_lambda', type=float, default=None,
+                   help='FM-BPE only: explicit lambda (e.g. lambda* from '
+                        'fm_bpe_lambda_star.py); overrides theta<X> in the method name.')
     p.add_argument('--rule_rank', default='balanced',
                    choices=['balanced', 'pct1'],
                    help="How to sort rules.json (rule_index 0 = best). "
@@ -2257,7 +2300,8 @@ Examples:
                            rule_tiers=bool(args.rule_tiers),
                            head_source=args.head_source,
                            linker_method=args.linker_method,
-                           break_fused_rings=bool(args.break_fused_rings))
+                           break_fused_rings=bool(args.break_fused_rings),
+                           fm_lambda=args.fm_lambda)
         meta['dataset'] = ds
         all_metas.append(meta)
 

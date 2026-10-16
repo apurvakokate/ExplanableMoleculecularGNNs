@@ -22,6 +22,15 @@ fixes b = 1.0 and sweeps lambda == theta = "required co-occurrences per unit mer
 Small theta -> coarse (aggressive merging); large theta -> fine. theta is the single granularity
 knob (the analogue of SFO's size ramp).
 
+FULL-MDL form (cost='full_mdl'): uniform log|V| code instead of fixed b,
+
+    dC = lambda*(|M1|+|M2|) + (f1+f2+T)*log2((V+1)/V) + f12*log2((V+1)/V^2)
+       = lambda*(|M1|+|M2|) + N*log2((V+1)/V) - f12*log2(V+1)        (f1+f2+T = N - 2*f12)
+
+with N = total fragment occurrences and V = number of distinct fragment types present. Here lambda
+is NOT a pure ratio (it trades vocabulary size against code length), and the bar depends on N and
+V, so lambda is dataset-specific; see fm_bpe_lambda_star.py for how lambda* is chosen.
+
 Greedy loop: each round score every adjacent type-pair, apply the most-negative-dC merge across the
 whole corpus (BPE: merge that type-pair everywhere), recount, stop when no pair has dC < 0.
 
@@ -37,6 +46,7 @@ skipped with a warning and get an empty cover so index alignment to smiles_all i
 """
 from __future__ import annotations
 
+import math
 import sys
 from collections import Counter
 from typing import Dict, List, Sequence, Set, Tuple
@@ -85,6 +95,10 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
     freeze_rings=True (default): rings stay frozen -> bare substituent-agnostic `ring:` tokens, never
       merged (matches ring_mdl / SFO / the deployed pipeline). freeze_rings=False: rings are un-frozen
       and may grow outward (attachment-aware), the old growable-ring ablation."""
+    if start not in ('atomic', 'union'):
+        raise ValueError(f"unknown start {start!r}; expected 'atomic' or 'union'")
+    if mol is None:
+        raise ValueError("_finest_graph got mol=None (unparseable SMILES)")
     g = _MolGraph(mol, finest='all_bonds', freeze='rings', fg_partition=ring_mdl.make_partition())
     if start == 'union':
         U = _union_cut_bonds(mol)
@@ -121,18 +135,30 @@ def _local_pairs(g: _MolGraph, type_size: Dict[str, int]) -> Counter:
 
 def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
                   max_atoms: int | None = None, max_merges: int | None = None, verbose: bool = False,
-                  freeze_rings: bool = True, start: str = 'atomic'):
-    """Greedy BPE under dC = lam*(|M1|+|M2|) - f12*b. Returns (rules, graphs) where graphs are the
-    merged per-molecule covers and rules = [(pair_type, dC, f12, merged_size), ...] in merge order.
+                  freeze_rings: bool = True, start: str = 'atomic', cost: str = 'fixed_b'):
+    """Greedy BPE. Returns (rules, graphs) where graphs are the merged per-molecule covers and
+    rules = [(pair_type, dC, f12, merged_size, n_mols), ...] in merge order; n_mols = number of
+    molecules the merge touched (= the pair's molecule support at the moment it fired).
+
+    cost='fixed_b'  : dC = lam*(|M1|+|M2|) - f12*b                                   (default)
+    cost='full_mdl' : dC = lam*(|M1|+|M2|) + N*log2((V+1)/V) - f12*log2(V+1)
+                      N = total fragment occurrences, V = distinct fragment types present.
     freeze_rings / start are passed to _finest_graph (see there).
 
-    Incremental: the global adjacency-pair count is maintained exactly, re-scanning ONLY the graphs a
-    merge actually touches (not the whole corpus each round). Output is identical to a full recount."""
+    Incremental: the global adjacency-pair count (and, for full_mdl, the per-type occurrence count)
+    is maintained exactly, re-scanning ONLY the graphs a merge actually touches. Output is identical
+    to a full recount."""
+    if cost not in ('fixed_b', 'full_mdl'):
+        raise ValueError(f"unknown cost {cost!r}; expected 'fixed_b' or 'full_mdl'")
+    full = cost == 'full_mdl'
     graphs: List[_MolGraph] = []
     for s in smiles:
         m = Chem.MolFromSmiles(s)
-        if m is not None:
-            graphs.append(_finest_graph(m, freeze_rings=freeze_rings, start=start))
+        if m is None:
+            raise ValueError(f"learn_fm_bpe: unparseable SMILES {s!r} (no silent skip)")
+        graphs.append(_finest_graph(m, freeze_rings=freeze_rings, start=start))
+    if not graphs:
+        raise ValueError("learn_fm_bpe: no molecules to learn from")
 
     type_size: Dict[str, int] = {}
     gpairs: List[Counter] = [_local_pairs(g, type_size) for g in graphs]
@@ -140,10 +166,26 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
     for lp in gpairs:
         f12.update(lp)
 
-    rules: List[Tuple[Tuple[str, str], float, int, int]] = []
+    # full_mdl needs N (total occurrences) and V (distinct types) of the CURRENT cover.
+    gtypes: List[Counter] = []
+    tcount: Counter = Counter()
+    if full:
+        for g in graphs:
+            t = Counter(k for k, _ in g.fragments())
+            gtypes.append(t)
+            tcount.update(t)
+
+    rules: List[Tuple[Tuple[str, str], float, int, int, int]] = []
     # max_merges=None => uncapped: the greedy loop stops naturally when no pair has dC<0
-    # (the ``best_p is None`` break below), which always terminates for the fixed-b cost.
+    # (the ``best_p is None`` break below).
     for step in range(max_merges if max_merges is not None else 10**9):
+        if full:
+            V = sum(1 for v in tcount.values() if v > 0)
+            N = sum(tcount.values())
+            if V < 2:
+                break
+            growth = N * math.log2((V + 1) / V)              # every token's code lengthens
+            perc = math.log2(V + 1)                          # bits saved per merged co-occurrence
         best_p, best_dC, best_msz = None, 0.0, 0             # accept only dC < 0, pick most negative
         for p, c in f12.items():
             if c <= 0:
@@ -151,7 +193,7 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
             msz = type_size[p[0]] + type_size[p[1]]          # |M1|+|M2| (heavy atoms)
             if max_atoms is not None and msz > max_atoms:
                 continue
-            dC = lam * msz - c * b
+            dC = (lam * msz + growth - c * perc) if full else (lam * msz - c * b)
             if dC < best_dC:
                 best_p, best_dC, best_msz = p, dC, msz
         if best_p is None:
@@ -159,19 +201,29 @@ def learn_fm_bpe(smiles: Sequence[str], lam: float, b: float = 1.0,
 
         cnt = f12[best_p]
         applied = 0
+        n_mols = 0
         for gi, g in enumerate(graphs):                      # only graphs containing best_p change
             if gpairs[gi].get(best_p, 0) == 0:
                 continue
+            n_mols += 1
             f12.subtract(gpairs[gi])                         # remove this graph's old contribution
+            if full:
+                tcount.subtract(gtypes[gi])
             applied += g.apply_merge(best_p)                 # BPE: merge best_p everywhere in g
             gpairs[gi] = _local_pairs(g, type_size)          # rescan ONLY this graph
             f12.update(gpairs[gi])                           # add its new contribution
+            if full:
+                gtypes[gi] = Counter(k for k, _ in g.fragments())
+                tcount.update(gtypes[gi])
         if applied == 0:
-            break                                            # defensive: no progress -> stop
-        rules.append((best_p, best_dC, cnt, best_msz))
+            # f12[best_p] > 0 but no graph could apply it -> the pair counts and the graphs
+            # disagree. That is a bookkeeping bug, not a stopping condition: fail loudly.
+            raise RuntimeError(f"learn_fm_bpe: merge {best_p} has f12={cnt} but applied to 0 "
+                               f"graphs (touched {n_mols}) at step {step}")
+        rules.append((best_p, best_dC, cnt, best_msz, n_mols))
         if verbose and (step < 15 or step % 25 == 0):
             print(f"  merge {step:3d}: {best_p[0]:>14s} + {best_p[1]:<14s} "
-                  f"f12={cnt:5d} size={best_msz:2d} dC={best_dC:9.1f}", flush=True)
+                  f"f12={cnt:5d} mols={n_mols:5d} size={best_msz:2d} dC={best_dC:9.1f}", flush=True)
 
     return rules, graphs
 
@@ -183,35 +235,38 @@ _TRAINVAL = {'training', 'train', 'valid', 'validation', 'val'}
 def build(smiles_all: Sequence[str], groups=None, head_source: str = 'none', linker_method: str = 'mdl',
           break_fused_rings: bool = False, lam: float = 1.0, b: float = 1.0,
           max_atoms: int | None = None, max_merges: int | None = None, verbose: bool = False,
-          freeze_rings: bool = True, start: str = 'atomic'
-          ) -> List[List[Tuple[str, Set[int]]]]:
+          freeze_rings: bool = True, start: str = 'atomic', cost: str = 'fixed_b',
+          return_rules: bool = False):
     """Per-mol [(key, set(atoms))] aligned to smiles_all. head_source/linker_method/break_fused_rings
     accepted for call-compatibility and ignored. lam == theta (b fixed to 1.0 is the natural choice).
     freeze_rings (default True) -> bare ring tokens; start 'atomic' (default) or 'union' (SFO pool).
+    cost: 'fixed_b' (default) or 'full_mdl' (see learn_fm_bpe). return_rules=True returns
+    (covers, rules) so the caller can record the learned merges.
 
     HELD-OUT TEST (proper per-fold CV): merge rules are LEARNED on train+val only (`groups` in
     {training,valid}) and then REPLAYED per-molecule onto the whole set, so test co-occurrences never
     influence which merges happen — the vocabulary is genuinely fold-specific and matches SFO's
-    train+val-driven selection. If `groups` is None the rules are learned on all molecules (legacy)."""
+    train+val-driven selection. `groups` is REQUIRED: there is no learn-on-all mode (it would let
+    test molecules shape the vocabulary). Fails loudly on unparseable SMILES or an empty train+val."""
+    if groups is None:
+        raise ValueError("fm_bpe.build: groups is required (merges must be learned on train+val only)")
+    if len(groups) != len(smiles_all):
+        raise ValueError(f"fm_bpe.build: len(groups)={len(groups)} != len(smiles_all)={len(smiles_all)}")
     valid: List[Tuple[int, str]] = []
     for i, s in enumerate(smiles_all):
-        if Chem.MolFromSmiles(s) is not None:
-            valid.append((i, s))
-        else:
-            print(f"[fm_bpe] WARN unparseable SMILES at row {i}: {s!r}", file=sys.stderr)
+        if Chem.MolFromSmiles(s) is None:
+            raise ValueError(f"fm_bpe.build: unparseable SMILES at row {i}: {s!r} (no silent skip)")
+        valid.append((i, s))
 
-    if groups is not None:
-        learn_smi = [s for (i, s) in valid if str(groups[i]) in _TRAINVAL]
-        if not learn_smi:
-            learn_smi = [s for (_, s) in valid]
-    else:
-        learn_smi = [s for (_, s) in valid]
+    learn_smi = [s for (i, s) in valid if str(groups[i]) in _TRAINVAL]
+    if not learn_smi:
+        raise ValueError(f"fm_bpe.build: no train+val molecules (groups seen: {sorted(set(map(str, groups)))})")
     if verbose:
         print(f"[fm_bpe] learning merges on {len(learn_smi)} train+val mols of {len(valid)} total; "
-              f"start={start} freeze_rings={freeze_rings}", flush=True)
+              f"start={start} freeze_rings={freeze_rings} cost={cost} lam={lam}", flush=True)
 
     rules, _ = learn_fm_bpe(learn_smi, lam=lam, b=b, max_atoms=max_atoms, max_merges=max_merges,
-                            verbose=verbose, freeze_rings=freeze_rings, start=start)
+                            verbose=verbose, freeze_rings=freeze_rings, start=start, cost=cost)
     rule_pairs = [r[0] for r in rules]                     # (M1,M2) type-pairs in learned order
 
     # REPLAY the learned merges onto EVERY molecule (train/val/test), per-molecule, deterministically.
@@ -221,4 +276,4 @@ def build(smiles_all: Sequence[str], groups=None, head_source: str = 'none', lin
         for p in rule_pairs:
             g.apply_merge(p)
         covers[i] = [(k, set(at)) for k, at in g.fragments()]
-    return covers
+    return (covers, rules) if return_rules else covers
