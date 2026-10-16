@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """fm_bpe_lambda_star.py — choose lambda* for FM-BPE (full-MDL cost) once per dataset.
 
-lambda* = the smallest lambda at which merging never creates UNK motifs under the dataset's own
-support filter. Two ways a merge can create UNK, both checked:
-  (1) NEW: a merge-created type whose train+val count ends below the global cut;
-  (2) DEMOTED: a finest type that was above the cut becomes below it because merges consumed its
-      occurrences (its leftover atoms would become UNK).
+lambda* = the smallest lambda whose merges pass the chosen UNK criterion (--criterion, REQUIRED):
+  cov_eps    (CURRENT, user decision 2026-10-16, eps = 0.25 pt): merging may lower the kept-atom
+             coverage (% of train+val atoms in motifs at/above the global cut) by at most --eps_cov
+             percentage points relative to NO merging. Measures UNK MASS, so one tiny borderline motif
+             cannot veto a whole lambda.
+  zero_types (previous): no motif TYPE may end below the cut because of merging — neither
+      (1) NEW: a merge-created type whose train+val count ends below the global cut, nor
+      (2) DEMOTED: a finest type that was above the cut drops below it as merges consume it.
+Both counts (1)/(2) and the coverage are logged for every probe under either criterion.
 The cut mirrors the MoSE loader exactly (threshold_config.select_threshold_motifs, global part):
     global_cut = int(threshold_pct * n_trainval),  counts = occurrences in train+val molecules.
 The label-dependent minority-class rescue is deliberately NOT used, so lambda* stays label-free;
@@ -25,7 +29,7 @@ this check is conservative. The loader's actual kept/dropped counts are logged p
 
 Usage:
   python fm_bpe_lambda_star.py --dataset BBBP --data_root <FOLDS> --threshold_pct 0.006 \
-      --out <dir>/BBBP.json [--fold 0] [--refine_iters 8]
+      --criterion cov_eps --eps_cov 0.25 --out <dir>/BBBP.json [--fold 0] [--refine_iters 8]
 """
 import argparse, json, math, os, sys, time
 from collections import Counter
@@ -56,7 +60,8 @@ def _coverage(cnt, size, tot_atoms, cut):
 GRID = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0]
 
 
-def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings, start_graphs):
+def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings, start_graphs,
+          criterion, eps_cov, finest_cov):
     t0 = time.time()
     # start_graphs = the finest graphs built ONCE in main(); learn_fm_bpe deep-copies them, so every
     # probe starts from the identical state without re-running the union-start segmentation.
@@ -66,11 +71,19 @@ def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings, start_graphs):
     cnt, size, tot = _counts_and_atoms(graphs)
     new_bad = [k for k, c in cnt.items() if c > 0 and k not in finest_cnt and c < cut]
     demoted = [k for k, c0 in finest_cnt.items() if c0 >= cut and 0 < cnt.get(k, 0) < cut]
-    rec = dict(lam=lam, ok=(not new_bad and not demoted), n_merges=len(rules),
+    cov = _coverage(cnt, size, tot, cut)
+    cov_drop = finest_cov - cov                       # percentage points of kept-atom coverage lost
+    if criterion == 'cov_eps':
+        ok = cov_drop <= eps_cov + 1e-9
+    elif criterion == 'zero_types':
+        ok = not new_bad and not demoted
+    else:
+        raise ValueError(f'unknown criterion {criterion!r}')
+    rec = dict(lam=lam, ok=ok, n_merges=len(rules), cov_drop_pt=round(cov_drop, 4),
                n_new_below_cut=len(new_bad), n_demoted=len(demoted),
                min_merge_mols=(min(r[4] for r in rules) if rules else None),
                vocab=sum(1 for c in cnt.values() if c > 0),
-               coverage_pct=round(_coverage(cnt, size, tot, cut), 2),
+               coverage_pct=round(cov, 2),
                seconds=round(time.time() - t0, 1))
     merges = [dict(step=i, m1=r[0][0], m2=r[0][1], f12=r[2], n_mols=r[4], merged_size=r[3])
               for i, r in enumerate(rules)]
@@ -87,7 +100,15 @@ def main():
     ap.add_argument('--refine_iters', type=int, default=8,
                     help='log-lambda bisection steps inside the failing/passing grid bracket')
     ap.add_argument('--start', default='union', choices=['union', 'atomic'])
+    ap.add_argument('--criterion', required=True, choices=['cov_eps', 'zero_types'],
+                    help="pass test per probe (no default: the choice is always explicit)")
+    ap.add_argument('--eps_cov', type=float, default=None,
+                    help='cov_eps only: max kept-atom coverage loss vs no merging, in percentage points')
     args = ap.parse_args()
+    if args.criterion == 'cov_eps' and (args.eps_cov is None or args.eps_cov < 0):
+        raise ValueError(f'--criterion cov_eps needs --eps_cov >= 0 (got {args.eps_cov})')
+    if args.criterion == 'zero_types' and args.eps_cov is not None:
+        raise ValueError('--eps_cov is only meaningful with --criterion cov_eps')
     freeze_rings = True
 
     df = pd.read_csv(os.path.join(args.data_root, f'{args.dataset}_{args.fold}.csv'))
@@ -113,7 +134,8 @@ def main():
 
     probes, merges_at = [], {}
     def P(lam):
-        rec, merges = probe(learn_smi, lam, cut, finest_cnt, args.start, freeze_rings, finest)
+        rec, merges = probe(learn_smi, lam, cut, finest_cnt, args.start, freeze_rings, finest,
+                            args.criterion, args.eps_cov, finest_cov)
         probes.append(rec); merges_at[lam] = merges
         print(f'  probe {rec}', flush=True)
         return rec['ok']
@@ -148,6 +170,8 @@ def main():
     out = dict(dataset=args.dataset, fold=args.fold, threshold_pct=args.threshold_pct,
                n_trainval=n_tv, global_cut=cut, cost='full_mdl', start=args.start,
                f12_count='realizable',          # node-disjoint merges (fm_bpe._local_pairs), not raw adjacencies
+               ring_grouping='fused_only',      # fm_bpe._finest_graph: ring_mdl.make_partition(fused_only=True)
+               criterion=args.criterion, eps_cov=args.eps_cov,
                rdkit_version=Chem.rdBase.rdkitVersion,
                freeze_rings=freeze_rings,
                lambda_star=(lam_star if accepted else None),   # None => vocab stage refuses
