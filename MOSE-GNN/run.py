@@ -235,8 +235,12 @@ def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
         sd = state.get('model_state_dict', state) if isinstance(state, dict) else state
         missing, unexpected = model.load_state_dict(sd, strict=False)
         if missing or unexpected:
-            print(f'  [eval_only] loaded with {len(missing)} missing / '
-                  f'{len(unexpected)} unexpected keys (non-strict).')
+            _msg = (f'[eval_only] checkpoint/model key mismatch: {len(missing)} missing '
+                    f'{list(missing)[:5]} / {len(unexpected)} unexpected {list(unexpected)[:5]}')
+            if not getattr(cfg, 'allow_nonstrict_load', False):
+                raise RuntimeError(_msg + ' -- refusing to evaluate partially-loaded weights '
+                                   '(pass --allow_nonstrict_load to override explicitly)')
+            print(f'  {_msg} (non-strict, --allow_nonstrict_load set).')
         print(f'  [eval_only] loaded weights from {ckpt_path}; skipping training.')
         model = model.to(device)
         history = {}
@@ -446,11 +450,18 @@ def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
             _w = _csv.writer(_f)
             _w.writerow(['graph_idx', 'smiles', 'y', 'pred'])
             for _gi, _d in enumerate(_lst):
-                _y = (float(_d.y.view(-1)[0].item())
-                      if getattr(_d, 'y', None) is not None else float('nan'))
-                _w.writerow([_gi, getattr(_d, 'smiles', ''), _y, _probs[_gi]])
+                # fail loud: no NaN / empty / null placeholders in the per-graph artifacts
+                _yt = getattr(_d, 'y', None)
+                _smi = getattr(_d, 'smiles', None)
                 _n2m = getattr(_d, 'nodes_to_motifs', None)
-                _nm[_gi] = [int(v) for v in _n2m.view(-1).tolist()] if _n2m is not None else None
+                if _yt is None or not _smi or _n2m is None:
+                    raise ValueError(f'[artifacts] {_split} graph {_gi}: missing '
+                                     f'{"y " if _yt is None else ""}{"smiles " if not _smi else ""}'
+                                     f'{"nodes_to_motifs" if _n2m is None else ""}')
+                if _gi not in _probs:
+                    raise KeyError(f'[artifacts] {_split} graph {_gi}: no prediction')
+                _w.writerow([_gi, _smi, float(_yt.view(-1)[0].item()), _probs[_gi]])
+                _nm[_gi] = [int(v) for v in _n2m.view(-1).tolist()]
         with open(out_dir / f'node_motif_{_split}.json', 'w') as _f:
             json.dump(_nm, _f)
     print(f'  [artifacts] per_graph_*.csv + node_motif_*.json -> {out_dir}')
@@ -545,6 +556,9 @@ def main():
     parser.add_argument('--load_weights_from', default=None,
                         help='Run dir or path to best_model.pt for --eval_only. '
                              'Defaults to the out_dir for this config.')
+    parser.add_argument('--allow_nonstrict_load', action='store_true',
+                        help='--eval_only: tolerate missing/unexpected state_dict keys. '
+                             'Off by default -> a key mismatch raises.')
     parser.add_argument('--conv_normalize', default='none',
                         choices=['l2', 'layernorm', 'none'],
                         help='Per-conv normalization (default none for MOSE; '
@@ -623,6 +637,7 @@ def main():
             mutag_seed=args.mutag_seed,
             eval_only=args.eval_only,
             load_weights_from=args.load_weights_from,
+            allow_nonstrict_load=args.allow_nonstrict_load,
             conv_normalize=args.conv_normalize,
             graph_pool=args.graph_pool,
             gin_inner_bn=args.gin_inner_bn,
