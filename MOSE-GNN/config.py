@@ -72,6 +72,7 @@ class MOSEConfig:
     # Eval-only mode: skip training, load weights, run the eval pipeline only.
     eval_only: bool = False
     load_weights_from: Optional[str] = None  # dir or path to best_model.pt
+    allow_nonstrict_load: bool = False  # eval_only: tolerate missing/unexpected keys (opt-in only)
 
     # W&B
     use_wandb: bool = False
