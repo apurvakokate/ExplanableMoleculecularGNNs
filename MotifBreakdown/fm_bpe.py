@@ -88,7 +88,9 @@ def _union_cut_bonds(mol: Chem.Mol):
 
 
 def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic') -> _MolGraph:
-    """Starting blocks for the FM-BPE merge. Rings are kept whole (ring_mdl partition, freeze='rings').
+    """Starting blocks for the FM-BPE merge. Ring systems are kept whole (ring_mdl partition with
+    fused_only=True, freeze='rings'): a ring motif is one fused/spiro system; a biaryl bond between two
+    ring systems is a boundary between two frozen ring motifs (never merged, like any ring-ring pair).
 
     start='atomic' (default): every non-ring atom is its own block (finest='all_bonds' cuts every
       single acyclic bond) — the absolute finest; the merge can reach ANY partition.
@@ -103,7 +105,12 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
         raise ValueError(f"unknown start {start!r}; expected 'atomic' or 'union'")
     if mol is None:
         raise ValueError("_finest_graph got mol=None (unparseable SMILES)")
-    g = _MolGraph(mol, finest='all_bonds', freeze='rings', fg_partition=ring_mdl.make_partition())
+    # fused_only=True: a ring motif is a FUSED/spiro system; rings joined by a non-ring bond (biaryl)
+    # are separate ring motifs. (ring_mdl's default groups whole ring ASSEMBLIES, which made every
+    # biaryl/teraryl combination its own rare frozen motif — e.g. hERG kept-atom coverage 59.7% vs
+    # 84.4% fused-only at no merges.)
+    g = _MolGraph(mol, finest='all_bonds', freeze='rings',
+                  fg_partition=ring_mdl.make_partition(fused_only=True))
     if start == 'union':
         U = _union_cut_bonds(mol)
         changed = True

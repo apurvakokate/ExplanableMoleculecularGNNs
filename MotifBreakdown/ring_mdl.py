@@ -36,12 +36,44 @@ K_HR = 5          # Hussain-Rea connected-subgraph enumeration cap (heavy atoms)
 
 
 # ───────────────────────────── partition builder (rings only) ──────────────────
-def _ring_groups(mol, break_fused):
-    """Ring atom groups: whole fused systems (default) or per-SSSR-ring (break_fused; each shared
-    atom assigned to the earliest SSSR ring containing it, so groups are non-overlapping)."""
+def _fused_ring_systems(mol, ring):
+    """Ring atoms connected through RING bonds only: fused and spiro systems stay whole, but a
+    non-ring bond between two ring atoms (biaryl / teraryl link) separates them."""
+    adj = {a: set() for a in ring}
+    for b in mol.GetBonds():
+        if b.IsInRing():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            adj[i].add(j); adj[j].add(i)
+    out, seen = [], set()
+    for a in sorted(ring):
+        if a in seen:
+            continue
+        st, comp = [a], set()
+        while st:
+            x = st.pop()
+            if x in seen:
+                continue
+            seen.add(x); comp.add(x); st.extend(adj[x] - seen)
+        out.append(comp)
+    return out
+
+
+def _ring_groups(mol, break_fused, fused_only=False):
+    """Ring atom groups: ring ASSEMBLIES (default, historical), fused-only systems (fused_only), or
+    per-SSSR-ring (break_fused; each shared atom assigned to the earliest SSSR ring containing it).
+
+    NOTE (2026-10-16): the default groups ring atoms connected by ANY bond, so rings joined by a
+    single non-ring bond (biphenyl, aryl-heteroaryl) become ONE frozen ring motif — i.e. ring
+    ASSEMBLIES, not "whole fused systems" as this docstring used to claim. It is kept as the default
+    so ring_mdl / ring_grow_bpe results stay reproducible. fused_only=True connects ring atoms through
+    ring bonds only (fused + spiro whole, biaryl links cut); FM-BPE uses it."""
     ring = {a.GetIdx() for a in mol.GetAtoms() if a.IsInRing()}
     if not ring:
         return []
+    if fused_only and break_fused:
+        raise ValueError("_ring_groups: fused_only and break_fused are mutually exclusive")
+    if fused_only:
+        return _fused_ring_systems(mol, ring)
     if not break_fused:
         return ec._components(mol, ring)
     groups, assigned = [], set()
@@ -56,16 +88,17 @@ def _ring_groups(mol, break_fused):
     return groups
 
 
-def make_partition(break_fused_rings=False):
+def make_partition(break_fused_rings=False, fused_only=False):
     """Return a partition_fn(mol, **kwargs) -> (owner, ids) matching ertl_conservative_frag.partition,
-    but with RINGS ONLY frozen (no FG heads). Everything non-ring becomes the linker tier."""
+    but with RINGS ONLY frozen (no FG heads). Everything non-ring becomes the linker tier.
+    fused_only=True: ring groups = fused/spiro systems only (see _ring_groups); default = assemblies."""
 
     def part(mol, **kwargs):
         n = mol.GetNumAtoms()
         owner = [-1] * n
         ids = {}
         fid = 0
-        for comp in _ring_groups(mol, break_fused_rings):       # rings (frozen)
+        for comp in _ring_groups(mol, break_fused_rings, fused_only):   # rings (frozen)
             ids[fid] = ec._ring_key(mol, comp)
             for a in comp:
                 owner[a] = fid
