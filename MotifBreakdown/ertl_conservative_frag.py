@@ -33,6 +33,11 @@ from typing import Dict, List, Set, Tuple
 import rdkit
 from rdkit import Chem
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from canon_smiles import canonical_fragment_smiles
+
 K_MAX_HEAVY = 6
 
 # ── canonical EFGs — REQUIRED, no fallback ───────────────────────────────────
@@ -140,8 +145,10 @@ def _ring_key(mol: Chem.Mol, comp) -> str:
         Chem.RemoveStereochemistry(km)
         for b in km.GetBonds():
             b.SetBondDir(Chem.BondDir.NONE)
-    return 'ring:' + Chem.MolFragmentToSmiles(km, atomsToUse=sorted(comp), canonical=True,
-                                              isomericSmiles=_ISOMERIC_RING_KEYS)
+    smi = Chem.MolFragmentToSmiles(km, atomsToUse=sorted(comp), canonical=True,
+                                   isomericSmiles=_ISOMERIC_RING_KEYS)
+    # re-canonicalize standalone: the order above depends on parent context -> duplicate ring keys
+    return 'ring:' + canonical_fragment_smiles(smi, _ISOMERIC_RING_KEYS)
 
 
 def partition(mol: Chem.Mol, subcut_chains: bool = False,

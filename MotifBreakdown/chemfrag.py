@@ -15,6 +15,7 @@ RDLogger.DisableLog('rdApp.*')
 # BRICS / rBRICS bond discovery lives in the shared module so the v4 cascade and
 # the legacy engine identify the same chemistry identically.
 import brics_rbrics as BR
+from canon_smiles import canonical_fragment_smiles
 
 # Shared tautomer canonicalizer (created once; reused). Normalizes tautomers so
 # the same compound in different tautomeric forms maps to ONE canonical key,
@@ -64,7 +65,12 @@ def _strip(smi):
         # Clear ALL atom-map numbers so chemically identical fragments from
         # different parent atoms share one motif key (e.g. *[NH:4]* → *[NH]*).
         a.SetAtomMapNum(0)
-    return Chem.MolToSmiles(m, canonical=True, isomericSmiles=_ISOMERIC_KEYS)
+    out = Chem.MolToSmiles(m, canonical=True, isomericSmiles=_ISOMERIC_KEYS)
+    if _ISOMERIC_KEYS:
+        # clearing the dummy isotopes can leave a chiral tag on an atom that is no longer a
+        # stereocentre (*[C@H](*)C vs *[C@@H](*)C = one group); re-parsing drops it
+        out = canonical_fragment_smiles(out, True)
+    return out
 
 def frag_key(mol, atomset):
     aset=set(atomset); N=mol.GetNumAtoms()
