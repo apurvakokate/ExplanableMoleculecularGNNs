@@ -373,9 +373,10 @@ def _frag_smiles(mol, atoms, isomeric):
                 if a.GetAtomicNum() == 0:
                     a.SetIsotope(0); a.SetAtomMapNum(0)
             try:
-                return Chem.MolToSmiles(pm, isomericSmiles=isomeric)
+                smi = Chem.MolToSmiles(pm, isomericSmiles=isomeric)
             except Exception:
                 return None
+            return _canon(smi, isomeric)
     return None
 
 
@@ -408,12 +409,24 @@ def _is_whole_ring_system(mol, atoms):
     return sub is not None and sub.GetNumAtoms() > 0 and all(a.IsInRing() for a in sub.GetAtoms())
 
 
+def _canon(smi, isomeric):
+    """Re-canonicalize a fragment SMILES standalone (MotifBreakdown/canon_smiles.py, shared with the
+    FM-BPE ring keys). Written out of the parent, the atom order depends on parent context, so one
+    ring got several keys (2026-10-18 duplicate-key fix)."""
+    mb = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if mb not in sys.path:
+        sys.path.insert(0, mb)
+    from canon_smiles import canonical_fragment_smiles
+    return canonical_fragment_smiles(smi, isomeric)
+
+
 def _ring_smiles(mol, atoms, keep_stereo=False):
     from rdkit import Chem
     km = Chem.Mol(mol)
     if not keep_stereo:
         Chem.RemoveStereochemistry(km)
-    return Chem.MolFragmentToSmiles(km, atomsToUse=sorted(atoms), canonical=True, isomericSmiles=keep_stereo)
+    smi = Chem.MolFragmentToSmiles(km, atomsToUse=sorted(atoms), canonical=True, isomericSmiles=keep_stereo)
+    return _canon(smi, keep_stereo)
 
 
 def keys_for(mol, atoms):
