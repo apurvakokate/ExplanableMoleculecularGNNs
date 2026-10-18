@@ -16,7 +16,7 @@ The label-dependent minority-class rescue is deliberately NOT used, so lambda* s
 at MoSE time the rescue can only keep MORE motifs.
 
 lambda* is found by GRID-THEN-REFINE (larger lambda -> fewer merges -> fewer violations):
-  1. coarse half-decade grid 0.1, 0.3, 1, 3, ..., 10000 -> the full curve (merges, violations,
+  1. coarse half-decade grid 0.001, 0.003, ..., 10000 -> the full curve (merges, violations,
      coverage, vocab) and a direct monotonicity check;
   2. bisection in log-lambda ONLY inside the bracket [last failing grid point, first passing one].
 Every probe is logged; non_monotone=true flags a pass/fail pattern that is not fail..fail,pass..pass.
@@ -57,7 +57,9 @@ def _coverage(cnt, size, tot_atoms, cut):
     return 100.0 * kept_atoms / max(tot_atoms, 1)
 
 
-GRID = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0]
+# 0.001-0.03 added 2026-10-18: with canonical ring keys esol fold 0 still passed at 0.1 (holds_at_grid_min);
+# where 0.1 fails the bracket and bisection are unchanged, so every other lambda* is identical.
+GRID = [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0]
 
 
 def probe(learn_smi, lam, cut, finest_cnt, start, freeze_rings, start_graphs,
