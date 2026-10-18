@@ -99,7 +99,12 @@ def main():
     ap.add_argument('--fold', type=int, default=0, help='mining fold (rBRICS vocab_meta uses 0)')
     ap.add_argument('--refine_iters', type=int, default=8,
                     help='log-lambda bisection steps inside the failing/passing grid bracket')
-    ap.add_argument('--start', default='union', choices=['union', 'atomic'])
+    ap.add_argument('--start', default='union', choices=['union', 'union_frag', 'atomic'],
+                    help="union = rings explicitly separated (completed runs); union_frag = SFO blocks")
+    ap.add_argument('--isomeric', action='store_true',
+                    help='motif keys keep chirality/E-Z/isotopes (acyclic AND ring keys); default non-isomeric')
+    ap.add_argument('--grow_rings', action='store_true',
+                    help='un-freeze ring blocks so they take part in the merge (default: rings frozen)')
     ap.add_argument('--criterion', required=True, choices=['cov_eps', 'zero_types'],
                     help="pass test per probe (no default: the choice is always explicit)")
     ap.add_argument('--eps_cov', type=float, default=None,
@@ -109,7 +114,9 @@ def main():
         raise ValueError(f'--criterion cov_eps needs --eps_cov >= 0 (got {args.eps_cov})')
     if args.criterion == 'zero_types' and args.eps_cov is not None:
         raise ValueError('--eps_cov is only meaningful with --criterion cov_eps')
-    freeze_rings = True
+    freeze_rings = not args.grow_rings
+    import chemfrag, ertl_conservative_frag
+    chemfrag.set_isomeric_keys(args.isomeric); ertl_conservative_frag.set_isomeric_ring_keys(args.isomeric)
 
     df = pd.read_csv(os.path.join(args.data_root, f'{args.dataset}_{args.fold}.csv'))
     tv = df[df['group'].isin(_TRAINVAL)]
@@ -173,7 +180,7 @@ def main():
                ring_grouping='fused_only',      # fm_bpe._finest_graph: ring_mdl.make_partition(fused_only=True)
                criterion=args.criterion, eps_cov=args.eps_cov,
                rdkit_version=Chem.rdBase.rdkitVersion,
-               freeze_rings=freeze_rings,
+               freeze_rings=freeze_rings, isomeric_keys=args.isomeric,
                lambda_star=(lam_star if accepted else None),   # None => vocab stage refuses
                lambda_candidate=lam_star, accepted=accepted, status=status,
                bracket=bracket, grid=GRID, refine_iters=args.refine_iters,

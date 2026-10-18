@@ -37,12 +37,19 @@ def canon_mol(s):
     return Chem.MolToSmiles(m, canonical=True, isomericSmiles=False)
 
 _NORMALIZE_DUMMY_WILDCARDS = True
+_ISOMERIC_KEYS = False   # True: motif keys keep chirality, E/Z and isotopes (opt-in, 2026-10-17)
 
 
 def set_normalize_dummy_wildcards(v: bool) -> None:
     """Match molfragbpe5.strip / generate_vocab_rules --preserve_typed_dummies."""
     global _NORMALIZE_DUMMY_WILDCARDS
     _NORMALIZE_DUMMY_WILDCARDS = v
+
+
+def set_isomeric_keys(v: bool) -> None:
+    """frag_key keeps stereochemistry + isotopes when True. Default False (non-isomeric keys, unchanged)."""
+    global _ISOMERIC_KEYS
+    _ISOMERIC_KEYS = bool(v)
 
 
 def _strip(smi):
@@ -57,12 +64,12 @@ def _strip(smi):
         # Clear ALL atom-map numbers so chemically identical fragments from
         # different parent atoms share one motif key (e.g. *[NH:4]* → *[NH]*).
         a.SetAtomMapNum(0)
-    return Chem.MolToSmiles(m, canonical=True, isomericSmiles=False)
+    return Chem.MolToSmiles(m, canonical=True, isomericSmiles=_ISOMERIC_KEYS)
 
 def frag_key(mol, atomset):
     aset=set(atomset); N=mol.GetNumAtoms()
     cross=[b.GetIdx() for b in mol.GetBonds() if (b.GetBeginAtomIdx() in aset)!=(b.GetEndAtomIdx() in aset)]
-    if not cross: return _strip(Chem.MolToSmiles(mol, isomericSmiles=False))
+    if not cross: return _strip(Chem.MolToSmiles(mol, isomericSmiles=_ISOMERIC_KEYS))
     fr=Chem.FragmentOnBonds(mol,cross,addDummies=True)
     for pa,pm in zip(Chem.GetMolFrags(fr,asMols=False),Chem.GetMolFrags(fr,asMols=True,sanitizeFrags=False)):
         if {a for a in pa if a<N}==aset:
@@ -70,7 +77,7 @@ def frag_key(mol, atomset):
                 Chem.SanitizeMol(pm)
             except Exception:
                 pass
-            return _strip(Chem.MolToSmiles(pm, isomericSmiles=False))
+            return _strip(Chem.MolToSmiles(pm, isomericSmiles=_ISOMERIC_KEYS))
     return None
 
 # ── partition primitives ──

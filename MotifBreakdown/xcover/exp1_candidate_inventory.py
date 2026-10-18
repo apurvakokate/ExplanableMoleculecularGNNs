@@ -420,7 +420,15 @@ def keys_for(mol, atoms):
 
     L2_production  -- rings agnostic, everything else L2      <- what the method uses
     L2_allctx      -- L2 for EVERYTHING including rings       <- the ablation arm
+
+    SFO_AGNOSTIC_ACYCLIC=1 makes ACYCLIC fragments agnostic too (production key = L1,
+    boundary context dropped) -- the same treatment rings already get. This re-aggregates
+    a linker's support across contexts instead of shattering it, so the vocab deflates
+    and filtered coverage recovers; the neighbour identity is still carried by the
+    adjacent motif in the motif graph.
     """
+    import os as _os
+    agnostic = _os.environ.get('SFO_AGNOSTIC_ACYCLIC', '0') not in ('0', '', 'false', 'no')
     is_ring = _is_whole_ring_system(mol, atoms)
     l0 = _frag_smiles(mol, atoms, isomeric=False)
     l1 = _frag_smiles(mol, atoms, isomeric=True)
@@ -429,7 +437,8 @@ def keys_for(mol, atoms):
     if is_ring:
         ring_key = 'ring:' + _ring_smiles(mol, atoms)
         return l0, l1, ring_key, (l2 or ring_key), True
-    return l0, l1, l2, l2, False
+    prod = l1 if (agnostic and l1) else l2       # agnostic acyclic: drop boundary context
+    return l0, l1, prod, l2, False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,6 +460,17 @@ def s_structure(n_atoms, n_attach, form='size'):
     """
     if n_atoms <= 0:
         return 0.0
+    if form == 'sizeramp':
+        # SIZE RAMP: a pure 0->1 size score with NO attachment penalty (a functional
+        # group is not penalised for having many attachment points).  0 at a single atom,
+        # 1 at SFO_FG_MAX_ATOMS (the largest functional group we care about), linear
+        # between, clamped at 1 above.  Monotone in size (like the 'size' form), so the
+        # root guard + S_support are what prevent the degenerate whole-molecule cover.
+        if n_atoms <= 1:
+            return 0.0
+        import os as _os
+        nmax = int(_os.environ.get('SFO_FG_MAX_ATOMS', 12))
+        return min(1.0, (n_atoms - 1) / max(1, nmax - 1))
     if form == 'sizefree':
         # SIZE-FREE: only the non-triviality floor (1 atom is not a structure) and
         # boundary quality, which is attachment count relative to size.  Does NOT
@@ -508,6 +528,25 @@ def process_molecule(args):
         cuts, rounds = set().union(*per_method.values()), 0
     n_new = len(cuts) - len(set().union(*per_method.values()))
 
+    # OPT-IN ablation switches (env, read per molecule so pool workers inherit them). DEFAULTS reproduce
+    # the deployed SFO exactly. Added 2026-10-16 for the FM-BPE x SFO ring factorial:
+    #   SFO_DOUBLE_CUTS=0          drop the fragmenters' double/triple-bond cuts (FM-BPE convention: C=O,
+    #                              C=N, exocyclic C=C are never boundaries) -> identical blocks to FM-BPE
+    #   SFO_RING_BOUNDARY=explicit cut EVERY non-ring bond touching a ring atom (rings explicitly separated,
+    #                              as FM-BPE start='union'); default 'union' = only where a fragmenter cuts
+    #   SFO_RING_GROW=0            a candidate containing a ring block may not include any other block
+    _dbl = os.environ.get('SFO_DOUBLE_CUTS', '1') != '0'
+    _rb = os.environ.get('SFO_RING_BOUNDARY', 'union')
+    _grow = os.environ.get('SFO_RING_GROW', '1') != '0'
+    if _rb not in ('union', 'explicit'):
+        raise ValueError(f"SFO_RING_BOUNDARY must be 'union' or 'explicit', got {_rb!r}")
+    if not _dbl:
+        cuts = {bi for bi in cuts if mol.GetBondWithIdx(bi).GetBondType() == Chem.BondType.SINGLE}
+    if _rb == 'explicit':
+        cuts = cuts | {b.GetIdx() for b in mol.GetBonds()
+                       if not b.IsInRing() and (b.GetBeginAtom().IsInRing() or b.GetEndAtom().IsInRing())}
+    ring_atoms = {a.GetIdx() for a in mol.GetAtoms() if a.IsInRing()}
+
     blocks = _blocks(mol, cuts)
     # VALIDATION: the blocks must be an exact partition of the atoms.
     cover = set().union(*blocks) if blocks else set()
@@ -534,6 +573,8 @@ def process_molecule(args):
     n_single_kept = 0
     n_unkeyable = 0
     for u in unions:
+        if not _grow and len(u) > 1 and any(blocks[i] & ring_atoms for i in u):
+            continue                       # SFO_RING_GROW=0: ring blocks may not union with anything
         atoms = set()
         for i in u:
             atoms |= blocks[i]

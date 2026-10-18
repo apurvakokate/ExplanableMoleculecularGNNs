@@ -125,13 +125,23 @@ def _kept(mol: Chem.Mol, s: Set[int], ring: Set[int]) -> bool:
     return True
 
 
+_ISOMERIC_RING_KEYS = False   # True: ring keys keep stereo (opt-in, 2026-10-17); default strips (unchanged)
+
+
+def set_isomeric_ring_keys(v: bool) -> None:
+    global _ISOMERIC_RING_KEYS
+    _ISOMERIC_RING_KEYS = bool(v)
+
+
 def _ring_key(mol: Chem.Mol, comp) -> str:
-    """'ring:<canonical, stereo-stripped SMILES>' for a (whole) ring system."""
+    """'ring:<canonical SMILES>' for a (whole) ring system; stereo-stripped unless _ISOMERIC_RING_KEYS."""
     km = Chem.Mol(mol)
-    Chem.RemoveStereochemistry(km)
-    for b in km.GetBonds():
-        b.SetBondDir(Chem.BondDir.NONE)
-    return 'ring:' + Chem.MolFragmentToSmiles(km, atomsToUse=sorted(comp), canonical=True)
+    if not _ISOMERIC_RING_KEYS:
+        Chem.RemoveStereochemistry(km)
+        for b in km.GetBonds():
+            b.SetBondDir(Chem.BondDir.NONE)
+    return 'ring:' + Chem.MolFragmentToSmiles(km, atomsToUse=sorted(comp), canonical=True,
+                                              isomericSmiles=_ISOMERIC_RING_KEYS)
 
 
 def partition(mol: Chem.Mol, subcut_chains: bool = False,

@@ -94,15 +94,24 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
 
     start='atomic' (default): every non-ring atom is its own block (finest='all_bonds' cuts every
       single acyclic bond) — the absolute finest; the merge can reach ANY partition.
-    start='union': collapse the atomic linker blocks across every single acyclic bond that NO
-      fragmenter proposes, leaving the union-of-fragmenters (SFO-pool) blocks — chemically admissible
-      boundaries only; the merge can only coarsen them.
+    start='union' — RINGS EXPLICITLY SEPARATED (used by the completed fmbpe_v2 runs; unchanged): fused ring
+      systems are frozen bare blocks first, so EVERY non-ring bond touching a ring atom (ring–substituent and
+      ring–ring) is a boundary; among non-ring atoms, blocks merge across every SINGLE bond no fragmenter
+      cuts (union of BRICS + rBRICS + RECAP + CRUSH, to a fixpoint). Verified rule, 37,850/37,850 molecules.
+    start='union_frag' — RINGS CUT ONLY WHERE THE FRAGMENTER UNION CUTS (= SFO's starting blocks, added
+      2026-10-16): blocks merge across EVERY bond no fragmenter cuts, ring–substituent bonds included, so a
+      halogen / exocyclic =O (never cut by any fragmenter) joins its ring's block while ring–CH3/–NH2/–OH
+      usually stay separate. Ring bonds are never cut. Like 'union', FM-BPE never cuts a double/triple bond
+      (C=O, C=N, exocyclic C=C) — the one deliberate difference from SFO's raw blocks. Verified identical to
+      SFO's blocks with SFO's double-bond cuts ignored, every train+val molecule of 7 datasets.
+    In both union starts a block containing ring atoms is FROZEN (never merged by FM-BPE); a bare ring
+    system keeps the substituent-agnostic `ring:` key, a decorated ring gets the attachment-aware frag_key.
 
-    freeze_rings=True (default): rings stay frozen -> bare substituent-agnostic `ring:` tokens, never
-      merged (matches ring_mdl / SFO / the deployed pipeline). freeze_rings=False: rings are un-frozen
-      and may grow outward (attachment-aware), the old growable-ring ablation."""
-    if start not in ('atomic', 'union'):
-        raise ValueError(f"unknown start {start!r}; expected 'atomic' or 'union'")
+    freeze_rings=True (default): ring blocks stay frozen ("rings don't grow"). freeze_rings=False: every
+      block is un-frozen after the start is built, so ring blocks take part in the MDL merge like any other
+      block ("rings grow": ring+substituent and ring+ring merges become candidates)."""
+    if start not in ('atomic', 'union', 'union_frag'):
+        raise ValueError(f"unknown start {start!r}; expected 'atomic', 'union' or 'union_frag'")
     if mol is None:
         raise ValueError("_finest_graph got mol=None (unparseable SMILES)")
     # fused_only=True: a ring motif is a FUSED/spiro system; rings joined by a non-ring bond (biaryl)
@@ -112,9 +121,11 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
     g = _MolGraph(mol, finest='all_bonds', freeze='rings',
                   fg_partition=ring_mdl.make_partition(fused_only=True))
     if start == 'union':
+        # ORIGINAL loop (completed runs): merge linker atoms across every NON-voted single acyclic bond;
+        # frozen ring blocks are never touched, so every ring boundary bond stays a boundary.
         U = _union_cut_bonds(mol)
         changed = True
-        while changed:                                  # merge linker atoms across every NON-voted bond
+        while changed:
             changed = False
             a2n = {a: ni for ni, at in enumerate(g.atoms) for a in at}
             for b in mol.GetBonds():
@@ -127,8 +138,25 @@ def _finest_graph(mol: Chem.Mol, freeze_rings: bool = True, start: str = 'atomic
                 if frozenset((ai, aj)) in U:
                     continue                            # union boundary -> keep this cut
                 g._merge_nodes(i, j); changed = True; break   # indices shift -> restart scan
+    elif start == 'union_frag':
+        U = _union_cut_bonds(mol)
+        changed = True
+        while changed:                                  # merge blocks across every bond NO fragmenter cuts
+            changed = False
+            a2n = {a: ni for ni, at in enumerate(g.atoms) for a in at}
+            for b in mol.GetBonds():
+                ai, aj = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+                i, j = a2n[ai], a2n[aj]
+                if i == j:
+                    continue                            # already one block
+                if frozenset((ai, aj)) in U and b.GetBondType() == Chem.BondType.SINGLE:
+                    continue                            # a fragmenter cuts this SINGLE bond -> keep the boundary
+                # (double/triple bonds are never boundaries in FM-BPE, even where a fragmenter cuts one)
+                if g.frozen[j] and not g.frozen[i]:
+                    i, j = j, i                         # merge INTO the ring block so it stays frozen
+                g._merge_nodes(i, j); changed = True; break   # indices shift -> restart scan
     if not freeze_rings:
-        g.frozen = [False] * len(g.frozen)              # un-freeze -> rings may grow (ablation)
+        g.frozen = [False] * len(g.frozen)              # un-freeze -> rings grow (take part in the merge)
     return g
 
 
