@@ -408,11 +408,12 @@ def _is_whole_ring_system(mol, atoms):
     return sub is not None and sub.GetNumAtoms() > 0 and all(a.IsInRing() for a in sub.GetAtoms())
 
 
-def _ring_smiles(mol, atoms):
+def _ring_smiles(mol, atoms, keep_stereo=False):
     from rdkit import Chem
     km = Chem.Mol(mol)
-    Chem.RemoveStereochemistry(km)
-    return Chem.MolFragmentToSmiles(km, atomsToUse=sorted(atoms), canonical=True)
+    if not keep_stereo:
+        Chem.RemoveStereochemistry(km)
+    return Chem.MolFragmentToSmiles(km, atomsToUse=sorted(atoms), canonical=True, isomericSmiles=keep_stereo)
 
 
 def keys_for(mol, atoms):
@@ -429,13 +430,23 @@ def keys_for(mol, atoms):
     """
     import os as _os
     agnostic = _os.environ.get('SFO_AGNOSTIC_ACYCLIC', '0') not in ('0', '', 'false', 'no')
+    # SFO_ISOMERIC (2026-10-17, user decision: default NON-isomeric, same as FM-BPE):
+    #   '0' (DEFAULT)  no stereo/isotopes in acyclic or ring keys
+    #   '1'            stereo/isotopes in acyclic AND ring keys
+    #   'acyclic'      LEGACY = the deployed fragmentation_v2 SFO vocab (acyclic key isomeric L1, ring keys
+    #                  stereo-stripped). Set this to reproduce the deployed SFO vocabulary.
+    iso = _os.environ.get('SFO_ISOMERIC', '0')
+    if iso not in ('0', '1', 'acyclic'):
+        raise ValueError(f"SFO_ISOMERIC must be '0', '1' or 'acyclic', got {iso!r}")
     is_ring = _is_whole_ring_system(mol, atoms)
     l0 = _frag_smiles(mol, atoms, isomeric=False)
     l1 = _frag_smiles(mol, atoms, isomeric=True)
     ctx = _boundary_ctx(mol, atoms)
     l2 = (l1 + '|ctx=' + ctx) if l1 else None
+    if iso == '0':                                # non-isomeric everywhere: L0 replaces L1 in the keys
+        l1 = l0; l2 = (l0 + '|ctx=' + ctx) if l0 else None
     if is_ring:
-        ring_key = 'ring:' + _ring_smiles(mol, atoms)
+        ring_key = 'ring:' + _ring_smiles(mol, atoms, keep_stereo=(iso == '1'))
         return l0, l1, ring_key, (l2 or ring_key), True
     prod = l1 if (agnostic and l1) else l2       # agnostic acyclic: drop boundary context
     return l0, l1, prod, l2, False

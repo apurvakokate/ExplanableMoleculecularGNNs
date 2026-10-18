@@ -39,6 +39,7 @@ size.  The baselines being compared against DO cut into ring systems.
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 
@@ -59,9 +60,98 @@ S_FORM     = os.environ.get('SFO_S_FORM', 'log_floor')
 STRUCT     = os.environ.get('SFO_STRUCT', 'sizefree')
 LAM        = float(os.environ.get('SFO_LAM', 0.0))
 WORKERS    = int(os.environ.get('SFO_WORKERS', os.cpu_count() or 1))
-FIXPOINT   = os.environ.get('SFO_FIXPOINT', '1') != '0'
+FIXPOINT   = os.environ.get('SFO_FIXPOINT', '1') != '0'      # segmentation fixpoint (SECTION 3)
+EM_ROUNDS  = int(os.environ.get('SFO_EM_ROUNDS', 1))         # support-fixpoint rounds (1 = OFF, current)
+PRUNE_DOM  = os.environ.get('SFO_PRUNE_DOMINATED', '0') not in ('0', '', 'false', 'no')
 
 METHODS = {'size_frequency_optimization': 'sfo'}
+
+# Per-round context for the parallel solve workers.  On Linux ('fork') a pool created
+# AFTER this dict is updated inherits the current W/supported, so the large W dict is
+# never pickled per task -- only the (small) molecule record is.
+_CUR = {}
+
+
+def _solve_one(rec):
+    """Solve one molecule's exact-cover ILP with the current-round W in _CUR.
+    Returns [(key, atom_set), ...]; [] on missing molecule or infeasible ILP."""
+    if rec is None:
+        return []
+    W = _CUR['W']
+    mask, _clauses = _X.eligibility(rec['cand_list'], _CUR['supported'])
+    if _CUR['prune']:
+        mask = _prune_dominated(rec, W, mask)
+    got = _X.solve_partition(rec['blocks'], rec['cand_list'], W, rec['n_atoms'], LAM, mask=mask)
+    if got is None:
+        return []
+    sel, _val = got
+    frags = []
+    for j in sel:
+        bidx, key = rec['cand_list'][j]
+        atoms = set()
+        for i in bidx:
+            atoms |= set(rec['blocks'][i])
+        frags.append((key, atoms))
+    cover = set()                                    # hard guarantees (spec section 16)
+    for _k, a in frags:
+        assert not (cover & a), f"overlapping fragments in {rec['smiles']}"
+        cover |= a
+    assert cover == set(range(rec['n_atoms'])), f"incomplete cover in {rec['smiles']}"
+    return frags
+
+
+def _prune_dominated(rec, W, mask):
+    """Drop candidate F when covering F's atoms with its OWN sub-pieces already scores
+    >= W(F) (split_value).  Single blocks (irreducible, feasibility fallback) never pruned."""
+    cand_list, blocks = rec['cand_list'], rec['blocks']
+    m = list(mask)
+    for j, (bidx, key) in enumerate(cand_list):
+        if not m[j] or len(bidx) == 1:
+            continue
+        sv = _X.split_value(blocks, cand_list, W, m, j)
+        if sv is not None and W.get(key, 0.0) < sv:
+            m[j] = False
+    return m
+
+
+def _solve_all(records):
+    """Solve every molecule with the current _CUR (parallel across molecules)."""
+    if WORKERS > 1:
+        import multiprocessing as mp
+        with mp.Pool(WORKERS) as pool:               # fork inherits _CUR set by the caller
+            return pool.map(_solve_one, records, chunksize=16)
+    return [_solve_one(r) for r in records]
+
+
+def _selected_support(out):
+    """key -> number of DISTINCT molecules that SELECTED it this round."""
+    from collections import Counter
+    c = Counter()
+    for frags in out:
+        for k in {key for key, _a in frags}:
+            c[k] += 1
+    return c
+
+
+def _recompute_W(sel_sup, struct, cand_W):
+    """W from SELECTED support (support-fixpoint update).  Keys not selected last round
+    keep their candidate-prior W, so they stay available for coverage (never zeroed)."""
+    max_sup = max(sel_sup.values()) if sel_sup else 1
+    _lo = math.log1p(1)
+    denom = (math.log1p(max_sup) - _lo) if S_FORM == 'log_floor' else math.log1p(max_sup)
+    if denom <= 0:
+        denom = 1.0
+    W = {}
+    for key, (n_atoms, n_attach) in struct.items():
+        sup = sel_sup.get(key, 0)
+        if sup <= 0:
+            W[key] = cand_W.get(key, 0.0)            # not selected -> retain prior (coverage fallback)
+            continue
+        s_sup = ((math.log1p(sup) - _lo) / denom) if S_FORM == 'log_floor' else (math.log1p(sup) / denom)
+        s_sup = max(0.0, s_sup)
+        s_str = _X.s_structure(n_atoms, n_attach, form=STRUCT)
+        W[key] = s_str * s_sup if W_FORM == 'multiplicative' else (s_str + s_sup)
+    return W
 
 
 def _s_min(dataset, groups):
@@ -91,10 +181,14 @@ def build(smiles_all, method='size_frequency_optimization', groups=None,
         results = [_X.process_molecule(w) for w in work]
 
     okr = [r for r in results if r['ok']]
-    # ── corpus statistics, computed ONCE, before any selection ──────────────
+    by_smiles = {r['smiles']: r for r in okr}
+    records = [by_smiles.get(smi) for smi in smiles_all]   # None for unparseable molecules
+
+    # ── round-0 corpus statistics (CANDIDATE support) ───────────────────────
     rows, _sups = _X.aggregate(okr, 1.0, 1.0, 0.0, 0.0,
                                w_form=W_FORM, s_form=S_FORM, struct_form=STRUCT)
-    W_by_key = {r['key']: r['W'] for r in rows}
+    struct = {r['key']: (r['n_atoms'], r['n_attach']) for r in rows}
+    cand_W = {r['key']: r['W'] for r in rows}
     s_min, pct, n_tv = _s_min(dataset, groups)
     supported = {r['key']: (r['support'] >= s_min) for r in rows}
 
@@ -102,39 +196,35 @@ def build(smiles_all, method='size_frequency_optimization', groups=None,
         print(f'    [SFO] dataset={dataset or "?"} mols={len(okr)}/{len(smiles_all)} '
               f'candidates={len(rows)} S_min={s_min} (pct={pct} n_tv={n_tv}) '
               f'supported_keys={sum(supported.values())} '
-              f'w={W_FORM}/{S_FORM}/{STRUCT} lam={LAM}', flush=True)
+              f'w={W_FORM}/{S_FORM}/{STRUCT} lam={LAM} em_rounds={EM_ROUNDS} '
+              f'prune={PRUNE_DOM} workers={WORKERS}', flush=True)
 
-    # ── one exact-cover ILP per molecule ────────────────────────────────────
-    out, n_fail, n_gated, n_cand = [], 0, 0, 0
-    by_smiles = {r['smiles']: r for r in okr}
-    for smi in smiles_all:
-        r = by_smiles.get(smi)
-        if r is None:
-            out.append([]); continue
-        mask, clauses = _X.eligibility(r['cand_list'], supported)
-        n_gated += clauses.get('0_gated', 0); n_cand += len(mask)
-        got = _X.solve_partition(r['blocks'], r['cand_list'], W_by_key,
-                                 r['n_atoms'], LAM, mask=mask)
-        if got is None:
-            out.append([]); n_fail += 1; continue
-        sel, _val = got
-        frags = []
-        for j in sel:
-            bidx, key = r['cand_list'][j]
-            atoms = set()
-            for i in bidx:
-                atoms |= set(r['blocks'][i])
-            frags.append((key, atoms))
-        # hard guarantees, asserted per molecule (spec section 16)
-        cover = set()
-        for _k, a in frags:
-            assert not (cover & a), f'overlapping fragments in {smi}'
-            cover |= a
-        assert cover == set(range(r['n_atoms'])), f'incomplete cover in {smi}'
-        out.append(frags)
+    # ── support-fixpoint: solve all molecules (parallel), recompute support from the
+    #    SELECTIONS, repeat.  Round 0 uses candidate support; each later round uses the
+    #    previous round's selected support.  Constant WITHIN a round (parallel-safe),
+    #    updated BETWEEN rounds (reflects the solution) -- not greedy, not frozen. ──
+    _CUR['supported'] = supported
+    _CUR['prune'] = PRUNE_DOM
+    W_by_key = dict(cand_W)
+    out, prev_sig, rounds_run = None, None, 0
+    for rnd in range(max(1, EM_ROUNDS)):
+        _CUR['W'] = W_by_key
+        out = _solve_all(records)
+        rounds_run = rnd + 1
+        if EM_ROUNDS <= 1:
+            break
+        sel_sup = _selected_support(out)
+        sig = tuple(sorted(sel_sup.items()))
+        if verbose:
+            print(f'    [SFO] EM round {rnd}: selected_keys={len(sel_sup)} '
+                  f'max_sel_sup={max(sel_sup.values()) if sel_sup else 0}', flush=True)
+        if sig == prev_sig:                                # converged
+            break
+        prev_sig = sig
+        W_by_key = _recompute_W(sel_sup, struct, cand_W)
 
+    n_fail = sum(1 for i, f in enumerate(out) if not f and records[i] is not None)
     if verbose:
-        print(f'    [SFO] solved={len(smiles_all)-n_fail}/{len(smiles_all)} '
-              f'infeasible={n_fail} gated={100.0*n_gated/max(n_cand,1):.1f}% of candidates',
-              flush=True)
+        print(f'    [SFO] rounds={rounds_run} solved={len(smiles_all)-sum(1 for f in out if not f)}'
+              f'/{len(smiles_all)} infeasible={n_fail}', flush=True)
     return out
