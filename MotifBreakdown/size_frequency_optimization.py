@@ -183,9 +183,21 @@ def build(smiles_all, method='size_frequency_optimization', groups=None,
     okr = [r for r in results if r['ok']]
     by_smiles = {r['smiles']: r for r in okr}
     records = [by_smiles.get(smi) for smi in smiles_all]   # None for unparseable molecules
+    # SFO_SUPPORT_SPLIT (opt-in, 2026-10-18): 'all' (DEFAULT = deployed) counts candidate support and every EM
+    # round's selected support over ALL molecules passed (test included -> transductive); 'trainval' counts them
+    # over train+val molecules only (test molecules are still partitioned, scored with that train+val W).
+    split = os.environ.get('SFO_SUPPORT_SPLIT', 'all')
+    if split not in ('all', 'trainval'):
+        raise ValueError(f"SFO_SUPPORT_SPLIT must be 'all' or 'trainval', got {split!r}")
+    if len(groups) != len(smiles_all):
+        raise ValueError(f'groups ({len(groups)}) and smiles_all ({len(smiles_all)}) differ in length')
+    stat_idx = [i for i, g in enumerate(groups) if split == 'all' or g in ('training', 'valid')]
+    if not stat_idx:
+        raise ValueError('SFO_SUPPORT_SPLIT=trainval but no training/valid molecules')
+    stat_recs = [records[i] for i in stat_idx if records[i] is not None]
 
     # ── round-0 corpus statistics (CANDIDATE support) ───────────────────────
-    rows, _sups = _X.aggregate(okr, 1.0, 1.0, 0.0, 0.0,
+    rows, _sups = _X.aggregate(stat_recs, 1.0, 1.0, 0.0, 0.0,
                                w_form=W_FORM, s_form=S_FORM, struct_form=STRUCT)
     struct = {r['key']: (r['n_atoms'], r['n_attach']) for r in rows}
     cand_W = {r['key']: r['W'] for r in rows}
@@ -197,7 +209,7 @@ def build(smiles_all, method='size_frequency_optimization', groups=None,
               f'candidates={len(rows)} S_min={s_min} (pct={pct} n_tv={n_tv}) '
               f'supported_keys={sum(supported.values())} '
               f'w={W_FORM}/{S_FORM}/{STRUCT} lam={LAM} em_rounds={EM_ROUNDS} '
-              f'prune={PRUNE_DOM} workers={WORKERS}', flush=True)
+              f'prune={PRUNE_DOM} workers={WORKERS} support_split={split} stat_mols={len(stat_recs)}', flush=True)
 
     # ── support-fixpoint: solve all molecules (parallel), recompute support from the
     #    SELECTIONS, repeat.  Round 0 uses candidate support; each later round uses the
@@ -213,7 +225,7 @@ def build(smiles_all, method='size_frequency_optimization', groups=None,
         rounds_run = rnd + 1
         if EM_ROUNDS <= 1:
             break
-        sel_sup = _selected_support(out)
+        sel_sup = _selected_support([out[i] for i in stat_idx])
         sig = tuple(sorted(sel_sup.items()))
         if verbose:
             print(f'    [SFO] EM round {rnd}: selected_keys={len(sel_sup)} '
