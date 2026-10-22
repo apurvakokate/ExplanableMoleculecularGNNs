@@ -421,9 +421,13 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
             viz_logger=viz_logger,
             wandb_logger=wandb_logger,
             epoch_hook=_expl_tracker,
+            ckpt_rule=getattr(cfg, 'ckpt_rule', 'any'),
         )
         if _expl_logger is not None:
             _expl_logger.close()
+        # Per-epoch curves (train loss terms, r, val metric, smoothed val loss, best_epoch).
+        with open(out_dir / "history.json", "w") as f:
+            json.dump(history, f, indent=2, default=float)
 
     # Evaluate all splits. For regression, also report MAE/RMSE in the original
     # target units (denormalised via the train z-score std).
@@ -842,6 +846,9 @@ def main():
                         help="Early-stop patience; overrides MotifSATConfig default "
                              "(20) only when set. Ablation raises it to 100 for M1 "
                              "(balanced-sampler) runs; normal runs leave it unset.")
+    parser.add_argument("--ckpt_rule", default=None, choices=["any", "gsat"],
+                        help="Checkpoint rule; overrides config only when set. "
+                             "gsat = official GSAT (post-anneal, epoch>10, ties->val loss).")
     parser.add_argument("--conv_normalize", default="none",
                         choices=["l2", "layernorm", "none"],
                         help="Per-conv normalization (default l2).")
@@ -939,6 +946,8 @@ def main():
     # otherwise). Applies to both the --config and constructor branches.
     if args.patience is not None:
         cfg.patience = args.patience
+    if args.ckpt_rule is not None:
+        cfg.ckpt_rule = args.ckpt_rule
     run(cfg, per_split_eval=args.per_split_eval)
 
 

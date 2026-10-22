@@ -54,6 +54,7 @@ MotifSAT pickle files (per dataset/variant, under {out_dir}/{dataset}/{variant}/
 --------------------------------------------------------------------------------
 {base}_lookup_all.pickle           pre-threshold SMILES → atom maps (all fold-0 pool)
 {base}_mol_fragment_smarts.pickle  per-SMILES fragment lists (per-fold threshold support)
+{base}_mol_fragment_copies.pickle  smiles -> [(smarts, motif_id, [atom_idx...]) per copy] (pre-threshold ids)
 {base}_graph_lookup.pickle         smiles -> {node_idx: (smarts, motif_id)} (fold-0 train, thresholded)
 {base}_valid_graph_lookup.pickle   same for valid split
 {base}_test_graph_lookup.pickle    same for test split
@@ -265,6 +266,7 @@ _REBRICS_CHAIN = Chem.MolFromSmiles("CCCCCC")
 
 def _rebrics_pass_tracked(
     level1: List[Tuple[str, Set[int], Dict[int, int]]],
+    parent: Chem.Mol,
 ) -> List[Tuple[str, Set[int]]]:
     """reBRICS post-pass on rBRICS fragments (matches molfragbpe5.cut_rbrics).
 
@@ -272,6 +274,10 @@ def _rebrics_pass_tracked(
     after the initial FindrBRICSBonds cut — unioning reBRICS bonds on the whole
     parent molecule (rbrics_full_bonds) misses those cuts and collapses pass 1
     vs pass 2 on most drug-like molecules.
+
+    ``parent`` = the molecule level1 was cut from; atom maps of re-parsed fragments
+    are taken from it (_stamp_mol_from_parent). Before 2026-10-21 this used
+    _stamp_mol(smarts, idx_map), which mis-assigned atoms (see that docstring).
     """
     import brics_rbrics as BR
     if not BR.RBRICS_OK or _REBRICS_CHAIN is None:
@@ -307,7 +313,7 @@ def _rebrics_pass_tracked(
                 new_breakable.append(False)
                 continue
 
-            fm_mapped = _stamp_mol(smarts, idx_map)
+            fm_mapped = _stamp_mol_from_parent(smarts, orig_set, parent)
             if fm_mapped is None:
                 new_pool.append((smarts, orig_set, idx_map))
                 new_breakable.append(False)
@@ -387,6 +393,73 @@ def _stamp_mol(smarts: str, idx_map: Dict[int, int]) -> Optional[Chem.Mol]:
         fi = atom.GetIdx()
         if fi in idx_map:
             atom.SetAtomMapNum(idx_map[fi] + 1)
+    return rw.GetMol()
+
+
+def _stamp_mol_from_parent(smarts: str, orig_set: Set[int],
+                           parent: Chem.Mol) -> Chem.Mol:
+    """Like _stamp_mol, but the atom-map numbers come from the PARENT molecule.
+
+    ``frag.to_mol(smarts)`` re-parses the canonical SMARTS, so its atom order is the
+    canonical order, NOT the order of the piece the old ``idx_map`` was keyed by —
+    stamping with that map attached original indices to the wrong atoms (reBRICS
+    sub-pieces then recorded wrong, often disconnected, atom sets). Here the re-parsed
+    fragment is matched to the parent's induced subgraph on ``orig_set`` (element +
+    connectivity) and each atom is stamped with its matched parent index. The
+    re-parsed mol itself is unchanged, so reBRICS cut decisions and motif keys are
+    identical to the old path; only the atom assignment is corrected.
+    Fails loudly if the fragment is not isomorphic to its recorded atoms.
+    """
+    import networkx as nx
+    from networkx.algorithms import isomorphism as _iso
+    m = frag.to_mol(smarts)
+    raw = Chem.MolFromSmiles(smarts, sanitize=False)   # keeps the [*] attachment atoms
+    if m is None or raw is None:
+        raise ValueError(f"_stamp_mol_from_parent: unparsable fragment {smarts!r}")
+    # to_mol turns [*] into H and drops it, so heavy-atom order is preserved: heavy atom
+    # #i of `raw` is atom i of `m`. d[i] = number of [*] attachments on that atom.
+    heavy = [a for a in raw.GetAtoms() if a.GetAtomicNum() != 0]
+    if len(heavy) != m.GetNumAtoms():
+        raise ValueError(f"_stamp_mol_from_parent: heavy-atom mismatch for {smarts!r}")
+    d = [sum(1 for nb in a.GetNeighbors() if nb.GetAtomicNum() == 0) for a in heavy]
+
+    s = set(orig_set)
+    gk = nx.Graph(); gp = nx.Graph()
+    for a in m.GetAtoms():
+        gk.add_node(a.GetIdx(), el=a.GetAtomicNum(), d=d[a.GetIdx()])
+    for b in m.GetBonds():
+        gk.add_edge(b.GetBeginAtomIdx(), b.GetEndAtomIdx())
+    for a in sorted(s):
+        at = parent.GetAtomWithIdx(a)
+        gp.add_node(a, el=at.GetAtomicNum(),
+                    ext=sum(1 for nb in at.GetNeighbors() if nb.GetIdx() not in s))
+    for b in parent.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        if i in s and j in s:
+            gp.add_edge(i, j)
+
+    # The key = recorded atoms minus the bonds cut around/inside them (rBRICS may cut a
+    # ring bond whose two ends stay in this piece). So map key -> parent atoms such that
+    # every key bond is a parent bond (spanning monomorphism) and, per atom,
+    #   [*] count == bonds leaving the piece + internal bonds absent from the key.
+    # This pins the cut bonds exactly; remaining freedom is automorphism-equivalent.
+    mapping = None
+    if gk.number_of_nodes() == gp.number_of_nodes():
+        gm = _iso.GraphMatcher(
+            gp, gk, node_match=lambda pa, ka: pa['el'] == ka['el'] and ka['d'] >= pa['ext'])
+        for mp in gm.subgraph_monomorphisms_iter():         # parent atom -> key atom
+            if all(gk.nodes[k]['d'] == gp.nodes[p]['ext'] + gp.degree(p) - gk.degree(k)
+                   for p, k in mp.items()):
+                mapping = {k: p for p, k in mp.items()}
+                break
+    if mapping is None:
+        raise ValueError(
+            f"_stamp_mol_from_parent: fragment {smarts!r} ({gk.number_of_nodes()} atoms) "
+            f"does not match its recorded parent atoms {sorted(orig_set)} "
+            f"in {Chem.MolToSmiles(parent)!r}")
+    rw = Chem.RWMol(m)
+    for fi, pi in mapping.items():
+        rw.GetAtomWithIdx(fi).SetAtomMapNum(pi + 1)
     return rw.GetMol()
 
 
@@ -699,7 +772,7 @@ def fragment_molecule_tracked(mol: Chem.Mol,
 
     if method == 'rbrics':
         level1 = _rbrics_pass1_tracked(mol, orig_smi)
-        all_pieces = _rebrics_pass_tracked(level1)
+        all_pieces = _rebrics_pass_tracked(level1, mol)
     elif method == 'brics':
         rw = Chem.RWMol(mol)
         for atom in rw.GetAtoms():
@@ -964,7 +1037,8 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
                  is_regression: bool = False,
                  apply_threshold: bool = False,
                  threshold_pct: Optional[float] = None,
-                 mining_fold: int = 0) -> dict:
+                 mining_fold: int = 0,
+                 mol_fragment_copies: Optional[dict] = None) -> dict:
 
     vdir = out_dir / dataset / variant
     vdir.mkdir(parents=True, exist_ok=True)
@@ -978,6 +1052,8 @@ def save_outputs(out_dir: Path, dataset: str, variant: str,
     # MotifSAT pickle files
     dump(lookup_all_raw, base + '_lookup_all.pickle')
     dump(mol_fragment_smarts, base + '_mol_fragment_smarts.pickle')
+    if mol_fragment_copies is not None:
+        dump(mol_fragment_copies, base + '_mol_fragment_copies.pickle')
     dump(lookup_train,  base + '_graph_lookup.pickle')
     dump(lookup_valid,  base + '_valid_graph_lookup.pickle')
     dump(lookup_test,   base + '_test_graph_lookup.pickle')
@@ -1840,6 +1916,14 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
         smi: [smarts for smarts, _ in mf]
         for smi, mf in zip(smiles_all, mol_frags_tracked)
     }
+    # Copy identity: the flat lookups above lose WHICH copy an atom belongs to (two
+    # bonded copies of one motif become one atom group). One entry per copy, in the
+    # same order as mol_fragment_smarts; motif_id is pre-threshold (as lookup_all_raw).
+    mol_fragment_copies = {
+        smi: [(smarts, frag_to_id.get(smarts, -1), sorted(int(a) for a in atoms))
+              for smarts, atoms in mf]
+        for smi, mf in zip(smiles_all, mol_frags_tracked)
+    }
 
     # Lookup + matrix (threshold remaps below-cutoff nodes to -1)
     lookup_all = build_lookup(smiles_all, mol_frags_tracked, frag_to_id,
@@ -1933,6 +2017,7 @@ def run_dataset(dataset: str, data_root: str, out_dir: Path,
                         lookup_test=lookup_test,
                         lookup_all_raw=lookup_all_raw,
                         mol_fragment_smarts=mol_fragment_smarts,
+                        mol_fragment_copies=mol_fragment_copies,
                         gmi_train=gmi_train, gmi_test=gmi_test,
                         rules=rules, labels=labels_all,
                         kept_motif_ids=kept_motif_ids,

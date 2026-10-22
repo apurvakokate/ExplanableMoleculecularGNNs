@@ -47,6 +47,29 @@ def _val_score(metrics: Dict, task_type: str) -> float:
     return metrics.get('auc', 0.0)
 
 
+def _gsat_get_r(init_r: float, final_r: float, decay_interval: int,
+                decay_r: float, epoch0: int) -> float:
+    """Verbatim official GSAT get_r (run_gsat.py), python floats, 0-indexed epoch."""
+    r = init_r - epoch0 // decay_interval * decay_r
+    if r < final_r:
+        r = final_r
+    return r
+
+
+def _gsat_ckpt_eligible(model, epoch0: int) -> bool:
+    """Official GSAT checkpoint eligibility: `(r == final_r or fix_r) and epoch > 10`.
+    r comes from the verbatim float get_r, NOT the float32 model.r buffer, so the
+    equality test behaves exactly as upstream. A schedule without decay (decay_r 0 /
+    None or no interval) is upstream's fix_r case."""
+    if epoch0 <= 10:
+        return False
+    di, dr = model.decay_interval, model.decay_r
+    if di is None or not dr:
+        return True
+    r = _gsat_get_r(float(model.init_r), float(model.final_r), int(di), float(dr), epoch0)
+    return r == float(model.final_r)
+
+
 @torch.no_grad()
 def _val_task_loss(model, criterion, loader, device, task_type,
                    motif_lengths=None) -> float:
@@ -129,8 +152,17 @@ def train_gsat(
     viz_logger: Optional['EmbeddingVizLogger'] = None,
     wandb_logger: Optional['WandbLogger'] = None,
     epoch_hook: Optional['Callable[[object, int], None]'] = None,
+    ckpt_rule: str = 'any',
 ) -> Tuple[object, Dict]:
     """Full MotifSAT training loop.
+
+    ckpt_rule:
+      'any'  — checkpoint = best val AUC/RMSE at any epoch (legacy behaviour).
+      'gsat' — official GSAT rule (run_gsat.py GSAT.train): only epochs where the
+               upstream get_r(epoch) equals final_r (or r is fixed) AND 0-indexed
+               epoch > 10 are eligible; among them the best val metric, ties broken
+               by lower val task loss. Early stopping cannot fire before the first
+               eligible checkpoint exists.
 
     Returns (best_model, history).
     """
@@ -157,10 +189,16 @@ def train_gsat(
     no_improve = 0
     best_state = deepcopy(model.state_dict())
     history: Dict = {}
+    _gsat_ckpt = str(ckpt_rule).lower() == 'gsat'
+    if str(ckpt_rule).lower() not in ('any', 'gsat'):
+        raise ValueError(f"ckpt_rule must be 'any' or 'gsat', got {ckpt_rule!r}")
+    best_vloss = float('inf')
+    history['best_epoch'] = None
 
     for epoch in range(1, epochs + 1):
         # Anneal IB prior retention (info_loss only; Concrete temp stays fixed)
         model.anneal_r(epoch - 1)  # 0-indexed, matches official GSAT get_r(epoch)
+        history.setdefault('r', []).append(float(model.r.item()))
 
         ep_losses = train_one_epoch(
             model, criterion, optimizer, loaders['train'], device,
@@ -188,9 +226,16 @@ def train_gsat(
         # (regression) snapshot, decoupled from the early-stop signal.
         is_better = (val_score < best_val if task_type == 'Regression'
                      else val_score > best_val)
+        if _gsat_ckpt:
+            eligible = _gsat_ckpt_eligible(model, epoch - 1)
+            history.setdefault('ckpt_eligible', []).append(bool(eligible))
+            is_better = eligible and (is_better or (val_score == best_val
+                                                     and vloss < best_vloss))
         if is_better:
             best_val = val_score
+            best_vloss = vloss
             best_state = deepcopy(model.state_dict())
+            history['best_epoch'] = epoch
 
         if _stop_on_loss:
             scheduler.step(smoothed_loss)
@@ -227,11 +272,17 @@ def train_gsat(
         if viz_logger is not None:
             viz_logger.log(loaders['valid'], epoch)
 
-        if epoch >= min_epochs and no_improve >= patience:
+        if (epoch >= min_epochs and no_improve >= patience
+                and not (_gsat_ckpt and history['best_epoch'] is None)):
             if verbose:
                 print(f'  Early stopping at epoch {epoch}')
             break
 
+    if _gsat_ckpt and history['best_epoch'] is None:
+        # No eligible epoch reached (upstream would keep its zero-init metrics and
+        # only save the last epoch): fall back to the last-epoch weights, flagged.
+        best_state = deepcopy(model.state_dict())
+        history['ckpt_fallback'] = 'last_epoch'
     model.load_state_dict(best_state)
     if save_path is not None:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)

@@ -1377,6 +1377,63 @@ class TestV4Integration(unittest.TestCase):
         self.assertEqual(X.shape, (n, len(ml)))
 
 
+class TestReBRICSAtomTracking(unittest.TestCase):
+    """reBRICS sub-pieces must carry the atoms that actually form their key.
+
+    Regression (2026-10-21): _rebrics_pass_tracked stamped re-parsed canonical
+    fragments with an idx_map keyed by the PRE-canonical piece order, so reBRICS
+    sub-pieces recorded wrong (often disconnected) atom sets, e.g. steroid
+    '[*]CC(C)C' -> atoms {0,1,4,5} in two groups.
+    """
+    STEROIDS = ['CC12CCC3C(CCC4=CC(=O)CCC34C)C2CCC1C(=O)CO',
+                'CC(C)CCCC(C)C1CCC2C3CC=C4CCCCC4(C)C3CCC12C',
+                'CCCCCCCCCCCCCCCC(=O)OCC(O)CO',
+                # pass-1 piece with internal ring-bond cuts (cut-aware stamping)
+                'CC(=O)[C@H]1CC[C@H]2[C@@H]3C[C@@H](O)C45CC4CC[C@]5(C)[C@H]3CC[C@]12C']
+
+    @staticmethod
+    def _key_matches_atoms(m, key, atoms):
+        import networkx as nx
+        from networkx.algorithms import isomorphism as iso
+
+        def g(mm, at):
+            s = set(at); G = nx.Graph()
+            for a in at:
+                if mm.GetAtomWithIdx(a).GetAtomicNum() != 0:
+                    G.add_node(a, el=mm.GetAtomWithIdx(a).GetAtomicNum())
+            for b in mm.GetBonds():
+                i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+                if i in G and j in G:
+                    G.add_edge(i, j)
+            return G
+        km = Chem.MolFromSmiles(key, sanitize=False)
+        K, A = g(km, range(km.GetNumAtoms())), g(m, sorted(atoms))
+        nm = iso.categorical_node_match('el', None)
+        return (nx.is_connected(A) and A.number_of_nodes() == K.number_of_nodes()
+                and (nx.is_isomorphic(A, K, node_match=nm)
+                     or iso.GraphMatcher(A, K, node_match=nm).subgraph_is_monomorphic()))
+
+    def test_every_piece_matches_its_atoms(self):
+        for smi in self.STEROIDS:
+            m = mol(smi)
+            for key, atoms in gvr.fragment_molecule_tracked(m, smi, False, 'rbrics'):
+                self.assertTrue(self._key_matches_atoms(m, key, atoms),
+                                f'{smi}: {key} <- {sorted(atoms)}')
+
+    def test_reported_steroid_case(self):
+        smi = self.STEROIDS[0]
+        pieces = dict((k, sorted(a)) for k, a in
+                      gvr.fragment_molecule_tracked(mol(smi), smi, False, 'rbrics'))
+        # the two reBRICS sub-pieces that were disconnected before the fix
+        self.assertNotEqual(pieces['[*]CC(C)C'], [0, 1, 4, 5])
+        self.assertNotEqual(pieces['[*]CCCC'], [8, 14, 15, 16])
+
+    def test_stamp_from_parent_rejects_wrong_atoms(self):
+        m = mol('CCO')
+        with self.assertRaises(ValueError):
+            gvr._stamp_mol_from_parent('[*]CC', {0, 2}, m)   # C,O != C,C
+
+
 class TestValidatePartition(unittest.TestCase):
     """Fail-fast partition guard shared by rbrics / rbrics_old / protected."""
 

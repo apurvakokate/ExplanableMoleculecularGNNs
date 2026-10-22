@@ -81,6 +81,7 @@ class MotifSATConfig:
     patience: int = 20
     min_epochs: int = 20
     early_stop_metric: str = 'loss'  # loss=smoothed val loss (train past AUC plateau); auc=legacy
+    ckpt_rule: str = 'any'  # any=best val metric at any epoch; gsat=official GSAT rule (post-anneal, epoch>10, tie->val loss)
     clip_grad: float = 2.0
     seed: int = 42
 
