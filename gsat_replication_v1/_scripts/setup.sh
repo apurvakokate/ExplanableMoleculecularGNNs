@@ -23,7 +23,9 @@ if [ ! -d "$UP/.git" ]; then
 fi
 HEAD=$(git -C "$UP" rev-parse --short=7 HEAD)
 [ "$HEAD" = "${COMMIT:0:7}" ] || { echo "ABORT: upstream HEAD $HEAD != $COMMIT"; exit 1; }
-git -C "$UP" diff --quiet HEAD || { echo "ABORT: tracked upstream files modified"; git -C "$UP" diff --stat; exit 1; }
+# only the CODE must be pristine: the repo's data/ogbg_*/.gitignore placeholders are
+# replaced by ogb's own download (it rmtree's the folder), as for any upstream user.
+git -C "$UP" diff --quiet HEAD -- src || { echo "ABORT: upstream src/ modified"; git -C "$UP" diff --stat -- src; exit 1; }
 echo "upstream OK: $HEAD, unmodified"
 
 D="$UP/data"
@@ -42,7 +44,8 @@ link_all /nfs/hpc/share/kokatea/L2XGNN/xai_evaluation/datasets/Graph-SST2/raw "$
     Graph-SST2_edge_index.txt Graph-SST2_graph_labels.txt Graph-SST2_node_features.pkl \
     Graph-SST2_node_indicator.txt Graph-SST2_sentence_tokens.json Graph-SST2_split_indices.txt
 if [ -n "${MNIST_RAW:-}" ]; then
-    link_all "$MNIST_RAW" "$D/mnist/raw" mnist_75sp_train.pkl mnist_75sp_test.pkl
+    link_all "$MNIST_RAW" "$D/mnist/raw" mnist_75sp_train.pkl mnist_75sp_test.pkl \
+        mnist_75sp_train_superpixels.pkl mnist_75sp_test_superpixels.pkl
 else
     echo "MNIST_RAW not set: mnist cells will fail until raw files are linked"
 fi
@@ -51,7 +54,9 @@ echo "raw symlinks OK"
 source ~/hpc-share/anaconda3/etc/profile.d/conda.sh
 conda activate l2xgnn
 cd "$UP/src"
-python - <<'EOF'
+# ogb asks "Will you update the dataset now? (y/N)" for the placeholder folders; answer N
+# (its download() replaces the folder anyway). The script goes via a file so stdin is free.
+cat > "$UP/_setup_download.py" <<'EOF'
 from pathlib import Path
 from datasets import SynGraphDataset
 from ogb.graphproppred import PygGraphPropPredDataset
@@ -60,4 +65,5 @@ print('ba_2motifs', len(SynGraphDataset(d, 'ba_2motifs')))
 for n in ['molhiv', 'molbace', 'molbbbp', 'molclintox', 'moltox21', 'molsider']:
     print(n, len(PygGraphPropPredDataset(root=d, name='ogbg-' + n)))
 EOF
+yes N | python "$UP/_setup_download.py"
 echo "=== setup done. Next: sbatch $S/prep_job.sh ==="

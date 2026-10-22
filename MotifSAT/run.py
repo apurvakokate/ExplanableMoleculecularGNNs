@@ -107,6 +107,11 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
         graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
         self_gate=getattr(cfg, 'self_gate', False),
+        arch_style=getattr(cfg, 'arch_style', 'ours'),
+        pna_aggregators=tuple(a.strip() for a in
+                              str(getattr(cfg, 'pna_aggregators', '')).split(',') if a.strip())
+                        or None,
+        pna_scalers=bool(getattr(cfg, 'pna_scalers', True)),
     )
 
 
@@ -262,9 +267,19 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     print(f'{"="*60}')
 
     # Vocabulary
-    print("Loading vocabulary...")
-    vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
-    print(f"  {vocab.num_motifs} motifs")
+    # vocab_variant='none': motif-free run (base GSAT only) — no vocabulary, no
+    # motif evaluation; summary.json carries prediction + GSAT explanation metrics.
+    _no_vocab = str(cfg.vocab_variant).lower() == 'none'
+    if _no_vocab:
+        if cfg.motif_method != 'none' or cfg.noise != 'none':
+            raise ValueError("vocab_variant='none' is only valid for base GSAT "
+                             "(motif_method='none', noise='none')")
+        vocab = None
+        print("Vocabulary: none (motif-free base GSAT run)")
+    else:
+        print("Loading vocabulary...")
+        vocab = load_vocab(cfg.vocab_root, cfg.dataset, cfg.vocab_variant)
+        print(f"  {vocab.num_motifs} motifs")
 
     # Data
     task_type = TASK_TYPE.get(cfg.dataset, "BinaryClass")
@@ -280,6 +295,8 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         mutag_smiles_csv_path=getattr(cfg, 'mutag_smiles_csv_path', None),
         mutag_splits_path=getattr(cfg, 'mutag_splits_path', None),
         mutag_seed=getattr(cfg, 'mutag_seed', 42),
+        mutag_split=getattr(cfg, 'mutag_split', 'folds'),
+        split_seed=cfg.seed,
     )
     print(f"  Task: {task_type}  "
           f"train={len(loaders['train'].dataset)}  "
@@ -322,8 +339,12 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     # GSAT.__init__, which fires inside build_model above — no warning needed.)
 
     # Positive class weights
+    # 'none' = plain BCE (official GSAT); 'balanced' = neg/pos count weights (default)
+    if getattr(cfg, 'pos_weight', 'balanced') not in ('balanced', 'none'):
+        raise ValueError(f"pos_weight must be 'balanced' or 'none', got {cfg.pos_weight!r}")
     pos_w = (compute_pos_weights(loaders["train"].dataset)
-             if task_type in ("BinaryClass", "MultiLabel") else None)
+             if task_type in ("BinaryClass", "MultiLabel")
+             and getattr(cfg, 'pos_weight', 'balanced') == 'balanced' else None)
 
     # Output dir
     if getattr(cfg, 'final_out_dir', False):
@@ -403,8 +424,9 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         history = {}
     else:
         from SharedModules.evaluation.training_tracker import build_from_loaders as _build_expl_tracker
-        _expl_tracker, _expl_logger = _build_expl_tracker(
+        _expl_tracker, _expl_logger = (_build_expl_tracker(
             loaders, vocab, device, str(out_dir), task_type, split='valid')
+            if vocab is not None else (None, None))
         model, history = train_gsat(
             model, loaders, task_type, device,
             epochs=cfg.epochs,
@@ -422,6 +444,8 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
             wandb_logger=wandb_logger,
             epoch_hook=_expl_tracker,
             ckpt_rule=getattr(cfg, 'ckpt_rule', 'any'),
+            ckpt_metric=getattr(cfg, 'ckpt_metric', 'auc'),
+            lr_scheduler=getattr(cfg, 'lr_scheduler', 'plateau'),
         )
         if _expl_logger is not None:
             _expl_logger.close()
@@ -440,6 +464,36 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         split_metrics[split_name] = m
         if cfg.verbose:
             print(f"  {split_name}: {m}")
+
+    # Official GSAT explanation metric (pooled edge ROC-AUC) + per-graph node GT-ROC,
+    # per split; NaN where the split has no edge/node GT (e.g. OGB).
+    from gsat_metrics import gsat_explanation_metrics
+    gsat_expl = {}
+    for split_name in ("train", "valid", "test"):
+        for k, v in gsat_explanation_metrics(model, loaders[split_name], device).items():
+            gsat_expl[f"{k}_{split_name}"] = v
+    if cfg.verbose:
+        print(f"  GSAT explanation metrics: {gsat_expl}")
+
+    if _no_vocab:
+        from SharedModules.evaluation.provenance import provenance_fields
+        summary = {
+            **provenance_fields(cfg),
+            "model_type": "MotifSAT", "family": "gsat",
+            "dataset": cfg.dataset, "fold": cfg.fold, "backbone": cfg.backbone,
+            "variant_tag": tag, "vocab_variant": cfg.vocab_variant,
+            "motif_method": cfg.motif_method, "info_loss_coef": cfg.info_loss_coef,
+            **training_summary_extras(cfg),
+            "best_epoch": history.get("best_epoch"),
+            "ckpt_fallback": history.get("ckpt_fallback"),
+            **{f"{sp}_{k}": v for sp, m in split_metrics.items()
+               for k, v in m.items() if not isinstance(v, list)},
+            **gsat_expl,
+        }
+        with open(out_dir / "summary.json", "w") as f:
+            json.dump(summary, f, indent=2, default=float)
+        print(f"  [no-vocab] wrote {out_dir / 'summary.json'}; motif evaluation skipped")
+        return {"prediction": split_metrics.get("test", {}), "gsat": gsat_expl}
 
     # Determine GT ROC level: edge for learn_edge_att, node otherwise
     gt_level = "edge" if cfg.learn_edge_att else "node"
@@ -628,6 +682,9 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         "score_disc_spearman": tdc.get("score_disc_spearman", float("nan")),
         # motif-score distribution
         **sstats,
+        # official GSAT explanation metric + per-graph node GT-ROC, per split
+        **gsat_expl,
+        "best_epoch": history.get("best_epoch"),
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
@@ -846,6 +903,16 @@ def main():
                         help="Early-stop patience; overrides MotifSATConfig default "
                              "(20) only when set. Ablation raises it to 100 for M1 "
                              "(balanced-sampler) runs; normal runs leave it unset.")
+    # GSAT-parity knobs (defaults = current behaviour; see MotifSATConfig)
+    parser.add_argument("--arch_style", default=None, choices=["ours", "gsat"])
+    parser.add_argument("--pna_aggregators", default=None,
+                        help="comma list for arch_style=gsat PNA, e.g. mean,min,max,std")
+    parser.add_argument("--pna_scalers", default=None, choices=["true", "false"])
+    parser.add_argument("--ckpt_metric", default=None, choices=["auc", "acc"])
+    parser.add_argument("--lr_scheduler", default=None, choices=["plateau", "none"])
+    parser.add_argument("--pos_weight", default=None, choices=["balanced", "none"])
+    parser.add_argument("--clip_grad", type=float, default=None)
+    parser.add_argument("--mutag_split", default=None, choices=["folds", "gsat"])
     parser.add_argument("--ckpt_rule", default=None, choices=["any", "gsat"],
                         help="Checkpoint rule; overrides config only when set. "
                              "gsat = official GSAT (post-anneal, epoch>10, ties->val loss).")
@@ -948,6 +1015,12 @@ def main():
         cfg.patience = args.patience
     if args.ckpt_rule is not None:
         cfg.ckpt_rule = args.ckpt_rule
+    for _k in ('arch_style', 'pna_aggregators', 'ckpt_metric', 'lr_scheduler',
+               'pos_weight', 'clip_grad', 'mutag_split'):
+        if getattr(args, _k) is not None:
+            setattr(cfg, _k, getattr(args, _k))
+    if args.pna_scalers is not None:
+        cfg.pna_scalers = (args.pna_scalers == 'true')
     run(cfg, per_split_eval=args.per_split_eval)
 
 

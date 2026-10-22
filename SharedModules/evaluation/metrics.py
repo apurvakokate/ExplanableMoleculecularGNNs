@@ -106,9 +106,12 @@ def evaluate_predictions(
         scores = torch.sigmoid(torch.tensor(preds)).numpy().ravel()
         labels_r = labels.ravel()
         valid = ~np.isnan(labels_r)
+        # acc: threshold 0.5 on the sigmoid (official GSAT clf_acc)
+        acc = (float(((scores[valid] > 0.5) == (labels_r[valid] > 0.5)).mean())
+               if valid.any() else float('nan'))
         if valid.sum() < 2 or len(set(labels_r[valid].astype(int).tolist())) < 2:
-            return {'auc': float('nan')}
-        return {'auc': auc_score(labels_r[valid], scores[valid])}
+            return {'auc': float('nan'), 'acc': acc}
+        return {'auc': auc_score(labels_r[valid], scores[valid]), 'acc': acc}
 
     elif task_type == 'Regression':
         preds_r = preds.ravel()

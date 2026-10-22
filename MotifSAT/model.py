@@ -219,6 +219,10 @@ class GSAT(nn.Module):
         logit_clamp: Optional[float] = None,
         deterministic_att: bool = False,
         self_gate: bool = False,
+        # ── Backbone architecture (gsat = official GSAT GIN/PNA; see gsat_arch.py) ──
+        arch_style: str = 'ours',
+        pna_aggregators: Optional[Tuple[str, ...]] = None,
+        pna_scalers: bool = True,
     ):
         super().__init__()
 
@@ -367,15 +371,30 @@ class GSAT(nn.Module):
         self.num_classes = num_classes
 
         # Backbone
-        self.clf = BaseGNN(
-            x_dim=x_dim, hidden_dim=hidden_dim, num_layers=num_layers,
-            backbone=backbone_name, node_encoder=node_encoder,
-            apply_layer_norm=apply_layer_norm, dropout=dropout,
-            deg=deg, edge_dim=edge_dim,
-            conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
-            self_gate=self_gate, graph_pool=graph_pool,
-        )
-        self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
+        if arch_style == 'gsat':
+            # Official GSAT GIN/PNA (encoder, conv, per-layer dropout/BN/residual,
+            # readout pooling and head as in Graph-COM/GSAT). The project-level
+            # conv_normalize / gin_inner_bn / self_gate / graph_pool knobs do not apply.
+            from SharedModules.models.gsat_arch import GSATArchGNN
+            self.clf = GSATArchGNN(
+                x_dim=x_dim, hidden_dim=hidden_dim, num_layers=num_layers,
+                backbone=backbone_name, num_out=num_classes,
+                node_encoder=node_encoder, dropout=dropout, deg=deg,
+                pna_aggregators=pna_aggregators, pna_scalers=pna_scalers,
+            )
+        elif arch_style == 'ours':
+            self.clf = BaseGNN(
+                x_dim=x_dim, hidden_dim=hidden_dim, num_layers=num_layers,
+                backbone=backbone_name, node_encoder=node_encoder,
+                apply_layer_norm=apply_layer_norm, dropout=dropout,
+                deg=deg, edge_dim=edge_dim,
+                conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
+                self_gate=self_gate, graph_pool=graph_pool,
+            )
+            self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
+        else:
+            raise ValueError(f"arch_style must be 'ours' or 'gsat', got {arch_style!r}")
+        self.arch_style = arch_style
 
         # Node-level extractor (base GSAT path when noise='none')
         self.extractor = ExtractorMLP(hidden_dim, dropout_p=extractor_dropout_p)

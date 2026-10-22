@@ -93,6 +93,30 @@ def mutag_gt_eval_graphs(data_list: Sequence) -> List:
     return out
 
 
+def gsat_mutag_split_idx(dataset, seed: int,
+                         train_frac: float = 0.8) -> Dict[str, List[int]]:
+    """Official GSAT mutag split (``get_random_split_idx(..., mutag_x=True)``).
+
+    train / valid = a seeded random ``train_frac`` / ``1 - train_frac`` split of ALL
+    graphs; test = EVERY mutagen with annotated motif edges (``y == 0`` and
+    ``edge_label.sum() > 0``), regardless of whether it is also in train/valid.
+    The test set therefore OVERLAPS training — this reproduces the paper's protocol
+    and is not a disjoint evaluation (use the default CV folds for that).
+    GSAT shuffles with numpy's global RNG after seeding; here a seeded
+    ``RandomState`` gives the same procedure deterministically per seed.
+    """
+    idx = np.arange(len(dataset))
+    np.random.RandomState(seed).shuffle(idx)
+    n_train = int(train_frac * len(idx))
+    test = [int(i) for i in range(len(dataset))
+            if float(dataset[i].y.squeeze()) == 0.0
+            and getattr(dataset[i], 'edge_label', None) is not None
+            and float(dataset[i].edge_label.sum()) > 0.0]
+    return {'train': [int(i) for i in idx[:n_train]],
+            'valid': [int(i) for i in idx[n_train:]],
+            'test': test}
+
+
 def save_mutag_splits(path: Union[str, Path], split_idx: Dict[str, List[int]],
                       *, seed: int) -> None:
     """Persist split indices next to the fold CSV for reproducible loading."""

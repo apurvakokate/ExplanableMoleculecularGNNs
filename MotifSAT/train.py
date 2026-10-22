@@ -39,11 +39,13 @@ def _task_loss(criterion, out, y, task_type):
     return criterion(out.view(-1)[valid], y.view(-1)[valid].float())
 
 
-def _val_score(metrics: Dict, task_type: str) -> float:
+def _val_score(metrics: Dict, task_type: str, ckpt_metric: str = 'auc') -> float:
     if task_type == 'Regression':
         return metrics.get('rmse', float('inf'))
     elif task_type == 'MultiLabel':
         return metrics.get('auc_mean', 0.0)
+    if ckpt_metric == 'acc':          # official GSAT selects non-OGB runs by accuracy
+        return metrics.get('acc', 0.0)
     return metrics.get('auc', 0.0)
 
 
@@ -153,6 +155,8 @@ def train_gsat(
     wandb_logger: Optional['WandbLogger'] = None,
     epoch_hook: Optional['Callable[[object, int], None]'] = None,
     ckpt_rule: str = 'any',
+    ckpt_metric: str = 'auc',
+    lr_scheduler: str = 'plateau',
 ) -> Tuple[object, Dict]:
     """Full MotifSAT training loop.
 
@@ -163,6 +167,10 @@ def train_gsat(
                epoch > 10 are eligible; among them the best val metric, ties broken
                by lower val task loss. Early stopping cannot fire before the first
                eligible checkpoint exists.
+    ckpt_metric: 'auc' (default) | 'acc' — validation metric the checkpoint maximises
+               (BinaryClass only; GSAT uses accuracy for its non-OGB datasets).
+    lr_scheduler: 'plateau' (default, ReduceLROnPlateau) | 'none' (official GSAT:
+               constant learning rate).
 
     Returns (best_model, history).
     """
@@ -180,8 +188,15 @@ def train_gsat(
     # loss: val AUC saturates well before the attention converges, so stopping
     # on AUC undertrains the explainer (memory: training length is the lever).
     _stop_on_loss = str(early_stop_metric).lower() == 'loss'
-    scheduler = ReduceLROnPlateau(optimizer, patience=(5 if _stop_on_loss else 10),
-                                  factor=0.5, min_lr=1e-5)
+    if lr_scheduler not in ('plateau', 'none'):
+        raise ValueError(f"lr_scheduler must be 'plateau' or 'none', got {lr_scheduler!r}")
+    if ckpt_metric not in ('auc', 'acc'):
+        raise ValueError(f"ckpt_metric must be 'auc' or 'acc', got {ckpt_metric!r}")
+    if ckpt_metric == 'acc' and task_type != 'BinaryClass':
+        raise ValueError(f"ckpt_metric='acc' is defined for BinaryClass only, got {task_type}")
+    scheduler = (ReduceLROnPlateau(optimizer, patience=(5 if _stop_on_loss else 10),
+                                   factor=0.5, min_lr=1e-5)
+                 if lr_scheduler == 'plateau' else None)
 
     best_val = float('inf') if task_type == 'Regression' else 0.0  # checkpoint metric
     best_stop = float('inf')                 # smoothed val loss (min is better)
@@ -208,7 +223,7 @@ def train_gsat(
             history.setdefault(k, []).append(v)
 
         val_m = evaluate_predictions(model, loaders['valid'], device, task_type)
-        val_score = _val_score(val_m, task_type)
+        val_score = _val_score(val_m, task_type, ckpt_metric)
         history.setdefault('val_metric', []).append(val_score)
 
         # Per-epoch explainability telemetry (auxiliary; never raises).
@@ -238,14 +253,16 @@ def train_gsat(
             history['best_epoch'] = epoch
 
         if _stop_on_loss:
-            scheduler.step(smoothed_loss)
+            if scheduler is not None:
+                scheduler.step(smoothed_loss)
             if smoothed_loss < best_stop - 1e-4:
                 best_stop = smoothed_loss
                 no_improve = 0
             else:
                 no_improve += 1
         else:
-            scheduler.step(val_score if task_type == 'Regression' else -val_score)
+            if scheduler is not None:
+                scheduler.step(val_score if task_type == 'Regression' else -val_score)
             no_improve = 0 if is_better else no_improve + 1
 
         # W&B logging

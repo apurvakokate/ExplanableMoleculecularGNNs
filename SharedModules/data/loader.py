@@ -506,6 +506,8 @@ def _get_mutag_loaders(
     smiles_csv_path: Optional[str] = None,
     splits_path: Optional[str] = None,
     mutag_seed: int = 42,
+    split_mode: str = 'folds',
+    split_seed: Optional[int] = None,
 ):
     """Build loaders for the mutag TUDataset.
 
@@ -532,6 +534,10 @@ def _get_mutag_loaders(
     mutag_seed : int
         Base RNG seed; effective seed = ``mutag_seed + fold`` when splits are
         computed on the fly (fallback only).
+    split_mode : str
+        ``'folds'`` (default) — disjoint CV folds (splits pickle / CSV / fallback).
+        ``'gsat'`` — official GSAT split seeded by ``split_seed``: test OVERLAPS
+        train/valid (see ``mutag_splits.gsat_mutag_split_idx``).
     """
     Mutag = _import_mutag_class(data_root)
     from .dataset_routing import resolve_mutag_roots, mutag_artifact_paths
@@ -595,7 +601,20 @@ def _get_mutag_loaders(
     val_items:   List[int] = []
     test_items:  List[int] = []
 
-    if Path(_splits_file).exists():
+    if split_mode not in ('folds', 'gsat'):
+        raise ValueError(f"mutag split_mode must be 'folds' or 'gsat', got {split_mode!r}")
+    if split_mode == 'gsat':
+        if split_seed is None:
+            raise ValueError("mutag split_mode='gsat' needs split_seed (the run seed)")
+        from .mutag_splits import gsat_mutag_split_idx
+        split_idx = gsat_mutag_split_idx(dataset, seed=int(split_seed))
+        train_items = list(split_idx['train'])
+        val_items   = list(split_idx['valid'])
+        test_items  = list(split_idx['test'])
+        print(f"  [mutag] GSAT split (seed={split_seed}): train={len(train_items)} "
+              f"valid={len(val_items)} test={len(test_items)} "
+              f"(test = all annotated mutagens; overlaps train/valid)")
+    elif Path(_splits_file).exists():
         from .mutag_splits import load_mutag_splits
         split_idx = load_mutag_splits(_splits_file)
         train_items = list(split_idx['train'])
@@ -846,6 +865,8 @@ def get_loaders(
     mutag_smiles_csv_path: Optional[str] = None,
     mutag_splits_path: Optional[str] = None,
     mutag_seed: int = 42,
+    mutag_split: str = 'folds',
+    split_seed: Optional[int] = None,
 ) -> Tuple[Dict[str, DataLoader], object, LoaderMeta]:
     """Build train/val/test DataLoaders for a dataset fold.
 
@@ -908,6 +929,8 @@ def get_loaders(
             smiles_csv_path=_scsv,
             splits_path=_splits,
             mutag_seed=mutag_seed,
+            split_mode=mutag_split,
+            split_seed=split_seed,
         )
 
     # ── CSV-based molecular datasets ──────────────────────────────────────

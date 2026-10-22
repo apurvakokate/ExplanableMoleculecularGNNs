@@ -29,6 +29,11 @@ class MotifSATConfig:
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
     dropout: float = 0.3
+    # Backbone architecture: 'ours' (BaseGNN, default) | 'gsat' (official GSAT
+    # GIN/PNA: SharedModules/models/gsat_arch.py). The two PNA knobs apply to gsat.
+    arch_style: str = 'ours'
+    pna_aggregators: str = 'mean,min,max,std'   # gsat PNA: paper OGB set (mutag adds sum)
+    pna_scalers: bool = False                   # gsat PNA: paper uses no degree scalers
 
     # Motif method (orthogonal to noise and info loss)
     motif_method: str = 'none'         # none | loss | readout (motif_emb -> NotImplemented)
@@ -82,6 +87,10 @@ class MotifSATConfig:
     min_epochs: int = 20
     early_stop_metric: str = 'loss'  # loss=smoothed val loss (train past AUC plateau); auc=legacy
     ckpt_rule: str = 'any'  # any=best val metric at any epoch; gsat=official GSAT rule (post-anneal, epoch>10, tie->val loss)
+    ckpt_metric: str = 'auc'      # validation metric the checkpoint maximises: auc | acc (GSAT: acc for non-OGB)
+    lr_scheduler: str = 'plateau' # plateau = ReduceLROnPlateau (default) | none (official GSAT)
+    pos_weight: str = 'balanced'  # BCE positive-class weight: balanced (neg/pos counts) | none (official GSAT)
+    mutag_split: str = 'folds'    # mutag only: folds = disjoint CV folds | gsat = official GSAT split (seeded)
     clip_grad: float = 2.0
     seed: int = 42
 
