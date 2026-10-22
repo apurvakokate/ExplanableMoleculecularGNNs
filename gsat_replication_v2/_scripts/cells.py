@@ -10,6 +10,9 @@ Paper targets are x100 as printed (GSAT, not GSAT*); metric key = summary.json f
   T1 explanation ROC-AUC pooled over test edges  -> gsat_edge_auc_test
   T2/T3 test ROC-AUC (OGB evaluator convention)   -> test_auc / test_auc_mean
 
+Rows 0-109: arch_style=gsat (the replication). Rows 110-219: the same cells with
+arch_style=ours (backbone-effect control; later --arch_style on the CLI wins).
+
 CLI:  cells.py --n | --list | --args <idx> [--check]
 """
 import sys
@@ -58,8 +61,18 @@ for ds, tgt in [('ogbg-molhiv', {'T2': ('test_auc', 80.24, 0.73)}),
     CELLS[f'PNA_{ds}'] = (PNA + ['--dataset', ds] + _PNA_OGB, tgt, [0])
 
 
+# Backbone-effect control: every cell again with OUR backbone (arch_style=ours: BaseGNN
+# GIN with learned eps / PNA without BN+residual, our heads and readout), all other
+# settings identical. The gap to the gsat-arch cell = effect of the backbone alone.
+# Appended AFTER the gsat-arch rows so their array indices (0..109) never change.
+OURS_ARCH = {f'{name}__oursarch': (args + ['--arch_style', 'ours'], tgt, folds)
+             for name, (args, tgt, folds) in CELLS.items()}
+CELLS.update(OURS_ARCH)
+
+
 def runs():
-    """(cell, fold, seed): 10 seeds for single-fold cells, 5 folds x 2 seeds otherwise."""
+    """(cell, fold, seed): 10 seeds for single-fold cells, 5 folds x 2 seeds otherwise.
+    gsat-arch cells first, then their __oursarch copies (dict insertion order)."""
     out = []
     for name, (_, _, folds) in CELLS.items():
         seeds = SEEDS if len(folds) == 1 else [0, 1]
