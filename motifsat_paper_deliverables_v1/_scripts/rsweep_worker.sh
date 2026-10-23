@@ -50,23 +50,28 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREAD
 
 # r settings: final_r x decay_interval (final_r 0.9 = constant prior; one interval)
 SETTINGS="${SETTINGS:-r0.5_i10 r0.5_i20 r0.7_i10 r0.7_i20 r0.9_i10}"
+# Optional _clip<value> suffix sets --clip_grad (e.g. r0.5_i10_clip0 = clipping off), used for the
+# clipping-effect test: SETTINGS=r0.5_i10_clip0 pairs with the r0.5_i10 cell (default clip 2.0).
 _complete(){ python3 "$SCRIPTS/native_complete.py" "$1" "$2" --quiet >/dev/null 2>&1; }
 
 run_cell(){
     local setting=$1 ds=$2 f=$3 bb=$4 stem=gsat
-    local fr="${setting%_i*}"; fr="${fr#r}"; local di="${setting#*_i}"
+    # setting = r<final_r>_i<decay_interval>[_clip<value>]; no _clip suffix = run.py default (2.0)
+    local core="${setting%%_clip*}" clip=""
+    [ "$core" != "$setting" ] && clip="${setting##*_clip}"
+    local fr="${core%_i*}"; fr="${fr#r}"; local di="${core#*_i}"
     local cid="${setting}__${ds}__f${f}__${bb}"
     local dir="$RUNS/$setting/$ds/fold$f/$bb"
     _complete "$dir" "$stem" && [ -s "$dir/history.json" ] && return 0   # DONE -> skip
     mkdir "$CLAIMS/$cid" 2>/dev/null || return 0                         # CLAIM fails -> skip
     printf '%s\t%s\t%s\n' "$WHO" "$JOBID" "$(date +%s)" > "$CLAIMS/$cid/info"
-    echo "[run ${DEVICE:-cuda}] $cid (final_r=$fr decay_interval=$di)"
+    echo "[run ${DEVICE:-cuda}] $cid (final_r=$fr decay_interval=$di clip_grad=${clip:-default})"
     python3 MotifSAT/run.py --config "MotifSAT/configs/base_gsat.yaml" \
         --dataset "$ds" --fold "$f" --backbone "$bb" \
         --data_root "$FOLDS_ROOT" --vocab_root "$VOCAB" --vocab_variant rbrics \
         --processed_root "$PROC" \
         --info_loss_coef 1 --init_r 0.9 --decay_r 0.1 --final_r "$fr" --decay_interval "$di" \
-        --ckpt_rule gsat \
+        --ckpt_rule gsat ${clip:+--clip_grad "$clip"} \
         --out_dir "$dir" --final_out_dir --per_split_eval --epochs "$EPOCHS" \
         --patience "$PATIENCE"
     local rc=$?
