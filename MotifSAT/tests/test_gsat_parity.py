@@ -127,6 +127,48 @@ class TestGSATArch(unittest.TestCase):
                  num_classes=1, arch_style='official')
 
 
+class TestOurPNAPieces(unittest.TestCase):
+    """GSAT pieces switched onto OUR PNA (arch_style=ours): defaults unchanged."""
+    def _m(self, pieces=()):
+        torch.manual_seed(0)
+        return GSAT(x_dim=NUM_ATOM_TYPES, hidden_dim=H, num_layers=2, backbone_name='PNA',
+                    num_classes=1, deg=DEG, pna_pieces=pieces)
+
+    def test_default_unchanged(self):
+        m = self._m()
+        self.assertEqual(m.clf.convs[0].post_nn[0].in_features, 4 * 3 * NUM_ATOM_TYPES)
+        self.assertFalse(m.clf.pna_bn_residual)
+        self.assertIsNone(m.clf.pna_batch_norms)
+
+    def test_noscalers_drops_two_scalers(self):
+        m = self._m(('noscalers',))
+        self.assertEqual(len(m.clf.convs[1]._scalers), 1)
+        self.assertEqual(m.clf.convs[1].post_nn[0].in_features, 4 * 1 * H)
+
+    def test_bnres_structure_and_residual(self):
+        m = self._m(('bnres',))
+        self.assertTrue(m.clf.pna_bn_residual)
+        self.assertEqual(len(m.clf.pna_batch_norms), 2)
+        m.eval()
+        x = torch.randn(6, H); ei = torch.tensor([[0, 1, 2], [1, 2, 3]])
+        conv, bn = m.clf.convs[1], m.clf.pna_batch_norms[1]
+        h = torch.relu(bn(conv(x, ei)))
+        # one-layer check of x + h through the second (width-matching) layer
+        m.clf.convs = torch.nn.ModuleList([conv]); m.clf.pna_batch_norms = torch.nn.ModuleList([bn])
+        self.assertTrue(torch.allclose(m.clf.convolve(x, ei), x + h, atol=1e-6))
+
+    def test_bad_piece_rejected(self):
+        with self.assertRaises(ValueError):
+            self._m(('residual',))
+
+    def test_forward_backward_with_all_pieces(self):
+        b = Batch.from_data_list([_graph(i) for i in range(4)])
+        m = self._m(('noscalers', 'bnres')); m.train()
+        lg, _, _ = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr, epoch=1)
+        lg.sum().backward()
+        self.assertTrue(all(p.grad is not None for p in m.clf.pna_batch_norms.parameters()))
+
+
 class TestTrainingKnobs(unittest.TestCase):
     def _fit(self, **kw):
         m = _gsat('GIN')
@@ -241,6 +283,34 @@ class TestGSATMetric(unittest.TestCase):
         g = Data(x=torch.rand(3, 2), edge_index=torch.tensor([[0], [1]]), y=torch.tensor([[0.]]))
         out = gsat_explanation_metrics(_StubModel(), DataLoader([g]), 'cpu')
         self.assertTrue(np.isnan(out['gsat_edge_auc']))
+
+
+class TestFixR(unittest.TestCase):
+    def test_noanneal_preset_fixes_r_at_final(self):
+        from config import MotifSATConfig
+        import run as R
+        cfg = MotifSATConfig.from_yaml(str(ROOT / 'MotifSAT/configs/base_gsat_noanneal.yaml'))
+        self.assertTrue(cfg.fix_r)
+        cfg.init_r, cfg.final_r, cfg.decay_r, cfg.decay_interval = 0.9, 0.5, 0.1, 10
+        R._apply_fix_r(cfg)
+        self.assertEqual((cfg.init_r, cfg.final_r, cfg.decay_r), (0.5, 0.5, 0.0))
+        m = GSAT(x_dim=NUM_ATOM_TYPES, hidden_dim=H, num_layers=2, backbone_name='GIN',
+                 num_classes=1, init_r=cfg.init_r, final_r=cfg.final_r,
+                 decay_interval=cfg.decay_interval, decay_r=cfg.decay_r)
+        rs = []
+        for ep in range(60):
+            m.anneal_r(ep); rs.append(round(float(m.r.item()), 6))
+        self.assertEqual(set(rs), {0.5})
+        self.assertEqual([T._gsat_ckpt_eligible(m, e) for e in (10, 11)], [False, True])
+
+    def test_base_gsat_unaffected(self):
+        from config import MotifSATConfig
+        import run as R
+        cfg = MotifSATConfig.from_yaml(str(ROOT / 'MotifSAT/configs/base_gsat.yaml'))
+        self.assertFalse(cfg.fix_r)
+        cfg.init_r, cfg.final_r, cfg.decay_r = 0.9, 0.5, 0.1
+        R._apply_fix_r(cfg)
+        self.assertEqual((cfg.init_r, cfg.decay_r), (0.9, 0.1))
 
 
 class TestBuildModelWiring(unittest.TestCase):

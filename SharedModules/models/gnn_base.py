@@ -68,6 +68,8 @@ class BaseGNN(nn.Module):
         gin_inner_bn: bool = True,
         self_gate: bool = False,
         graph_pool: str = 'add',
+        pna_scalers: bool = True,
+        pna_bn_residual: bool = False,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -127,8 +129,14 @@ class BaseGNN(nn.Module):
         self.convs = create_conv_layers(
             conv_in_dim, hidden_dim, num_layers,
             backbone, deg=deg, edge_dim=edge_dim,
-            gin_inner_bn=gin_inner_bn,
+            gin_inner_bn=gin_inner_bn, pna_scalers=pna_scalers,
         )
+        # pna_bn_residual (PNA only, default off): GSAT's per-layer structure
+        # h = ReLU(BN(conv(x))); x = h + x (when widths match); dropout(self.dropout).
+        self.pna_bn_residual = bool(pna_bn_residual) and self.backbone == 'PNA'
+        self.pna_batch_norms = (nn.ModuleList([nn.BatchNorm1d(hidden_dim)
+                                               for _ in range(num_layers)])
+                                if self.pna_bn_residual else None)
 
         if self.conv_normalize == 'layernorm':
             self.layer_norms = nn.ModuleList(
@@ -160,6 +168,13 @@ class BaseGNN(nn.Module):
         per-node self/root term (GIN/SAGE only); None ⇒ unchanged behaviour.
         """
         for i, conv in enumerate(self.convs):
+            if self.pna_bn_residual:
+                h = F.relu(self.pna_batch_norms[i](conv(
+                    x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten,
+                    node_self_gate=node_self_gate)))
+                x = h + x if h.shape == x.shape else h
+                x = F.dropout(x, p=self.dropout, training=self.training)
+                continue
             x = conv(x, edge_index, edge_attr=edge_attr,
                      edge_atten=edge_atten, node_self_gate=node_self_gate)
             # Per-conv normalization (before ReLU), matching reference order.

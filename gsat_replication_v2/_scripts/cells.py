@@ -12,6 +12,7 @@ Paper targets are x100 as printed (GSAT, not GSAT*); metric key = summary.json f
 
 Rows 0-109: arch_style=gsat (the replication). Rows 110-219: the same cells with
 arch_style=ours (backbone-effect control; later --arch_style on the CLI wins).
+Rows 220-259: our PNA on ogbg-molhiv + one GSAT piece (noscalers / bnres / meanpool) or all three.
 
 CLI:  cells.py --n | --list | --args <idx> [--check]
 """
@@ -68,6 +69,15 @@ for ds, tgt in [('ogbg-molhiv', {'T2': ('test_auc', 80.24, 0.73)}),
 OURS_ARCH = {f'{name}__oursarch': (args + ['--arch_style', 'ours'], tgt, folds)
              for name, (args, tgt, folds) in CELLS.items()}
 CELLS.update(OURS_ARCH)
+
+# PNA-piece test (rows 220-259): OUR PNA on ogbg-molhiv with ONE GSAT piece added at a time,
+# then all three. Baseline = PNA_ogbg-molhiv__oursarch; target = PNA_ogbg-molhiv (GSAT backbone).
+_base_args, _base_tgt, _base_folds = CELLS['PNA_ogbg-molhiv__oursarch']
+for _tag, _extra in [('noscalers', ['--pna_pieces', 'noscalers']),
+                     ('bnres', ['--pna_pieces', 'bnres']),
+                     ('meanpool', ['--graph_pool', 'mean']),
+                     ('allthree', ['--pna_pieces', 'noscalers,bnres', '--graph_pool', 'mean'])]:
+    CELLS[f'PNA_ogbg-molhiv__oursarch__{_tag}'] = (_base_args + _extra, _base_tgt, _base_folds)
 
 
 def runs():

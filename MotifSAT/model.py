@@ -223,6 +223,7 @@ class GSAT(nn.Module):
         arch_style: str = 'ours',
         pna_aggregators: Optional[Tuple[str, ...]] = None,
         pna_scalers: bool = True,
+        pna_pieces: Tuple[str, ...] = (),
     ):
         super().__init__()
 
@@ -390,10 +391,17 @@ class GSAT(nn.Module):
                 deg=deg, edge_dim=edge_dim,
                 conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
                 self_gate=self_gate, graph_pool=graph_pool,
+                # GSAT PNA pieces on OUR PNA (default none = unchanged): 'noscalers',
+                # 'bnres' (per-layer BN + residual + dropout). Mean readout = graph_pool.
+                pna_scalers='noscalers' not in pna_pieces,
+                pna_bn_residual='bnres' in pna_pieces,
             )
             self.clf.lin2 = nn.Linear(hidden_dim, num_classes)
         else:
             raise ValueError(f"arch_style must be 'ours' or 'gsat', got {arch_style!r}")
+        _bad = set(pna_pieces) - {'noscalers', 'bnres'}
+        if _bad:
+            raise ValueError(f"unknown pna_pieces {sorted(_bad)}; expected noscalers, bnres")
         self.arch_style = arch_style
 
         # Node-level extractor (base GSAT path when noise='none')

@@ -112,7 +112,18 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
                               str(getattr(cfg, 'pna_aggregators', '')).split(',') if a.strip())
                         or None,
         pna_scalers=bool(getattr(cfg, 'pna_scalers', True)),
+        pna_pieces=tuple(a.strip() for a in
+                         str(getattr(cfg, 'pna_pieces', '') or '').split(',') if a.strip()),
     )
+
+
+def _apply_fix_r(cfg) -> None:
+    """fix_r (GSAT's fix_r): hold r CONSTANT at final_r from epoch 0 — no annealing.
+    (decay_r=0 alone would freeze r at init_r instead.) Call after r resolution."""
+    if getattr(cfg, 'fix_r', False):
+        cfg.init_r = cfg.final_r
+        cfg.decay_r = 0.0
+        print(f'  [fix_r] r fixed at final_r={cfg.final_r} for all epochs')
 
 
 def _requires_nodes_to_motifs(cfg: MotifSATConfig) -> bool:
@@ -246,6 +257,7 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     cfg.final_r = _final
     cfg.decay_interval = _dec_int
     cfg.decay_r = _dec_r
+    _apply_fix_r(cfg)
 
     # Per-dataset IB strength (MotifSAT analogue of MOSE's ent/size_reg). The
     # coefficient is applied to the IB term at EVERY granularity (node/motif/edge)
@@ -908,6 +920,10 @@ def main():
     parser.add_argument("--pna_aggregators", default=None,
                         help="comma list for arch_style=gsat PNA, e.g. mean,min,max,std")
     parser.add_argument("--pna_scalers", default=None, choices=["true", "false"])
+    parser.add_argument("--fix_r", default=None, choices=["true", "false"],
+                        help="hold r constant at final_r (GSAT fix_r); overrides config")
+    parser.add_argument("--pna_pieces", default=None,
+                        help="arch_style=ours PNA: comma list of GSAT pieces (noscalers,bnres)")
     parser.add_argument("--ckpt_metric", default=None, choices=["auc", "acc"])
     parser.add_argument("--lr_scheduler", default=None, choices=["plateau", "none"])
     parser.add_argument("--pos_weight", default=None, choices=["balanced", "none"])
@@ -1015,12 +1031,14 @@ def main():
         cfg.patience = args.patience
     if args.ckpt_rule is not None:
         cfg.ckpt_rule = args.ckpt_rule
-    for _k in ('arch_style', 'pna_aggregators', 'ckpt_metric', 'lr_scheduler',
+    for _k in ('arch_style', 'pna_aggregators', 'pna_pieces', 'ckpt_metric', 'lr_scheduler',
                'pos_weight', 'clip_grad', 'mutag_split'):
         if getattr(args, _k) is not None:
             setattr(cfg, _k, getattr(args, _k))
     if args.pna_scalers is not None:
         cfg.pna_scalers = (args.pna_scalers == 'true')
+    if args.fix_r is not None:
+        cfg.fix_r = (args.fix_r == 'true')
     run(cfg, per_split_eval=args.per_split_eval)
 
 

@@ -313,7 +313,7 @@ class PNAConvSimple(MessagePassing):
     """
 
     def __init__(self, in_channels: int, out_channels: int,
-                 deg: Tensor, post_layers: int = 1, **kwargs):
+                 deg: Tensor, post_layers: int = 1, scalers: bool = True, **kwargs):
         super().__init__(aggr=None, node_dim=0, **kwargs)
 
         self.in_channels  = in_channels
@@ -322,9 +322,9 @@ class PNAConvSimple(MessagePassing):
         self._aggregators = [
             _agg_sum, _agg_mean, _agg_max, _agg_std,
         ]
-        self._scalers = [
-            _scale_identity, _scale_amplification, _scale_attenuation,
-        ]
+        # scalers=False keeps only the identity scaler (GSAT's "PNA without scalers")
+        self._scalers = ([_scale_identity, _scale_amplification, _scale_attenuation]
+                         if scalers else [_scale_identity])
 
         deg = deg.float()
         # Only 'log' is consumed by the scalers below; 'lin' is kept for parity
@@ -445,14 +445,15 @@ def make_gat_conv(in_dim: int, out_dim: int,
 
 def make_pna_conv(in_dim: int, out_dim: int,
                   deg: Optional[Tensor] = None,
-                  edge_dim: Optional[int] = None) -> PNAConvSimple:
+                  edge_dim: Optional[int] = None,
+                  scalers: bool = True) -> PNAConvSimple:
     if deg is None:
         raise ValueError(
             "PNA requires a degree histogram (deg). "
             "Pass meta.deg from get_loaders() to build_model(). "
             "See loader.py:compute_deg_histogram()."
         )
-    return PNAConvSimple(in_dim, out_dim, deg=deg)
+    return PNAConvSimple(in_dim, out_dim, deg=deg, scalers=scalers)
 
 
 CONV_FACTORIES = {
@@ -472,6 +473,7 @@ def create_conv_layers(
     deg: Optional[Tensor] = None,
     edge_dim: Optional[int] = None,
     gin_inner_bn: bool = True,
+    pna_scalers: bool = True,
 ) -> torch.nn.ModuleList:
     """Create a ModuleList of conv layers for the given backbone.
 
@@ -504,7 +506,7 @@ def create_conv_layers(
             _gat_heads = int(os.environ.get('MOSE_GAT_HEADS', '1'))
             layers.append(factory(d_in, hidden_dim, heads=_gat_heads))
         elif backbone == 'PNA':
-            layers.append(factory(d_in, hidden_dim, deg=deg))
+            layers.append(factory(d_in, hidden_dim, deg=deg, scalers=pna_scalers))
         elif backbone == 'GIN':
             layers.append(factory(d_in, hidden_dim, inner_bn=gin_inner_bn))
         else:

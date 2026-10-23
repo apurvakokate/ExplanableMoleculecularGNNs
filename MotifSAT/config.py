@@ -34,6 +34,7 @@ class MotifSATConfig:
     arch_style: str = 'ours'
     pna_aggregators: str = 'mean,min,max,std'   # gsat PNA: paper OGB set (mutag adds sum)
     pna_scalers: bool = False                   # gsat PNA: paper uses no degree scalers
+    pna_pieces: str = ''   # ours PNA only: comma list of GSAT pieces: noscalers, bnres ('' = unchanged)
 
     # Motif method (orthogonal to noise and info loss)
     motif_method: str = 'none'         # none | loss | readout (motif_emb -> NotImplemented)
@@ -75,6 +76,7 @@ class MotifSATConfig:
     final_r: Optional[float] = None
     decay_interval: Optional[int] = None
     decay_r: Optional[float] = None
+    fix_r: bool = False   # True -> r constant at final_r (GSAT fix_r); base_gsat_noanneal sets it
     logit_clamp: Optional[float] = None  # |ℓ| cap before sigmoid; None = off (GSAT parity)
     deterministic_att: bool = False      # True → sigmoid gates during train (no Gumbel)
 
