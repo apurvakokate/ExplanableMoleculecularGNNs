@@ -357,10 +357,12 @@ class WandbLogger:
             batch = (data.batch if data.batch is not None
                      else torch.zeros(n, dtype=torch.long, device=device))
             try:
+                from .metrics import copy_kwargs
                 out = self.model(
                     data.x, data.edge_index, batch,
                     getattr(data, 'nodes_to_motifs', None),
                     getattr(data, 'edge_attr', None),
+                    **copy_kwargs(self.model, data),
                 )
                 node_att = out[1]  # (logits, node_att, aux)
                 if node_att is not None:
