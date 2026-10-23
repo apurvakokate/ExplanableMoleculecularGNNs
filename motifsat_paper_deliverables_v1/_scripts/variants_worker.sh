@@ -90,6 +90,7 @@ run_cell(){
 
 echo "worker $WHO DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] VOCABS=[$VOCABS] PRESETS=[$PRESETS] GROUPINGS=[$GROUPINGS] EPOCHS=$EPOCHS CLIP=${CLIP:-default}"
 # dataset outermost so the ground-truth sets (listed first in POOL_DATASETS) finish first
+work(){
 for ds in $POOL_DATASETS; do
   for preset in $PRESETS; do
     if [ "$preset" = base_gsat_noanneal ]; then vocs=rbrics_v3; grps=none; else vocs=$VOCABS; grps=$GROUPINGS; fi
@@ -104,4 +105,10 @@ for ds in $POOL_DATASETS; do
     done
   done
 done
+}
+# PAR loops per job share the job's cores (one single-threaded process per core; -c 2 -> PAR 2,
+# so a GPU job still holds 2 cores per GPU). Claims keep the loops from duplicating cells.
+PAR="${PAR:-1}"
+for _k in $(seq 1 "$PAR"); do work & sleep 5; done
+wait
 echo "worker $WHO DONE."
