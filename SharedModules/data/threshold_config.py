@@ -32,6 +32,12 @@ UNIFIED_FILTER_THRESHOLDS: dict[str, float] = {
     'mutag':             0.005,
     'ogbg-molhiv':       0.004,
     'ogbg-molbace':      0.005,
+    # GSAT paper datasets (2026-10-23): molbbbp = our BBBP's cut (same molecules); moltox21 =
+    # the 'tox21' entry above; molclintox / molsider = the table's modal 0.005.
+    'ogbg-molbbbp':      0.006,
+    'ogbg-moltox21':     0.005,
+    'ogbg-molclintox':   0.005,
+    'ogbg-molsider':     0.005,
 }
 
 CHOSEN_THRESHOLD: dict[str, dict[str, float]] = {
