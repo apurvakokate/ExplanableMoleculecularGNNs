@@ -21,7 +21,12 @@ Notes:
 - Only single-task datasets (molhiv, molbace, molbbbp, molesol, molfreesolv,
   mollipo) export a single 'label' column. Multi-task OGB sets (moltox21,
   molsider, molclintox) have multiple label columns; this script refuses them
-  unless --label_col is given, because the vocab pipeline expects one label.
+  unless --label_col or --any_positive is given, because the vocab pipeline expects one label.
+- --any_positive (multi-task sets): label = 1 if ANY observed task is positive, else 0
+  (missing task values count as not positive), so no row is dropped and the CSV stays
+  aligned 1:1 with the OGB graph indices. This label feeds only the vocab builder's motif
+  statistics (fragmentation is label-free); training still uses every task with missing
+  entries masked, as GSAT does.
 - The OGB split is deterministic; --fold is recorded in the filename only (OGB
   provides ONE official split, not k folds). Pass --fold 0 to match the default
   the loaders/vocab pipeline use.
@@ -61,7 +66,7 @@ def _ensure_ogb_cached(dataset: str, ogb_root: str) -> Path:
 
 
 def export(dataset: str, ogb_root: str, out_dir: str, fold: int,
-           label_col: str | None) -> Path:
+           label_col: str | None, any_positive: bool = False) -> Path:
     name_hyphen = dataset.replace('_', '-')
     mol_csv = _ensure_ogb_cached(dataset, ogb_root)
     df = pd.read_csv(mol_csv)
@@ -71,7 +76,14 @@ def export(dataset: str, ogb_root: str, out_dir: str, fold: int,
     # Resolve the label column.
     non_label = {'smiles', 'mol_id'}
     candidates = [c for c in df.columns if c not in non_label]
-    if label_col is not None:
+    if any_positive and label_col is not None:
+        raise ValueError("--any_positive and --label_col are mutually exclusive")
+    if any_positive:
+        if len(candidates) < 2:
+            raise ValueError(f"--any_positive is for multi-task sets; {dataset} has {candidates}")
+        use_col = f'any_positive({len(candidates)} tasks)'
+        df['__any_positive__'] = (df[candidates] == 1).any(axis=1).astype(int)
+    elif label_col is not None:
         if label_col not in df.columns:
             raise KeyError(f"--label_col {label_col!r} not in {list(df.columns)}")
         use_col = label_col
@@ -120,7 +132,7 @@ def export(dataset: str, ogb_root: str, out_dir: str, fold: int,
 
     out = pd.DataFrame({
         'smiles': df['smiles'].astype(str),
-        'label':  df[use_col],
+        'label':  df['__any_positive__'] if any_positive else df[use_col],
         'group':  group,
     })
     # Drop rows OGB marks with NaN label (some multi-task rows); single-task is fine.
@@ -150,9 +162,13 @@ def main():
                    help='FOLDS dir where {dataset}_{fold}.csv is written')
     p.add_argument('--fold', type=int, default=0)
     p.add_argument('--label_col', default=None,
-                   help='Explicit label column (required for multi-task OGB sets)')
+                   help='Explicit label column (multi-task OGB sets need this or --any_positive)')
+    p.add_argument('--any_positive', action='store_true',
+                   help='Multi-task sets: label = 1 if any observed task is positive, else 0 '
+                        '(motif statistics only; no row dropped)')
     args = p.parse_args()
-    export(args.dataset, args.ogb_root, args.out_dir, args.fold, args.label_col)
+    export(args.dataset, args.ogb_root, args.out_dir, args.fold, args.label_col,
+           args.any_positive)
 
 
 if __name__ == '__main__':
