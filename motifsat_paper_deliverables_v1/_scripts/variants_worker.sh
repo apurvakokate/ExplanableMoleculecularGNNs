@@ -42,7 +42,7 @@ PRESETS="${PRESETS:-intra_consistency inter_loss intra_inter_loss readout readou
 GROUPINGS="${GROUPINGS:-pooled copy}"
 : "${POOL_DATASETS:?set POOL_DATASETS to the space-separated datasets for this pool}"
 # lists may arrive ':'-joined from variants_launch.sh
-POOL_DATASETS="${POOL_DATASETS//:/ }"; VOCABS="${VOCABS//:/ }"; PRESETS="${PRESETS//:/ }"; GROUPINGS="${GROUPINGS//:/ }"
+POOL_DATASETS="${POOL_DATASETS//:/ }"; VOCABS="${VOCABS//:/ }"; PRESETS="${PRESETS//:/ }"; GROUPINGS="${GROUPINGS//:/ }"; BACKBONES="${BACKBONES//:/ }"
 if [ "${SMOKE:-0}" = 1 ]; then POOL_DATASETS="BBBP"; FOLDS="0"; BACKBONES="GIN"; EPOCHS=2; fi
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}" \

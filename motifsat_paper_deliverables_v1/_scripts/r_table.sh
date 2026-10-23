@@ -10,10 +10,10 @@ r_for(){  # "$1|$2" = dataset|backbone -> "<final_r> <decay_interval>"; unknown 
         "BBBP|GIN") echo "0.7 20" ;;
         "BBBP|PNA") echo "0.5 20" ;;
         "BBBP|SAGE") echo "0.5 20" ;;
-        # "Benzene_Verified_GT|GAT") pending: sweep cells still rerunning
+        "Benzene_Verified_GT|GAT") echo "0.5 10" ;;
         "Benzene_Verified_GT|GCN") echo "0.5 20" ;;
         "Benzene_Verified_GT|GIN") echo "0.7 20" ;;
-        # "Benzene_Verified_GT|PNA") pending: sweep cells still rerunning
+        "Benzene_Verified_GT|PNA") echo "0.5 20" ;;
         "Benzene_Verified_GT|SAGE") echo "0.5 20" ;;
         "Fluoride_Carbonyl_Verified_GT|GAT") echo "0.5 20" ;;
         "Fluoride_Carbonyl_Verified_GT|GCN") echo "0.5 20" ;;

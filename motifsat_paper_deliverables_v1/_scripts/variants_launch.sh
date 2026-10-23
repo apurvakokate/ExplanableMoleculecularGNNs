@@ -32,7 +32,7 @@ submit(){  # n device part gres mem datasets tag
     [ "$n" -gt 0 ] || { echo "skip $tag"; return 0; }
     ssh osuhpc "mkdir -p $LOG && sbatch --requeue --array=1-$n -p $part --gres=$gres -c 2 --mem=$mem \
         -t 12:00:00 -J variants_$tag -o $LOG/${tag}_%A_%a.out \
-        --export=ALL,POOL_DATASETS=${dss// /:},DEVICE=$dev,CLIP=$CLIP,SMOKE=$SMOKE,PAR=$PAR${VOCABS:+,VOCABS=${VOCABS// /:}}${PRESETS:+,PRESETS=${PRESETS// /:}}${GROUPINGS:+,GROUPINGS=${GROUPINGS// /:}}" < "$W"
+        --export=ALL,POOL_DATASETS=${dss// /:},DEVICE=$dev,CLIP=$CLIP,SMOKE=$SMOKE,PAR=$PAR${VOCABS:+,VOCABS=${VOCABS// /:}}${PRESETS:+,PRESETS=${PRESETS// /:}}${GROUPINGS:+,GROUPINGS=${GROUPINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}" < "$W"
 }
 submit "$NGPU" cuda "$GPU_PART" gpu:1 16G "$GPU_DATASETS" gpu
 submit "$NCPU" cpu  "$CPU_PART" gpu:0 12G "$CPU_DATASETS" cpu
