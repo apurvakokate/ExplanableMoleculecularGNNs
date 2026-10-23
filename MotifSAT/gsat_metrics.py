@@ -17,6 +17,8 @@ import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score
 
+from SharedModules.evaluation.metrics import copy_kwargs
+
 
 def pooled_edge_auc(edge_scores: np.ndarray, edge_labels: np.ndarray) -> float:
     """roc_auc_score over all edges; NaN when the labels have a single class."""
@@ -41,7 +43,7 @@ def gsat_explanation_metrics(model, loader, device) -> Dict[str, float]:
         _, node_att, aux = model(
             data.x, data.edge_index, data.batch,
             getattr(data, 'nodes_to_motifs', None), getattr(data, 'edge_attr', None),
-            epoch=1)
+            epoch=1, **copy_kwargs(model, data))
         if aux.get('edge_att') is not None:          # learn_edge_att path
             ea = aux['edge_att'].view(-1)
         else:

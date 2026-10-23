@@ -120,8 +120,9 @@ def _collect_motif_snapshot(
 
     # ── forward pass ──────────────────────────────────────────────────────────
     try:
+        from .metrics import copy_kwargs
         out = model(data.x, data.edge_index, batch, n2m,
-                    getattr(data, 'edge_attr', None))
+                    getattr(data, 'edge_attr', None), **copy_kwargs(model, data))
         if len(out) >= 3:
             logit, node_att_raw, aux = out[0], out[1], out[2]
         elif len(out) == 2:

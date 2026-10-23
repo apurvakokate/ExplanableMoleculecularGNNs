@@ -238,6 +238,7 @@ def training_summary_extras(cfg) -> Dict:
         'pna_aggregators': getattr(cfg, 'pna_aggregators', None),
         'pna_scalers': getattr(cfg, 'pna_scalers', None),
         'pna_pieces': getattr(cfg, 'pna_pieces', None),
+        'motif_grouping': getattr(cfg, 'motif_grouping', None),
         'ckpt_rule': getattr(cfg, 'ckpt_rule', None),
         'ckpt_metric': getattr(cfg, 'ckpt_metric', None),
         'lr_scheduler': getattr(cfg, 'lr_scheduler', None),

@@ -85,7 +85,8 @@ def _val_task_loss(model, criterion, loader, device, task_type,
         data = data.to(device)
         logits, _, _ = model(
             data.x, data.edge_index, data.batch, data.nodes_to_motifs,
-            getattr(data, 'edge_attr', None), epoch=1, motif_lengths=motif_lengths)
+            getattr(data, 'edge_attr', None), epoch=1, motif_lengths=motif_lengths,
+            nodes_to_copy=getattr(data, 'nodes_to_copy', None))
         tot += float(_task_loss(criterion, logits, data.y, task_type).item())
         n += 1
     return tot / max(n, 1)
@@ -117,6 +118,7 @@ def train_one_epoch(
             data.x, data.edge_index, data.batch,
             data.nodes_to_motifs, _edge_attr,
             epoch=epoch, motif_lengths=motif_lengths,
+            nodes_to_copy=getattr(data, 'nodes_to_copy', None),
         )
 
         task = _task_loss(criterion, logits, data.y, task_type)

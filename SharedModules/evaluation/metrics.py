@@ -173,6 +173,20 @@ def _node_att_from_weights(nw: torch.Tensor) -> torch.Tensor:
     return nw.view(-1, 1)
 
 
+def copy_kwargs(model, data) -> Dict:
+    """``{'nodes_to_copy': ...}`` when ``model.forward`` accepts it and the graph carries
+    copy ids (MotifSAT motif_grouping='copy'); ``{}`` otherwise (every other model)."""
+    import inspect
+    n2c = getattr(data, 'nodes_to_copy', None)
+    if n2c is None:
+        return {}
+    try:
+        params = inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {'nodes_to_copy': n2c} if 'nodes_to_copy' in params else {}
+
+
 def _model_forward(model, data, node_weights=None) -> torch.Tensor:
     """Dispatch to the model's forward and return the raw logit tensor.
 
@@ -197,6 +211,7 @@ def _model_forward(model, data, node_weights=None) -> torch.Tensor:
         batch=getattr(data, 'batch', None),
         nodes_to_motifs=getattr(data, 'nodes_to_motifs', None),
         edge_attr=getattr(data, 'edge_attr', None),
+        nodes_to_copy=getattr(data, 'nodes_to_copy', None),
     )
     if node_weights is not None:
         # Convert mask/weights → node attention HERE, so the model receives a

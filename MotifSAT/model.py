@@ -224,6 +224,7 @@ class GSAT(nn.Module):
         pna_aggregators: Optional[Tuple[str, ...]] = None,
         pna_scalers: bool = True,
         pna_pieces: Tuple[str, ...] = (),
+        motif_grouping: str = 'pooled',
     ):
         super().__init__()
 
@@ -402,6 +403,15 @@ class GSAT(nn.Module):
         _bad = set(pna_pieces) - {'noscalers', 'bnres'}
         if _bad:
             raise ValueError(f"unknown pna_pieces {sorted(_bad)}; expected noscalers, bnres")
+        # motif_grouping: what one motif row / consistency group is.
+        #   pooled (default) — one row per (graph, motif id): all copies share it.
+        #   copy             — one row per (graph, motif id, copy): every occurrence of a
+        #                      motif gets its own score, gate, info-loss term and group.
+        if motif_grouping not in ('pooled', 'copy'):
+            raise ValueError(f"motif_grouping must be 'pooled' or 'copy', got {motif_grouping!r}")
+        if motif_grouping == 'copy' and motif_method == 'motif_emb':
+            raise ValueError("motif_grouping='copy' is not implemented for motif_method='motif_emb'")
+        self.motif_grouping = motif_grouping
         self.arch_style = arch_style
 
         # Node-level extractor (base GSAT path when noise='none')
@@ -586,8 +596,12 @@ class GSAT(nn.Module):
         epoch: int = 0,
         motif_lengths: Optional[list] = None,
         node_weights: Optional[Tensor] = None,
+        nodes_to_copy: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor], Dict]:
         """Forward pass.
+
+        ``nodes_to_copy`` [N] (copy index of each atom within its motif) is required when
+        ``motif_grouping='copy'`` and a motif-grouped component is active.
 
         Returns (logits [B, C], node_att [N, 1] or None, aux_dict)
 
@@ -617,6 +631,7 @@ class GSAT(nn.Module):
             return logits, nw, {'node_att': nw, 'node_att_soft': nw}
 
         r = float(self.r.item())
+        group_ids = self._group_ids(nodes_to_motifs, nodes_to_copy)
 
         # Step 2/3: score → sample. Three producers of the attention gate:
         # mechanism ③ (GNN1 over the fragment graph), the edge extractor, or the
@@ -651,7 +666,7 @@ class GSAT(nn.Module):
                 edge_att_soft = edge_logits.sigmoid()
             else:
                 node_logits, motif_logits, inv_idx, _ = self._get_node_logits(
-                    node_emb, nodes_to_motifs, batch)
+                    node_emb, group_ids, batch)
                 node_att, node_att_soft, motif_att = self._sample_node_attention(
                     node_logits, motif_logits, inv_idx, self.training,
                 )
@@ -680,8 +695,38 @@ class GSAT(nn.Module):
             'motif_logits':  motif_logits,
             'inv_idx':       inv_idx,
             'r':             r,
+            'group_ids':     group_ids,
         }
         return logits, node_att, aux
+
+    def _uses_motif_groups(self) -> bool:
+        return (self.motif_scorer is not None or self.motif_loss_coef > 0
+                or self.between_motif_coef > 0 or self.within_node_coef > 0)
+
+    def _group_ids(self, nodes_to_motifs: Optional[Tensor],
+                   nodes_to_copy: Optional[Tensor]) -> Optional[Tensor]:
+        """Per-node group id used for motif rows and consistency groups.
+        pooled: nodes_to_motifs unchanged. copy: a dense id per (motif id, copy) pair in
+        the batch (-1 stays -1); graphs are separated downstream by ``batch``."""
+        if self.motif_grouping == 'pooled' or nodes_to_motifs is None:
+            return nodes_to_motifs
+        if nodes_to_copy is None:
+            if self._uses_motif_groups():
+                raise ValueError(
+                    "motif_grouping='copy' but nodes_to_copy is None — the vocabulary "
+                    "needs _mol_fragment_copies.pickle and every forward call must pass "
+                    "nodes_to_copy (refusing to fall back to pooled grouping).")
+            return nodes_to_motifs
+        n2m = nodes_to_motifs.view(-1).long()
+        cp = nodes_to_copy.view(-1).long().to(n2m.device)
+        known = n2m >= 0
+        if bool((known & (cp < 0)).any()):
+            raise ValueError("motif_grouping='copy': an atom with a motif id has no copy index")
+        out = torch.full_like(n2m, -1)
+        if bool(known.any()):
+            key = n2m[known] * (int(cp.max().item()) + 1) + cp[known]
+            out[known] = torch.unique(key, return_inverse=True)[1]
+        return out
 
     # ── Loss computation ──────────────────────────────────────────────────────
 
@@ -738,7 +783,7 @@ class GSAT(nn.Module):
             if (aux['node_att'] is not None and nodes_to_motifs is not None
                     and batch is not None):
                 within_v, between_v = motif_consistency_loss(
-                    aux['node_att'], nodes_to_motifs, batch
+                    aux['node_att'], aux.get('group_ids', nodes_to_motifs), batch
                 )
                 cons = (self.within_node_coef * within_v
                         - self.between_motif_coef * between_v)

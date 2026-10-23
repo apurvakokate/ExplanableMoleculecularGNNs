@@ -994,6 +994,11 @@ def get_loaders(
 
     reject_wildcard_smiles_in_csv(csv)
     _apply_thr = threshold_pct is not None   # thresholded vocab ⇒ -1 (UNK) allowed
+    # Copy identity (nodes_to_copy) on read, when the vocabulary carries copy records.
+    from .dataset import AttachCopies
+    _copies_tf = (AttachCopies(vocab.mol_fragment_copies)
+                  if vocab is not None and getattr(vocab, 'mol_fragment_copies', None)
+                  else None)
 
     # Training split — compute normalisation stats from training data
     train_ds = MolDataset(
@@ -1007,6 +1012,7 @@ def get_loaders(
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
         apply_threshold=_apply_thr,
+        transform=_copies_tf,
     )
 
     val_ds = MolDataset(
@@ -1022,6 +1028,7 @@ def get_loaders(
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
         apply_threshold=_apply_thr,
+        transform=_copies_tf,
     )
 
     test_ds = MolDataset(
@@ -1037,6 +1044,7 @@ def get_loaders(
         force_reprocess=force_reprocess,
         source_gt_smarts=source_gt_smarts,
         apply_threshold=_apply_thr,
+        transform=_copies_tf,
     )
 
     _apply_thr = threshold_pct is not None

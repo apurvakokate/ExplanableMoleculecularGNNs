@@ -114,6 +114,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
         pna_scalers=bool(getattr(cfg, 'pna_scalers', True)),
         pna_pieces=tuple(a.strip() for a in
                          str(getattr(cfg, 'pna_pieces', '') or '').split(',') if a.strip()),
+        motif_grouping=getattr(cfg, 'motif_grouping', 'pooled'),
     )
 
 
@@ -221,7 +222,8 @@ def _aggregate_att_to_motif(
             # return shape or a missing key is a real bug we want to surface, not
             # a reason to silently drop the graph from the aggregation.
             _, _, aux = model(data.x, data.edge_index, batch, n2m,
-                              getattr(data, "edge_attr", None))
+                              getattr(data, "edge_attr", None),
+                              nodes_to_copy=getattr(data, "nodes_to_copy", None))
             node_score = aux["node_att_soft"].view(-1).detach().cpu()
 
             n2m_cpu = n2m.cpu()
@@ -728,6 +730,22 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
             _denorm, out_dir, getattr(cfg, 'max_motifs_eval', None),
             motif_scores=_scores, method_name=_method)
 
+    # Opt-in: motif impact with ALL occurrences masked vs ONE occurrence at a time
+    # (MotifSAT/occurrence_eval.py). Needs copy ids (vocab _mol_fragment_copies.pickle).
+    if getattr(cfg, 'occurrence_eval', False):
+        from occurrence_eval import run_occurrence_eval
+        _occ = run_occurrence_eval(
+            model, {'train': train_list, 'valid': valid_list, 'test': test_list},
+            device, task_type, out_dir)
+        with open(out_dir / "occurrence_summary.json", "w") as f:
+            json.dump(_occ, f, indent=2, default=float)
+        with open(out_dir / "summary.json") as f:
+            _s = json.load(f)
+        _s.update(_occ)
+        with open(out_dir / "summary.json", "w") as f:
+            json.dump(_s, f, indent=2, default=float)
+        print(f"  [occurrence_eval] {len(_occ)} fields -> occurrence_summary.json + summary.json")
+
     # Log final results to W&B
     if wandb_logger is not None:
         wandb_logger.log_final_results(
@@ -907,6 +925,9 @@ def main():
                              "(default: post-hoc via analysis/run_multi_explanation.py).")
     parser.add_argument("--graph_pool", default="add", choices=["add", "mean"],
                         help="Graph readout pooling: add (sum, default) | mean.")
+    parser.add_argument("--occurrence_eval", action="store_true",
+                        help="also compute motif impact masking ALL occurrences vs ONE "
+                             "occurrence at a time (needs copy records); see occurrence_eval.py")
     parser.add_argument("--per_split_eval", action="store_true",
                         help="END-TO-END per-split metrics: after training, write "
                              "summary_splits.json (train/valid/test evaluated separately, "
@@ -920,6 +941,8 @@ def main():
     parser.add_argument("--pna_aggregators", default=None,
                         help="comma list for arch_style=gsat PNA, e.g. mean,min,max,std")
     parser.add_argument("--pna_scalers", default=None, choices=["true", "false"])
+    parser.add_argument("--motif_grouping", default=None, choices=["pooled", "copy"],
+                        help="motif row / consistency group: per (graph, motif) or per occurrence")
     parser.add_argument("--fix_r", default=None, choices=["true", "false"],
                         help="hold r constant at final_r (GSAT fix_r); overrides config")
     parser.add_argument("--pna_pieces", default=None,
@@ -1031,7 +1054,7 @@ def main():
         cfg.patience = args.patience
     if args.ckpt_rule is not None:
         cfg.ckpt_rule = args.ckpt_rule
-    for _k in ('arch_style', 'pna_aggregators', 'pna_pieces', 'ckpt_metric', 'lr_scheduler',
+    for _k in ('arch_style', 'pna_aggregators', 'pna_pieces', 'motif_grouping', 'ckpt_metric', 'lr_scheduler',
                'pos_weight', 'clip_grad', 'mutag_split'):
         if getattr(args, _k) is not None:
             setattr(cfg, _k, getattr(args, _k))
@@ -1039,6 +1062,8 @@ def main():
         cfg.pna_scalers = (args.pna_scalers == 'true')
     if args.fix_r is not None:
         cfg.fix_r = (args.fix_r == 'true')
+    if args.occurrence_eval:
+        cfg.occurrence_eval = True
     run(cfg, per_split_eval=args.per_split_eval)
 
 

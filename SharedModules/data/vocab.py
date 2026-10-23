@@ -3,6 +3,7 @@
 Artifacts from generate_vocab_rules.py (fold-0 mining)
   {base}_lookup_all.pickle          SMILES → atom map, pre-threshold (annotation)
   {base}_mol_fragment_smarts.pickle per-SMILES fragment list (threshold support)
+  {base}_mol_fragment_copies.pickle per-SMILES copies (key, motif_id, atoms) — optional
   {base}_graph_lookup.pickle        fold-0 train slice, thresholded (legacy/mining)
   {base}_valid_graph_lookup.pickle  fold-0 valid slice
   {base}_test_graph_lookup.pickle   fold-0 test slice
@@ -53,6 +54,9 @@ class VocabData:
     lookup_all: Optional[Dict[str, Dict[int, Tuple[str, int]]]] = None
     # {smiles: [smarts, ...]} — one entry per fragment instance for support counts.
     mol_fragment_smarts: Optional[Dict[str, List[str]]] = None
+    # {smiles: [(smarts, motif_id, [atom_idx...]) per copy]} — copy identity (optional;
+    # written by generate_vocab_rules since 2026-10-21). None for older vocabularies.
+    mol_fragment_copies: Optional[Dict[str, list]] = None
     apply_threshold: bool = False
     threshold_pct: Optional[float] = None
     mining_fold: int = 0
@@ -139,6 +143,8 @@ def load_vocab(
             f"(generate_vocab_rules.py writes _mol_fragment_smarts.pickle)."
         )
     mol_fragment_smarts = _load_pickle(_frags_path)
+    _copies_path = Path(f'{base}_mol_fragment_copies.pickle')
+    mol_fragment_copies = _load_pickle(_copies_path) if _copies_path.exists() else None
 
     apply_threshold = False
     threshold_pct = None
@@ -173,6 +179,7 @@ def load_vocab(
         kept_motif_ids=kept_motif_ids,
         lookup_all=lookup_all,
         mol_fragment_smarts=mol_fragment_smarts,
+        mol_fragment_copies=mol_fragment_copies,
         apply_threshold=apply_threshold,
         threshold_pct=threshold_pct,
         mining_fold=mining_fold,

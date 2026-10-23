@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+
 import torch
 from torch_geometric.data import Data
 from sklearn.metrics import roc_auc_score
@@ -1154,9 +1155,11 @@ def model_node_att_fn(model: torch.nn.Module, device: torch.device):
         batch = getattr(data_dev, 'batch', None)
         if batch is None:
             batch = torch.zeros(data_dev.x.size(0), dtype=torch.long, device=device)
+        from .metrics import copy_kwargs
         out = model(data_dev.x, data_dev.edge_index, batch,
                     getattr(data_dev, 'nodes_to_motifs', None),
-                    getattr(data_dev, 'edge_attr', None))
+                    getattr(data_dev, 'edge_attr', None),
+                    **copy_kwargs(model, data_dev))
         node_att = None
         if len(out) >= 3 and isinstance(out[2], dict) \
                 and out[2].get('node_att_soft') is not None:
@@ -1265,12 +1268,14 @@ def compute_gt_roc(
                 continue
             node_att = _na.view(-1)
         else:
+            from .metrics import copy_kwargs
             out = model(data_dev.x, data_dev.edge_index,
                         getattr(data_dev, 'batch',
                                 torch.zeros(data_dev.x.size(0),
                                             dtype=torch.long, device=device)),
                         getattr(data_dev, 'nodes_to_motifs', None),
-                        getattr(data_dev, 'edge_attr', None))
+                        getattr(data_dev, 'edge_attr', None),
+                        **copy_kwargs(model, data_dev))
             # Handle (logits,), (logits, att), (logits, att, aux_dict).
             # Prefer the clean soft attention from aux when present: model att is
             # a soft sigmoid gate in (0,1), but at train time it carries injected

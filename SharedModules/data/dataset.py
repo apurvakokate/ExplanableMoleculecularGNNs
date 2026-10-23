@@ -189,6 +189,50 @@ def build_graph(
     )
 
 
+class AttachCopies:
+    """Dataset transform: set ``data.nodes_to_copy`` [N] from the vocabulary's per-copy
+    record (``<base>_mol_fragment_copies.pickle``: smiles -> [(key, motif_id, atoms)]).
+
+    ``nodes_to_copy[i]`` = index of atom i's copy among the copies of the SAME motif key in
+    that molecule (0, 1, ... in record order); -1 for atoms in no recorded copy. Together
+    with ``nodes_to_motifs`` it identifies one motif occurrence. Applied on read, so it
+    works with existing processed caches (no reprocessing).
+    Fail fast: a graph whose SMILES has no copy record, or whose recorded copy atoms carry a
+    different motif id than ``nodes_to_motifs`` (when that id is >= 0), raises.
+    """
+
+    def __init__(self, copies: Dict[str, list]):
+        self.copies = copies
+        self._cache: Dict[str, torch.Tensor] = {}
+
+    def _build(self, smiles: str, n: int, n2m: torch.Tensor) -> torch.Tensor:
+        recs = self.copies.get(smiles)
+        if recs is None:
+            raise KeyError(f"AttachCopies: no copy record for SMILES {smiles!r}")
+        out = torch.full((n,), -1, dtype=torch.long)
+        seen: Dict[str, int] = {}
+        for key, mid, atoms in recs:
+            k = seen.get(key, 0)
+            seen[key] = k + 1
+            for a in atoms:
+                if not 0 <= a < n:
+                    raise ValueError(f"AttachCopies: atom {a} out of range (n={n}) in {smiles!r}")
+                if int(n2m[a]) >= 0 and mid >= 0 and int(n2m[a]) != int(mid):
+                    raise ValueError(
+                        f"AttachCopies: atom {a} of copy {key!r} has nodes_to_motifs="
+                        f"{int(n2m[a])} but the copy record says {mid} ({smiles!r})")
+                out[a] = k
+        return out
+
+    def __call__(self, data):
+        smi = str(data.smiles)
+        t = self._cache.get(smi)
+        if t is None:
+            t = self._cache[smi] = self._build(smi, data.num_nodes, data.nodes_to_motifs.view(-1))
+        data.nodes_to_copy = t
+        return data
+
+
 def attach_source_gt(data, queries) -> None:
     """In-place: set ``data.node_label`` [N] and ``data.edge_label`` [E] from
     source-GT SMARTS ``queries`` (pre-compiled ``Chem.MolFromSmarts`` objects, or

@@ -313,6 +313,99 @@ class TestFixR(unittest.TestCase):
         self.assertEqual((cfg.init_r, cfg.decay_r), (0.9, 0.1))
 
 
+def _copy_graph(i, gen):
+    """6-atom ring-ish graph: motif 0 has TWO copies {0,1} and {3,4}; motif 1 = {2,5}."""
+    d = _graph(i, gen=gen)
+    d.nodes_to_motifs = torch.tensor([0, 0, 1, 0, 0, 1])
+    d.nodes_to_copy = torch.tensor([0, 0, 0, 1, 1, 0])
+    d.smiles = f'G{i}'
+    return d
+
+
+class TestAttachCopies(unittest.TestCase):
+    def test_indices_and_checks(self):
+        from SharedModules.data.dataset import AttachCopies
+        rec = {'S': [('A', 0, [0, 1]), ('B', 1, [2, 5]), ('A', 0, [3, 4])]}
+        d = Data(x=torch.zeros(6, 2), edge_index=torch.zeros(2, 0, dtype=torch.long),
+                 nodes_to_motifs=torch.tensor([0, 0, 1, 0, 0, 1]), smiles='S')
+        out = AttachCopies(rec)(d)
+        self.assertEqual(out.nodes_to_copy.tolist(), [0, 0, 0, 1, 1, 0])
+        bad = Data(x=torch.zeros(6, 2), edge_index=torch.zeros(2, 0, dtype=torch.long),
+                   nodes_to_motifs=torch.tensor([0, 0, 1, 1, 0, 1]), smiles='S')
+        with self.assertRaises(ValueError):
+            AttachCopies(rec)(bad)                 # atom 3: copy says motif 0, graph says 1
+        miss = Data(x=torch.zeros(1, 2), edge_index=torch.zeros(2, 0, dtype=torch.long),
+                    nodes_to_motifs=torch.tensor([0]), smiles='T')
+        with self.assertRaises(KeyError):
+            AttachCopies(rec)(miss)
+
+
+class TestCopyGrouping(unittest.TestCase):
+    def _readout(self, grouping):
+        torch.manual_seed(0)
+        return GSAT(x_dim=NUM_ATOM_TYPES, hidden_dim=H, num_layers=2, backbone_name='GIN',
+                    num_classes=1, motif_method='readout', noise='motif',
+                    info_loss_level='motif', motif_scorer_norm='instance',
+                    motif_grouping=grouping)
+
+    def test_copy_gives_one_row_per_occurrence(self):
+        g = torch.Generator().manual_seed(0)
+        b = Batch.from_data_list([_copy_graph(i, g) for i in range(3)])
+        for grouping, rows in (('pooled', 2), ('copy', 3)):
+            m = self._readout(grouping); m.eval()
+            _, _, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr,
+                          nodes_to_copy=b.nodes_to_copy)
+            self.assertEqual(aux['motif_logits'].numel(), rows * 3)
+        m = self._readout('copy'); m.eval()
+        _, _, aux = m(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr,
+                      nodes_to_copy=b.nodes_to_copy)
+        att = aux['node_att_soft'].view(-1)[:6]
+        self.assertAlmostEqual(float(att[0]), float(att[1]), places=6)    # same copy
+        self.assertNotAlmostEqual(float(att[0]), float(att[3]), places=6)  # other copy
+
+    def test_copy_without_ids_raises(self):
+        b = Batch.from_data_list([_copy_graph(0, torch.Generator().manual_seed(0))])
+        with self.assertRaises(ValueError):
+            self._readout('copy')(b.x, b.edge_index, b.batch, b.nodes_to_motifs, b.edge_attr)
+
+    def test_consistency_loss_groups_copies_separately(self):
+        from losses import motif_consistency_loss
+        att = torch.tensor([0.9, 0.9, 0.5, 0.1, 0.1, 0.5])
+        n2m = torch.tensor([0, 0, 1, 0, 0, 1]); batch = torch.zeros(6, dtype=torch.long)
+        m = GSAT(x_dim=NUM_ATOM_TYPES, hidden_dim=H, num_layers=2, backbone_name='GIN',
+                 num_classes=1, motif_method='loss', motif_loss_coef=1.0,
+                 within_node_coef=1.0, motif_grouping='copy')
+        gid = m._group_ids(n2m, torch.tensor([0, 0, 0, 1, 1, 0]))
+        w_pooled, _ = motif_consistency_loss(att, n2m, batch)
+        w_copy, _ = motif_consistency_loss(att, gid, batch)
+        self.assertGreater(float(w_pooled), 0.1)      # copies disagree -> penalised pooled
+        self.assertAlmostEqual(float(w_copy), 0.0, places=6)   # each copy is uniform
+
+
+class TestOccurrenceEval(unittest.TestCase):
+    def test_maskall_matches_compute_motif_impact_and_maskone(self):
+        from occurrence_eval import occurrence_tables, occurrence_metrics
+        from SharedModules.evaluation.motif_eval import compute_motif_impact
+        g = torch.Generator().manual_seed(1)
+        gs = [_copy_graph(i, g) for i in range(4)]
+        m = _gsat('GIN'); m.eval()
+        occ, allm = occurrence_tables(m, gs, torch.device('cpu'), 'BinaryClass')
+        voc = types.SimpleNamespace(motif_list=['A', 'B'], motif_lengths=[2, 1])
+        ref = compute_motif_impact(m, gs, voc, torch.device('cpu'), task_type='BinaryClass')
+        for mid, e in ref.items():
+            for gi, sc, im in zip(e['graph_indices'], e['score_values'],
+                                  e['masking_without_removal_values']):
+                row = allm[(allm.graph_idx == gi) & (allm.motif_id == mid)].iloc[0]
+                self.assertAlmostEqual(row.impact, im, places=5)
+                self.assertAlmostEqual(row.score, sc, places=5)
+        self.assertEqual(len(allm), 8)                    # 4 graphs x 2 motifs
+        self.assertEqual(len(occ), 4 * (2 + 1))           # motif 0: 2 copies, motif 1: 1
+        one = occ[(occ.motif_id == 1)]; al = allm[allm.motif_id == 1]
+        self.assertTrue(np.allclose(one.impact.values, al.impact.values))
+        met = occurrence_metrics(occ, allm)
+        self.assertEqual(met['n_multi_pairs'], 4)
+
+
 class TestBuildModelWiring(unittest.TestCase):
     def test_build_model_passes_gsat_knobs(self):
         from config import MotifSATConfig
