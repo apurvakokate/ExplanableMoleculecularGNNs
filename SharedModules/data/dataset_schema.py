@@ -56,8 +56,11 @@ DATASET_COLUMN: Dict[str, Optional[str]] = {
     'ogbg-molesol':      'label',
     'ogbg-molfreesolv':  'label',
     'ogbg-mollipo':      'label',
-    'ogbg-molclintox':   None,   # multi-task: export one task with --label_col
-    'ogbg-moltox21':     None,   # multi-task
+    # Multi-task sets: the exported CSV's single 'label' column feeds motif STATISTICS only
+    # (export_ogb_to_csv.py: tox21 --any_positive, clintox --label_col CT_TOX); training
+    # uses every task from the OGB graph labels (MultiLabel, missing entries masked).
+    'ogbg-molclintox':   'label',
+    'ogbg-moltox21':     'label',
     'ogbg-molsider':     None,   # multi-task
     # TUDataset mutag: the exported mutag_<fold>.csv (build_mutag_smiles_df /
     # export_mutag_dataset_to_csv.py) has a generic 'label' column, so the CSV

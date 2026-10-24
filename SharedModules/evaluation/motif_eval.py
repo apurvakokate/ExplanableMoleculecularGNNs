@@ -84,6 +84,31 @@ def _single_prob(
     return float(out.view(-1)[0])
 
 
+@torch.no_grad()
+def _single_pred(
+    model,
+    data: Data,
+    device: torch.device,
+    task_type: str,
+    node_weights: Optional[torch.Tensor] = None,
+) -> np.ndarray:
+    """ALL model outputs for one graph as a vector: sigmoid per output for BinaryClass and
+    MultiLabel, raw for Regression. The impact path uses this (not ``_single_prob``, which
+    keeps output 0 only) so a multi-task model's impact covers every task; for a
+    single-output model it is the length-1 vector [_single_prob(...)]."""
+    from .metrics import _model_forward
+    out = _model_forward(model, data.clone().to(device), node_weights=node_weights).view(-1)
+    if task_type in ('BinaryClass', 'MultiLabel'):
+        out = torch.sigmoid(out)
+    return out.detach().cpu().numpy().astype(float)
+
+
+def _pred_delta(p_a: np.ndarray, p_b: np.ndarray) -> float:
+    """Impact between two prediction vectors: mean over outputs of |p_a - p_b|. For one
+    output this is |p_a - p_b|, the single-task definition, unchanged."""
+    return float(np.mean(np.abs(np.asarray(p_a, float) - np.asarray(p_b, float))))
+
+
 def build_graph_mask_cache(
     data_list: List[Data],
 ) -> Dict[int, Dict[int, torch.BoolTensor]]:
@@ -121,9 +146,10 @@ def build_faithful_loo_baseline(
     device: torch.device,
     task_type: str,
     base_att_fn: Optional[Callable[[Data], Optional[torch.Tensor]]] = None,
-) -> Tuple[Dict[int, torch.Tensor], Dict[int, float]]:
+) -> Tuple[Dict[int, torch.Tensor], Dict[int, np.ndarray]]:
     """Precompute the faithful-LOO weight vector ``W`` and its baseline
-    prediction ``p(g;W)`` per graph, keyed by graph index in ``data_list``.
+    prediction ``p(g;W)`` per graph (vector over model outputs, ``_single_pred``),
+    keyed by graph index in ``data_list``.
 
     ``W`` defaults to the model's own learned node attention
     (``model_node_att_fn``); pass ``base_att_fn`` to inject a post-hoc
@@ -137,14 +163,14 @@ def build_faithful_loo_baseline(
     if base_att_fn is None:
         base_att_fn = model_node_att_fn(model, device)
     base_W: Dict[int, torch.Tensor] = {}
-    p_full_W: Dict[int, float] = {}
+    p_full_W: Dict[int, np.ndarray] = {}
     for gi, d in enumerate(data_list):
         W = base_att_fn(d)
         if W is None:
             continue
         W = W.view(-1).float().to(device)
         base_W[gi] = W
-        p_full_W[gi] = _single_prob(
+        p_full_W[gi] = _single_pred(
             model, d, device, task_type, node_weights=W)
     return base_W, p_full_W
 
@@ -155,12 +181,13 @@ def loo_impact(
     data: Data,
     graph_mask: torch.Tensor,
     base_W: Dict[int, torch.Tensor],
-    p_full_W: Dict[int, float],
+    p_full_W: Dict[int, np.ndarray],
     device: torch.device,
     task_type: str,
 ) -> Optional[float]:
     """Faithful leave-one-out impact for ONE (graph, motif): keep ``W`` as-is,
-    zero ONLY this motif's node weights, return ``|p(g;W) - p(g;W\\m)|``.
+    zero ONLY this motif's node weights, return ``|p(g;W) - p(g;W\\m)|``
+    (mean over outputs for a multi-task model, ``_pred_delta``).
 
     Returns None when the graph has no ``W`` (model without node attention).
     Fails fast on a W/mask length mismatch — both are graph-node space, so they
@@ -178,8 +205,8 @@ def loo_impact(
         )
     Wm = W.clone()
     Wm[graph_mask.to(Wm.device).bool()] = 0.0
-    p_masked = _single_prob(model, data, device, task_type, node_weights=Wm)
-    return abs(p_full_W[graph_idx] - p_masked)
+    p_masked = _single_pred(model, data, device, task_type, node_weights=Wm)
+    return _pred_delta(p_full_W[graph_idx], p_masked)
 
 
 def _model_supports_node_weights(model) -> bool:

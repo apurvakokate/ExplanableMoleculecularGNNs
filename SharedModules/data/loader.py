@@ -283,8 +283,10 @@ class MutagTUDataset(torch.utils.data.Dataset):
         *,
         motif_lookup: Optional[Dict] = None,
         apply_threshold: bool = False,
+        transform=None,
     ):
         self._data = data_list
+        self._transform = transform
         self._vocab = vocab
         self._index_maps = index_maps or {}
         self._smiles = smiles_list or [None] * len(data_list)
@@ -343,6 +345,8 @@ class MutagTUDataset(torch.utils.data.Dataset):
                 f"mutag graph {idx}: vocab set but mapped SMILES is missing.")
         else:
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
+        if self._transform is not None:
+            data = self._transform(data)
         return data
 
 
@@ -366,8 +370,10 @@ class OGBMotifDataset(torch.utils.data.Dataset):
         require_smiles: bool = False,
         motif_lookup: Optional[Dict] = None,
         apply_threshold: bool = False,
+        transform=None,
     ):
         self._ds = ogb_dataset
+        self._transform = transform
         self._indices = list(indices)
         # Motif annotation MUST come from build_fold_annotation (full pre-threshold
         # pool + per-fold threshold), exactly like the CSV and mutag paths. The legacy
@@ -435,6 +441,8 @@ class OGBMotifDataset(torch.utils.data.Dataset):
             data.nodes_to_motifs = torch.full((n,), -1, dtype=torch.long)
         if self._normalize_labels and data.y is not None:
             data.y = (data.y - self._label_mean) / self._label_std
+        if self._transform is not None:
+            data = self._transform(data)
         return data
 
 
@@ -694,7 +702,14 @@ def _get_mutag_loaders(
         return MutagTUDataset(
             data_list, vocab, index_maps, smiles_list, split=split_name,
             motif_lookup=motif_lookup, apply_threshold=apply_threshold,
+            transform=_copies_tf,
         )
+
+    # Copy identity (nodes_to_copy) on read, mapped through the mutag index map.
+    from .dataset import AttachCopies
+    _copies_tf = (AttachCopies(vocab.mol_fragment_copies, index_maps=index_maps)
+                  if vocab is not None and getattr(vocab, 'mol_fragment_copies', None)
+                  else None)
 
     train_ds = _build_ds(train_items, 'training')
     val_ds   = _build_ds(val_items,   'valid')
@@ -804,10 +819,15 @@ def _get_ogb_loaders(
               f'{dataset} kept={_n_kept}/{vocab.num_motifs} motifs')
 
     _apply_thr = threshold_pct is not None
+    # Copy identity (nodes_to_copy) on read; OGB graphs use the SMILES atom order.
+    from .dataset import AttachCopies
+    _copies_tf = (AttachCopies(vocab.mol_fragment_copies)
+                  if vocab is not None and getattr(vocab, 'mol_fragment_copies', None)
+                  else None)
     _ds_kw = dict(
         label_mean=label_mean, label_std=label_std,
         normalize_labels=_norm, require_smiles=_require_smiles,
-        motif_lookup=lookup, apply_threshold=_apply_thr,
+        motif_lookup=lookup, apply_threshold=_apply_thr, transform=_copies_tf,
     )
 
     train_ds = OGBMotifDataset(
@@ -1287,7 +1307,9 @@ def compute_pos_weights(dataset) -> torch.Tensor:
     For multi-label:  returns Tensor([n_neg_c / n_pos_c]) per task.
     Accepts MolDataset, MutagTUDataset, or any iterable of PyG Data.
     """
-    ys = torch.tensor([d.y.item() if d.y.numel() == 1 else d.y.tolist()
+    # view(-1): OGB multi-task graphs store y as [1, T]; a nested [[...]] list would make
+    # ys 3-D and pool every task into ONE weight instead of one weight per task.
+    ys = torch.tensor([d.y.item() if d.y.numel() == 1 else d.y.view(-1).tolist()
                        for d in dataset], dtype=torch.float)
     if ys.dim() == 1:
         pos = (ys == 1).sum().clamp(min=1)

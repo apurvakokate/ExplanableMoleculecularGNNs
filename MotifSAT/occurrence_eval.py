@@ -9,8 +9,10 @@ For every graph (one split) with ``nodes_to_motifs`` and ``nodes_to_copy``:
   mask-one = for each occurrence (m, c):     zero W on copy c only
              score = mean W over copy c's atoms; impact = |p(W) - p(W \\ (m,c))|
 
-p = sigmoid(first logit) for BinaryClass, else the first output — the same rule as
-``motif_eval._single_prob``, so mask-all reproduces the existing ``compute_motif_impact``.
+p = all model outputs: sigmoid for BinaryClass / MultiLabel, raw for Regression — the same
+rule as ``motif_eval._single_pred``; impact = mean over outputs of |Δp| (``_pred_delta``), so
+mask-all reproduces the existing ``compute_motif_impact``. Multi-task models also get
+per-task impacts in columns ``impact_t<j>`` (for per-task / per-category analysis).
 All masked variants of a graph are scored in ONE batched forward (node_weights path).
 
 Metrics (Pearson of score vs impact):
@@ -34,13 +36,16 @@ from SharedModules.evaluation.motif_eval import model_node_att_fn
 
 
 def _probs(model, d, weights: List[torch.Tensor], device, task_type: str) -> np.ndarray:
+    """[k, T] predictions for the k weightings of one graph (T = number of outputs)."""
     k = len(weights)
     b = Batch.from_data_list([d] * k).to(device)
     w = torch.cat(weights).view(-1, 1).to(device)
     out, _, _ = model(b.x, b.edge_index, b.batch, getattr(b, 'nodes_to_motifs', None),
                       getattr(b, 'edge_attr', None), node_weights=w)
-    first = out.view(k, -1)[:, 0]
-    return (torch.sigmoid(first) if task_type == 'BinaryClass' else first).cpu().numpy()
+    out = out.view(k, -1)
+    if task_type in ('BinaryClass', 'MultiLabel'):
+        out = torch.sigmoid(out)
+    return out.cpu().numpy().astype(float)
 
 
 @torch.no_grad()
@@ -73,10 +78,13 @@ def occurrence_tables(model, data_list, device, task_type: str
         weights = [W] + [W.masked_fill(mk, 0.0) for mk in masks]
         p = _probs(model, d, weights, device, task_type)
         p0, smi = p[0], str(getattr(d, 'smiles', ''))
+        multi = p.shape[1] > 1
         for (kind, m, c, ncp), mk, pk in zip(labels, masks, p[1:]):
             row = dict(graph_idx=gi, smiles=smi, motif_id=m, n_copies=ncp,
                        n_atoms=int(mk.sum()), score=float(W[mk].mean()),
-                       impact=float(abs(p0 - pk)))
+                       impact=float(np.mean(np.abs(p0 - pk))))
+            if multi:
+                row.update({f'impact_t{j}': float(abs(p0[j] - pk[j])) for j in range(p.shape[1])})
             if kind == 'all':
                 allm.append(row)
                 if ncp == 1:                   # its single occurrence

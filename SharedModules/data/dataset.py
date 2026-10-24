@@ -199,22 +199,49 @@ class AttachCopies:
     works with existing processed caches (no reprocessing).
     Fail fast: a graph whose SMILES has no copy record, or whose recorded copy atoms carry a
     different motif id than ``nodes_to_motifs`` (when that id is >= 0), raises.
+
+    Mutag (``index_maps`` given): copy records are in heavy-atom SMILES space; each atom is
+    mapped to its graph node through ``index_maps[smiles]`` ({graph_node: smiles_atom}),
+    exactly as ``nodes_to_motifs`` is, and the explicit-H nodes (absent from the map) inherit
+    the copy of a bonded node carrying the same motif — the same propagation rule as
+    ``graph_to_smiles.apply_motif_lookup_with_index_map``.
     """
 
-    def __init__(self, copies: Dict[str, list]):
+    def __init__(self, copies: Dict[str, list], index_maps: Optional[Dict] = None):
         self.copies = copies
+        self.index_maps = index_maps
         self._cache: Dict[str, torch.Tensor] = {}
 
-    def _build(self, smiles: str, n: int, n2m: torch.Tensor) -> torch.Tensor:
+    def _build(self, smiles: str, n: int, n2m: torch.Tensor, edge_index=None) -> torch.Tensor:
         recs = self.copies.get(smiles)
         if recs is None:
             raise KeyError(f"AttachCopies: no copy record for SMILES {smiles!r}")
+        s2g = None
+        if self.index_maps is not None:
+            g2s = self.index_maps.get(smiles)
+            if not g2s:
+                raise KeyError(f"AttachCopies: no index map for mutag SMILES {smiles!r}")
+            s2g = {int(sa): int(g) for g, sa in g2s.items()}
         out = torch.full((n,), -1, dtype=torch.long)
+        h_atoms = None
         seen: Dict[str, int] = {}
         for key, mid, atoms in recs:
             k = seen.get(key, 0)
             seen[key] = k + 1
             for a in atoms:
+                if s2g is not None:
+                    if a not in s2g:
+                        # explicit [H:n] SMILES atoms are not in the (heavy-atom) index map;
+                        # their graph H nodes get the copy by propagation below
+                        if h_atoms is None:
+                            from rdkit import Chem
+                            _m = Chem.MolFromSmiles(smiles, sanitize=False)
+                            h_atoms = {at.GetIdx() for at in _m.GetAtoms() if at.GetAtomicNum() == 1}
+                        if a in h_atoms:
+                            continue
+                        raise ValueError(f"AttachCopies: heavy SMILES atom {a} of {key!r} has no "
+                                         f"graph node in the index map ({smiles!r})")
+                    a = s2g[a]
                 if not 0 <= a < n:
                     raise ValueError(f"AttachCopies: atom {a} out of range (n={n}) in {smiles!r}")
                 if int(n2m[a]) >= 0 and mid >= 0 and int(n2m[a]) != int(mid):
@@ -222,13 +249,30 @@ class AttachCopies:
                         f"AttachCopies: atom {a} of copy {key!r} has nodes_to_motifs="
                         f"{int(n2m[a])} but the copy record says {mid} ({smiles!r})")
                 out[a] = k
+        if s2g is not None and edge_index is not None:
+            mapped = set(s2g.values())
+            adj: Dict[int, list] = {}
+            for u, v in zip(edge_index[0].tolist(), edge_index[1].tolist()):
+                adj.setdefault(u, []).append(v)
+            changed = True
+            while changed:
+                changed = False
+                for h in range(n):
+                    if h in mapped or int(out[h]) >= 0 or int(n2m[h]) < 0:
+                        continue
+                    for nb in adj.get(h, []):
+                        if int(out[nb]) >= 0 and int(n2m[nb]) == int(n2m[h]):
+                            out[h] = out[nb]
+                            changed = True
+                            break
         return out
 
     def __call__(self, data):
         smi = str(data.smiles)
         t = self._cache.get(smi)
         if t is None:
-            t = self._cache[smi] = self._build(smi, data.num_nodes, data.nodes_to_motifs.view(-1))
+            t = self._cache[smi] = self._build(smi, data.num_nodes, data.nodes_to_motifs.view(-1),
+                                               getattr(data, 'edge_index', None))
         data.nodes_to_copy = t
         return data
 
