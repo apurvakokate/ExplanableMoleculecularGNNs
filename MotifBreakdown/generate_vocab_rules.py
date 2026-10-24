@@ -283,18 +283,22 @@ def _rebrics_pass_tracked(
     if not BR.RBRICS_OK or _REBRICS_CHAIN is None:
         return [(s, o) for s, o, _ in level1]
 
-    pool = list(level1)
+    # Each pool entry carries ctx = the parent-index bond set of the piece it was cut from
+    # (None for level-1 pieces). Re-parsing a piece with frag.to_mol drops its earlier [*],
+    # so a sub-piece's key marks ONLY the cuts of the split that produced it; stamping must
+    # count attachments against ctx, not the whole molecule (_stamp_mol_from_parent).
+    pool = [(s, o, im, None) for s, o, im in level1]
     breakable = [True] * len(pool)
 
     for _ in range(100):
         if not any(breakable):
             break
-        new_pool: List[Tuple[str, Set[int], Dict[int, int]]] = []
+        new_pool: List[Tuple[str, Set[int], Dict[int, int], Optional[Set[Tuple[int, int]]]]] = []
         new_breakable: List[bool] = []
 
-        for (smarts, orig_set, idx_map), can_break in zip(pool, breakable):
+        for (smarts, orig_set, idx_map, ctx), can_break in zip(pool, breakable):
             if not can_break:
-                new_pool.append((smarts, orig_set, idx_map))
+                new_pool.append((smarts, orig_set, idx_map, ctx))
                 new_breakable.append(False)
                 continue
 
@@ -302,35 +306,47 @@ def _rebrics_pass_tracked(
             if (fm_clean is None
                     or fm_clean.GetNumHeavyAtoms() <= 5
                     or not fm_clean.HasSubstructMatch(_REBRICS_CHAIN)):
-                new_pool.append((smarts, orig_set, idx_map))
+                new_pool.append((smarts, orig_set, idx_map, ctx))
                 new_breakable.append(False)
                 continue
 
             re_idx = sorted(BR.nonring_bond_indices(
                 fm_clean, BR.rebrics_bonds(fm_clean)))
             if not re_idx:
-                new_pool.append((smarts, orig_set, idx_map))
+                new_pool.append((smarts, orig_set, idx_map, ctx))
                 new_breakable.append(False)
                 continue
 
-            fm_mapped = _stamp_mol_from_parent(smarts, orig_set, parent)
+            fm_mapped = _stamp_mol_from_parent(smarts, orig_set, parent, ctx)
             if fm_mapped is None:
-                new_pool.append((smarts, orig_set, idx_map))
+                new_pool.append((smarts, orig_set, idx_map, ctx))
                 new_breakable.append(False)
                 continue
 
             sub = _fob_tracked(fm_mapped, re_idx)
             if len(sub) >= 2:
-                new_pool.extend(sub)
+                kb = _key_bonds(fm_mapped)
+                new_pool.extend((s2, o2, im2, kb) for s2, o2, im2 in sub)
                 new_breakable.extend([True] * len(sub))
             else:
-                new_pool.append((smarts, orig_set, idx_map))
+                new_pool.append((smarts, orig_set, idx_map, ctx))
                 new_breakable.append(False)
 
         pool = new_pool
         breakable = new_breakable
 
-    return [(s, o) for s, o, _ in pool]
+    return [(s, o) for s, o, _, _ in pool]
+
+
+def _key_bonds(fm_mapped: Chem.Mol) -> Set[Tuple[int, int]]:
+    """Parent-index bonds (i < j) of an atom-mapped piece (map number = parent idx + 1)."""
+    out: Set[Tuple[int, int]] = set()
+    for b in fm_mapped.GetBonds():
+        i = b.GetBeginAtom().GetAtomMapNum() - 1
+        j = b.GetEndAtom().GetAtomMapNum() - 1
+        if i >= 0 and j >= 0:
+            out.add((min(i, j), max(i, j)))
+    return out
 
 
 def _apply_structural_fallback(
@@ -396,8 +412,8 @@ def _stamp_mol(smarts: str, idx_map: Dict[int, int]) -> Optional[Chem.Mol]:
     return rw.GetMol()
 
 
-def _stamp_mol_from_parent(smarts: str, orig_set: Set[int],
-                           parent: Chem.Mol) -> Chem.Mol:
+def _stamp_mol_from_parent(smarts: str, orig_set: Set[int], parent: Chem.Mol,
+                           ctx: Optional[Set[Tuple[int, int]]] = None) -> Chem.Mol:
     """Like _stamp_mol, but the atom-map numbers come from the PARENT molecule.
 
     ``frag.to_mol(smarts)`` re-parses the canonical SMARTS, so its atom order is the
@@ -409,6 +425,14 @@ def _stamp_mol_from_parent(smarts: str, orig_set: Set[int],
     re-parsed mol itself is unchanged, so reBRICS cut decisions and motif keys are
     identical to the old path; only the atom assignment is corrected.
     Fails loudly if the fragment is not isomorphic to its recorded atoms.
+
+    ``ctx`` (reBRICS sub-pieces): the parent-index bond set of the piece this one was cut
+    from. Re-parsing that piece dropped its earlier [*], so this key marks only the cuts of
+    the latest split; external bonds and internal cuts are then counted over ``ctx`` bonds
+    only. None (level-1 pieces) = all parent bonds, the original behaviour. Fixed 2026-10-23:
+    a sub-piece still holding a CCCCCC chain was re-stamped against the whole molecule and
+    raised (long chains / macrocycles: 2 molhiv molecules, 1 mutag); identical output on
+    every molecule that stamped before (15 datasets checked).
     """
     import networkx as nx
     from networkx.algorithms import isomorphism as _iso
@@ -424,6 +448,10 @@ def _stamp_mol_from_parent(smarts: str, orig_set: Set[int],
     d = [sum(1 for nb in a.GetNeighbors() if nb.GetAtomicNum() == 0) for a in heavy]
 
     s = set(orig_set)
+
+    def _in_ctx(i: int, j: int) -> bool:
+        return ctx is None or (min(i, j), max(i, j)) in ctx
+
     gk = nx.Graph(); gp = nx.Graph()
     for a in m.GetAtoms():
         gk.add_node(a.GetIdx(), el=a.GetAtomicNum(), d=d[a.GetIdx()])
@@ -432,10 +460,11 @@ def _stamp_mol_from_parent(smarts: str, orig_set: Set[int],
     for a in sorted(s):
         at = parent.GetAtomWithIdx(a)
         gp.add_node(a, el=at.GetAtomicNum(),
-                    ext=sum(1 for nb in at.GetNeighbors() if nb.GetIdx() not in s))
+                    ext=sum(1 for nb in at.GetNeighbors()
+                            if nb.GetIdx() not in s and _in_ctx(a, nb.GetIdx())))
     for b in parent.GetBonds():
         i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-        if i in s and j in s:
+        if i in s and j in s and _in_ctx(i, j):
             gp.add_edge(i, j)
 
     # The key = recorded atoms minus the bonds cut around/inside them (rBRICS may cut a

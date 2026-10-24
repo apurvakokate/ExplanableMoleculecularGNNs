@@ -1433,6 +1433,37 @@ class TestReBRICSAtomTracking(unittest.TestCase):
         with self.assertRaises(ValueError):
             gvr._stamp_mol_from_parent('[*]CC', {0, 2}, m)   # C,O != C,C
 
+    # Regression (2026-10-23): a reBRICS sub-piece that still holds a CCCCCC chain is
+    # re-stamped; its key keeps only the latest cut's [*], so stamping against the whole
+    # molecule raised (molhiv macrocycle / long chain). Stamped against the source piece's
+    # bonds (ctx) it fragments into a clean partition.
+    LONG_CHAINS = ['CC1(C)CCCCCCCCCC2CC2CCC(C)(C)C1=O',
+                   'C=CCC(CC(CC(CC(CC(CC(CC(CC(CC(CC(CCCCC)OC)OC)OC)OC)OC)OC)OC)OC)OC)OC']
+
+    def test_long_chain_resplit_is_a_partition(self):
+        import networkx as nx
+        for smi in self.LONG_CHAINS:
+            m = mol(smi)
+            pieces = gvr.fragment_molecule_tracked(m, smi, False, 'rbrics')
+            sets = [set(a) for _, a in pieces]
+            gvr.validate_partition(sets, m.GetNumAtoms(), smi)
+            for atoms in sets:
+                g = nx.Graph(); g.add_nodes_from(atoms)
+                g.add_edges_from((b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in m.GetBonds()
+                                 if b.GetBeginAtomIdx() in atoms and b.GetEndAtomIdx() in atoms)
+                self.assertTrue(nx.is_connected(g), f'{smi}: {sorted(atoms)}')
+
+    def test_ctx_none_is_the_whole_molecule(self):
+        m = mol('CCCC')
+        a = gvr._stamp_mol_from_parent('[*]CC', {0, 1}, m)
+        b = gvr._stamp_mol_from_parent('[*]CC', {0, 1}, m,
+                                       {(0, 1), (1, 2), (2, 3)})   # all bonds = no restriction
+        self.assertEqual([x.GetAtomMapNum() for x in a.GetAtoms()],
+                         [x.GetAtomMapNum() for x in b.GetAtoms()])
+        # a sub-piece cut from piece {0,1} alone: the bond 1-2 is not in its source -> no [*]
+        c = gvr._stamp_mol_from_parent('CC', {0, 1}, m, {(0, 1)})
+        self.assertEqual(sorted(x.GetAtomMapNum() for x in c.GetAtoms()), [1, 2])
+
 
 class TestValidatePartition(unittest.TestCase):
     """Fail-fast partition guard shared by rbrics / rbrics_old / protected."""
