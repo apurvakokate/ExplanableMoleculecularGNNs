@@ -75,7 +75,11 @@ def _strip(smi):
 def frag_key(mol, atomset):
     aset=set(atomset); N=mol.GetNumAtoms()
     cross=[b.GetIdx() for b in mol.GetBonds() if (b.GetBeginAtomIdx() in aset)!=(b.GetEndAtomIdx() in aset)]
-    if not cross: return _strip(Chem.MolToSmiles(mol, isomericSmiles=_ISOMERIC_KEYS))
+    if not cross:
+        if len(aset) == N: return _strip(Chem.MolToSmiles(mol, isomericSmiles=_ISOMERIC_KEYS))
+        # a detached component (salt counter-ion, loose explicit H) keys as ITSELF, not as the
+        # whole molecule (2026-10-25: was one unique whole-molecule key per salt molecule)
+        return _strip(Chem.MolFragmentToSmiles(mol, atomsToUse=sorted(aset), isomericSmiles=_ISOMERIC_KEYS))
     fr=Chem.FragmentOnBonds(mol,cross,addDummies=True)
     for pa,pm in zip(Chem.GetMolFrags(fr,asMols=False),Chem.GetMolFrags(fr,asMols=True,sanitizeFrags=False)):
         if {a for a in pa if a<N}==aset:

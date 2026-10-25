@@ -141,6 +141,8 @@ def set_isomeric_ring_keys(v: bool) -> None:
 def _ring_key(mol: Chem.Mol, comp) -> str:
     """'ring:<canonical SMILES>' for a (whole) ring system; stereo-stripped unless _ISOMERIC_RING_KEYS."""
     km = Chem.Mol(mol)
+    for a in km.GetAtoms():      # mutag SMILES are atom-mapped: maps must not enter the key
+        a.SetAtomMapNum(0)
     if not _ISOMERIC_RING_KEYS:
         Chem.RemoveStereochemistry(km)
         for b in km.GetBonds():
