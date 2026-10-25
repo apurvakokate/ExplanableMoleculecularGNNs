@@ -112,6 +112,26 @@ def _uses_motif_scorer(motif_method: str, noise: str) -> bool:
     return motif_method == 'readout' or noise in ('node', 'motif')
 
 
+def motif_emb_rows(nodes_to_motifs: Tensor, nodes_to_copy: Optional[Tensor],
+                   batch: Optional[Tensor], grouping: str) -> Tuple[Tensor, Tensor, Tensor]:
+    """Fragment-node rows for mechanism ③ -> (inv_idx [N], motif_batch [M], vocab_ids [M]).
+    pooled: one row per (molecule, motif id). copy: one row per (molecule, motif id, copy)."""
+    if grouping != 'copy':
+        return compute_inverse_idx(nodes_to_motifs, batch)
+    if nodes_to_copy is None:
+        raise ValueError("motif_method='motif_emb' with motif_grouping='copy' needs nodes_to_copy "
+                         "(one fragment node per motif occurrence); refusing to merge copies.")
+    n2m = nodes_to_motifs.view(-1).long()
+    cp = nodes_to_copy.view(-1).long().to(n2m.device)
+    if bool((cp < 0).any()):
+        raise ValueError("motif_emb copy grouping: an atom with a motif id has no copy index")
+    key = n2m * (int(cp.max().item()) + 1) + cp
+    inv_idx, motif_batch, _ = compute_inverse_idx(key, batch)
+    vocab_ids = torch.empty(int(inv_idx.max().item()) + 1, dtype=torch.long, device=n2m.device)
+    vocab_ids[inv_idx] = n2m
+    return inv_idx, motif_batch, vocab_ids
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GSAT model
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,10 +427,10 @@ class GSAT(nn.Module):
         #   pooled (default) — one row per (graph, motif id): all copies share it.
         #   copy             — one row per (graph, motif id, copy): every occurrence of a
         #                      motif gets its own score, gate, info-loss term and group.
+        #                      For motif_emb: one fragment-graph node per occurrence
+        #                      (motif_emb_rows), so the fragment graph is the true quotient.
         if motif_grouping not in ('pooled', 'copy'):
             raise ValueError(f"motif_grouping must be 'pooled' or 'copy', got {motif_grouping!r}")
-        if motif_grouping == 'copy' and motif_method == 'motif_emb':
-            raise ValueError("motif_grouping='copy' is not implemented for motif_method='motif_emb'")
         self.motif_grouping = motif_grouping
         self.arch_style = arch_style
 
@@ -523,8 +543,15 @@ class GSAT(nn.Module):
         nodes_to_motifs: Optional[Tensor],
         batch: Optional[Tensor],
         edge_attr: Optional[Tensor] = None,
+        nodes_to_copy: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """Mechanism ③: score motifs with GNN1 over the fragment graph.
+
+        Fragment nodes: motif_grouping='pooled' = one per (molecule, motif TYPE) — copies of a
+        motif are merged (bonded copies lose their junction; separated copies become one hub);
+        kept for reproducing the pre-2026-10-25 grid. 'copy' = one per motif OCCURRENCE
+        (molecule, motif, copy), so the fragment graph is the true quotient graph; each node
+        keeps its motif's vocabulary id (id_desc features). 'copy' requires ``nodes_to_copy``.
 
         Returns (node_logits [N,1], motif_logits [M,1], inv_idx [N], motif_batch [M]).
         FAILS LOUD on any UNK atom — MotifSAT trains on the FULL (unfiltered) vocab,
@@ -541,8 +568,8 @@ class GSAT(nn.Module):
                 f"(nodes_to_motifs < 0). MotifSAT trains on the FULL vocab (no "
                 f"filtering), which assigns every atom to a motif; a UNK atom "
                 f"means a filtered/partial vocabulary was passed.")
-        inv_idx, motif_batch, motif_vocab_ids = compute_inverse_idx(
-            nodes_to_motifs, batch)
+        inv_idx, motif_batch, motif_vocab_ids = motif_emb_rows(
+            nodes_to_motifs, nodes_to_copy, batch, self.motif_grouping)
         num_motifs = int(inv_idx.max().item()) + 1
         Fm = self.motif_featurizer(x, inv_idx, motif_vocab_ids, num_motifs)
         if not self.motif_edge_feat:
@@ -644,7 +671,8 @@ class GSAT(nn.Module):
 
         if self.motif_method == 'motif_emb':
             node_logits, motif_logits, inv_idx, _ = self._motif_emb_logits(
-                x, edge_index, nodes_to_motifs, batch, edge_attr=edge_attr)
+                x, edge_index, nodes_to_motifs, batch, edge_attr=edge_attr,
+                nodes_to_copy=nodes_to_copy)
             node_att, node_att_soft, motif_att = self._sample_node_attention(
                 node_logits, motif_logits, inv_idx, self.training)
         else:

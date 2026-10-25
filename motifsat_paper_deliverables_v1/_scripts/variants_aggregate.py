@@ -26,7 +26,9 @@ DATASETS = ['Benzene_Verified_GT', 'Alkane_Carbonyl_Verified_GT', 'Fluoride_Carb
             'BBBP', 'hERG', 'Mutagenicity', 'esol', 'Lipophilicity']
 BACKBONES = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
 PRESETS = ['base_gsat', 'base_gsat_noanneal', 'intra_consistency', 'inter_loss', 'intra_inter_loss',
-           'readout', 'readout_inter', 'readout_layernorm', 'readout_nonorm']
+           'readout', 'readout_inter', 'readout_layernorm', 'readout_nonorm',
+           'motif_emb_multihot_gin_res', 'motif_emb_multihot_chem_res',
+           'motif_emb_iddesc_gin_res', 'motif_emb_iddesc_chem_res']
 
 
 def main(runs_path, rtable_path, out_dir):
