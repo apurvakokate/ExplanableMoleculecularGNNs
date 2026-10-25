@@ -1,0 +1,15 @@
+# Method preset: MOTIF GRAPH (mechanism 3), campaign rerun 2026-10-25.
+# GNN1 over the fragment graph; screened from the 24-config GNN1 grid (residual on dominated;
+# layer norm; depth 2). Run with --motif_grouping copy: one fragment node per motif OCCURRENCE
+# (pooled = the old type-merged fragment graph). feat=multihot, edge=chem (gin = no junction
+# feature; chem = GINE + 17-dim junction chemistry).
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_feat: multihot
+motif_edge_feat: true
+motif_edge_chem: true
+motif_gnn_layers: 2
+motif_gnn_norm: layer
+motif_gnn_residual: true
