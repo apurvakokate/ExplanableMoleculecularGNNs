@@ -11,7 +11,8 @@
 # every 30 min, a claim whose job is no longer in squeue and whose run dir lacks
 # occurrence_summary.json (= orphaned by preemption / time limit) is MOVED (never deleted) to
 # _dispatch_variants/claims_orphaned/<stamp>/, its partial run dir to variants_v1_interrupted/<stamp>/;
-# if any were moved, 4 GPU workers (PAR=2, all 8 datasets) are submitted, built from the repo's
+# if any were moved, 4 + 4 GPU workers (PAR=2, all 8 datasets; main presets, and mechanism-3 presets
+# with copy grouping) are submitted, built from the repo's
 # variants_worker.sh with r_table.sh filled in. Submitted via sbatch stdin; this file is the record.
 set -uo pipefail
 R=/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor; O=$R/motifsat_paper_deliverables_v1; S=$O/_scripts
@@ -39,9 +40,14 @@ import sys
 w, t, o = sys.argv[1:4]; s = open(w).read(); assert s.count('R_TABLE_FILLED_AT_LAUNCH') == 1
 open(o, 'w').write(s.replace('R_TABLE_FILLED_AT_LAUNCH', open(t).read().strip()))
 PY
+    ALLDS=Benzene_Verified_GT:Alkane_Carbonyl_Verified_GT:hERG:Mutagenicity:Fluoride_Carbonyl_Verified_GT:BBBP:esol:Lipophilicity
+    # main presets (worker defaults: pooled + copy) and the mechanism-3 presets (copy grouping only)
     bash -n "$W" && sbatch --requeue --array=1-4 -p gpu,preempt --gres=gpu:1 -c 2 --mem=16G -t 12:00:00 \
       -J variants_gpu -o "$LOG/gpu_%A_%a.out" \
-      --export=ALL,POOL_DATASETS=Benzene_Verified_GT:Alkane_Carbonyl_Verified_GT:hERG:Mutagenicity:Fluoride_Carbonyl_Verified_GT:BBBP:esol:Lipophilicity,DEVICE=cuda,CLIP=,SMOKE=0,PAR=2 "$W"
+      --export=ALL,POOL_DATASETS=$ALLDS,DEVICE=cuda,CLIP=,SMOKE=0,PAR=2 "$W"
+    bash -n "$W" && sbatch --requeue --array=1-4 -p gpu,preempt --gres=gpu:1 -c 2 --mem=16G -t 12:00:00 \
+      -J variants_gpu -o "$LOG/gpu_%A_%a.out" \
+      --export=ALL,POOL_DATASETS=$ALLDS,DEVICE=cuda,CLIP=,SMOKE=0,PAR=2,PRESETS=motif_emb_multihot_gin_res:motif_emb_multihot_chem_res:motif_emb_iddesc_gin_res:motif_emb_iddesc_chem_res,GROUPINGS=copy "$W"
     rm -f "$W"
   fi
   sleep 1800
