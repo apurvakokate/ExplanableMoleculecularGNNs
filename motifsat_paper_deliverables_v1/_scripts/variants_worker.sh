@@ -59,7 +59,7 @@ _complete(){
 
 run_cell(){
     local vocab=$1 preset=$2 grouping=$3 ds=$4 f=$5 bb=$6
-    local stem=motifsat; [[ "$preset" == base_gsat* ]] && stem=gsat
+    local stem=motifsat; [[ "$preset" == base_gsat* || "$preset" == motif_emb* ]] && stem=gsat   # run.py _method: gsat unless readout/loss
     local cid="${vocab}__${preset}__${grouping}__${ds}__f${f}__${bb}"
     local dir="$RUNS/$vocab/$preset/$grouping/$ds/fold$f/$bb"
     _complete "$dir" "$stem" && return 0                                  # DONE  -> skip

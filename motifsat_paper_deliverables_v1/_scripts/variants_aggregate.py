@@ -46,6 +46,13 @@ def main(runs_path, rtable_path, out_dir):
             bad.append((r, f"r {r['final_r']}/{r['decay_interval']} != {fr}/{di}"))
         if bool(r['fix_r']) != (r['preset'] == 'base_gsat_noanneal'):
             bad.append((r, f"fix_r={r['fix_r']}"))
+        if r['preset'].startswith('motif_emb_'):           # recorded GNN1 knobs must match the preset
+            feat, edge, _ = r['preset'][len('motif_emb_'):].split('_')   # e.g. iddesc, chem, res
+            want = dict(motif_feat='id_desc' if feat == 'iddesc' else 'multihot', motif_edge_feat=edge == 'chem',
+                        motif_edge_chem=edge == 'chem', motif_gnn_layers=2, motif_gnn_norm='layer', motif_gnn_residual=True)
+            got = {k: r.get(k) for k in want}
+            if got != want:
+                bad.append((r, f"motif_emb knobs {got}"))
     os.makedirs(out_dir, exist_ok=True)
     print(f'{len(rows)} runs; {len(bad)} violations')
     for r, why in bad[:20]:

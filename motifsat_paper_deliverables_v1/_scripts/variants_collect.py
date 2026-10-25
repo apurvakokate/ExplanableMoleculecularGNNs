@@ -51,5 +51,7 @@ for occ in glob.glob(f'{ROOT}/*/*/*/*/fold*/*/occurrence_summary.json'):
         'best_epoch': s.get('best_epoch'), 'final_r': s.get('final_r'),
         'decay_interval': s.get('decay_interval'), 'fix_r': s.get('fix_r'),
         'motif_grouping': s.get('motif_grouping'),
+        **{k: s.get(k) for k in ('motif_feat', 'motif_edge_feat', 'motif_edge_chem', 'motif_gnn_layers',
+                                 'motif_gnn_norm', 'motif_gnn_residual')},
     }
     print(json.dumps(row))

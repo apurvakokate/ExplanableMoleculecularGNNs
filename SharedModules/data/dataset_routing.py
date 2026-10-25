@@ -230,6 +230,13 @@ def training_summary_extras(cfg) -> Dict:
         # tier axis for analysis/aggregation.
         'gt_tier': getattr(cfg, 'gt_tier', None),
         'run_multi_explanation': bool(getattr(cfg, 'run_multi_explanation', False)),
+        # mechanism ③ (motif_method='motif_emb') fragment-graph GNN knobs
+        'motif_feat': getattr(cfg, 'motif_feat', None),
+        'motif_edge_feat': getattr(cfg, 'motif_edge_feat', None),
+        'motif_edge_chem': getattr(cfg, 'motif_edge_chem', None),
+        'motif_gnn_layers': getattr(cfg, 'motif_gnn_layers', None),
+        'motif_gnn_norm': getattr(cfg, 'motif_gnn_norm', None),
+        'motif_gnn_residual': getattr(cfg, 'motif_gnn_residual', None),
         'pool_mode': getattr(cfg, 'pool_mode', None),
         'deterministic_att': bool(getattr(cfg, 'deterministic_att', False)),
         'weight_decay': getattr(cfg, 'weight_decay', None),
