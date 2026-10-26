@@ -14,7 +14,11 @@
 #            fmbpe_v4  = fmbpe_v4/vocab/fold<f>/<ds>/fm_bpe_full_union (mutag per fold; OGB fold 0)
 #   preset -> grouping (best per family, §4):  base_gsat, base_gsat_noanneal -> none;
 #            intra_inter_loss, readout_layernorm, readout_nonorm -> pooled;
-#            motif_emb_iddesc_chem_res, motif_emb_multihot_chem_res -> copy.
+#            motif_emb_iddesc_gin_res, motif_emb_multihot_gin_res -> copy. (The _chem_res motif-edge
+#            features need our one-hot atoms + bond features: OGB uses AtomEncoder and mutag graphs
+#            carry no bond features, so the paper datasets use the no-edge-feature _gin_res variants.)
+#            motif_emb_multihot_* runs on mutag only: multihot sums the atom one-hot per motif, and OGB
+#            atoms are 9 integer codes (no one-hot to count); OGB gets the id+desc motif graph only.
 #   base_gsat_noanneal runs on rbrics_v3 only (as in the 8-dataset campaign). base_gsat trains on
 #   rbrics_v3; its fmbpe_v4 cell RE-EVALUATES that checkpoint (--eval_only; training is motif-free),
 #   and is skipped (left unclaimed) until the rbrics_v3 base run is complete.
@@ -47,7 +51,7 @@ EPOCHS="${EPOCHS:-500}"; PATIENCE="${PATIENCE:-50}"
 BACKBONES="${BACKBONES:-GIN GCN GAT SAGE PNA}"
 REPS="${REPS:-0 1 2 3 4}"
 VOCABS="${VOCABS:-rbrics_v3}"
-PRESETS="${PRESETS:-base_gsat base_gsat_noanneal intra_inter_loss readout_layernorm readout_nonorm motif_emb_iddesc_chem_res motif_emb_multihot_chem_res}"
+PRESETS="${PRESETS:-base_gsat base_gsat_noanneal intra_inter_loss readout_layernorm readout_nonorm motif_emb_iddesc_gin_res motif_emb_multihot_gin_res}"
 : "${POOL_DATASETS:?set POOL_DATASETS to the datasets for this pool}"
 # lists may arrive ':'-joined from paper_launch.sh
 POOL_DATASETS="${POOL_DATASETS//:/ }"; VOCABS="${VOCABS//:/ }"; PRESETS="${PRESETS//:/ }"; BACKBONES="${BACKBONES//:/ }"; REPS="${REPS//:/ }"
@@ -125,6 +129,7 @@ work(){
 for ds in $POOL_DATASETS; do
   for preset in $PRESETS; do
     grouping="$(grouping_of "$preset")" || { echo "[skip] unknown preset $preset" >&2; continue; }
+    [[ "$preset" == motif_emb_multihot_* && "$ds" != mutag ]] && continue     # no atom one-hot on OGB
     if [ "$preset" = base_gsat_noanneal ]; then vocs=rbrics_v3; else vocs=$VOCABS; fi
     for vocab in $vocs; do
       for k in $REPS; do
