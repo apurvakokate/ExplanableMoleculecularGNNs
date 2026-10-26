@@ -110,5 +110,41 @@ class TestMotifEmbForwardCopy(unittest.TestCase):
                              ('motif_emb', feat, ef, ec, 'layer', True, 2), f)
 
 
+class TestChemEdgeGuard(unittest.TestCase):
+    """Regression (2026-10-25, paper datasets): chem junction features read the ATOMS one-hot
+    index order and our float bond one-hot. mutag's 14-dim TUDataset one-hot passed the old
+    encoder-NAME check; OGB's integer codes must be refused too."""
+
+    INV = torch.tensor([0, 0, 1])
+    EI = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]])
+
+    def _ok_x(self):
+        return torch.eye(NUM_ATOM_TYPES)[[1, 1, 3]]                 # C, C, O
+
+    def test_valid_inputs_pass(self):
+        ea = torch.zeros(4, EDGE_FEAT_DIM); ea[:, 0] = 1
+        me, f = build_motif_graph(self.INV, self.EI, 2, edge_mode='chem', x=self._ok_x(), atom_edge_attr=ea)
+        self.assertEqual(tuple(f.shape), (2, 17))
+
+    def test_mutag_onehot_refused(self):
+        ea = torch.zeros(4, EDGE_FEAT_DIM); ea[:, 0] = 1
+        with self.assertRaisesRegex(ValueError, 'ATOMS one-hot as x'):
+            build_motif_graph(self.INV, self.EI, 2, edge_mode='chem', x=torch.eye(14)[[0, 0, 1]], atom_edge_attr=ea)
+
+    def test_ogb_integer_bonds_refused(self):
+        with self.assertRaisesRegex(ValueError, 'float bond one-hot'):
+            build_motif_graph(self.INV, self.EI, 2, edge_mode='chem', x=self._ok_x(),
+                              atom_edge_attr=torch.zeros(4, 3, dtype=torch.long))
+
+    def test_model_refuses_mutag_width(self):
+        with self.assertRaisesRegex(ValueError, 'x_dim=14'):
+            GSAT(x_dim=14, hidden_dim=16, num_layers=2, backbone_name='GIN', num_classes=1,
+                 motif_method='motif_emb', noise='motif', info_loss_level='motif', motif_feat='multihot',
+                 motif_edge_feat=True, motif_edge_chem=True, motif_grouping='copy')
+        GSAT(x_dim=14, hidden_dim=16, num_layers=2, backbone_name='GIN', num_classes=1,       # gin_res: fine
+             motif_method='motif_emb', noise='motif', info_loss_level='motif', motif_feat='multihot',
+             motif_edge_feat=False, motif_edge_chem=False, motif_grouping='copy')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -364,6 +364,20 @@ def build_motif_graph(
             raise ValueError(
                 "edge_mode='chem' requires x (atom one-hot) and atom_edge_attr "
                 "(bond features); got None. Thread them from _motif_emb_logits.")
+        # Check the ENCODINGS, not just presence: element buckets read the ATOMS one-hot index
+        # order and bond orders read the first 4 columns of our float bond one-hot
+        # (OGB's 3 integer bond codes / mutag's 14-dim TUDataset one-hot would be misread).
+        from SharedModules.data.dataset import NUM_ATOM_TYPES, EDGE_FEAT_DIM
+        if x.dim() != 2 or x.size(1) != NUM_ATOM_TYPES:
+            raise ValueError(
+                f"edge_mode='chem' requires the {NUM_ATOM_TYPES}-dim ATOMS one-hot as x; "
+                f"got shape {tuple(x.shape)}.")
+        if (atom_edge_attr.dim() != 2 or atom_edge_attr.size(1) != EDGE_FEAT_DIM
+                or not atom_edge_attr.is_floating_point()):
+            raise ValueError(
+                f"edge_mode='chem' requires our {EDGE_FEAT_DIM}-dim float bond one-hot as "
+                f"atom_edge_attr; got shape {tuple(atom_edge_attr.shape)}, "
+                f"dtype {atom_edge_attr.dtype}.")
         cs, cd = src[cross], dst[cross]                  # atom endpoints of crossing bonds
         mult = torch.ones((n_cross, 1), device=dev)
         bo = atom_edge_attr[cross][:, :_BONDORDER_DIM].float()      # bond-order one-hot

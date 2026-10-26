@@ -274,6 +274,13 @@ class GSAT(nn.Module):
                 raise ValueError(
                     f"motif_edge_chem=True requires node_encoder='onehot' (element "
                     f"bucketing reads the ATOMS one-hot); got node_encoder={node_encoder!r}.")
+            # The encoder NAME is not enough: mutag's 14-dim TUDataset one-hot is also 'onehot'
+            # but in another element order, and would be bucketed silently wrong.
+            if motif_edge_chem and x_dim != NUM_ATOM_TYPES:
+                raise ValueError(
+                    f"motif_edge_chem=True requires the {NUM_ATOM_TYPES}-dim ATOMS one-hot "
+                    f"(element bucketing reads its index order); got x_dim={x_dim} "
+                    f"(e.g. mutag's 14-dim TUDataset one-hot). Use a *_gin_res preset.")
             if motif_feat == 'id_desc' and num_motifs <= 0:
                 raise ValueError(
                     "motif_feat='id_desc' needs num_motifs>0 for the identity "
