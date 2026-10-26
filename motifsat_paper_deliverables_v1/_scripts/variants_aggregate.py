@@ -1,6 +1,6 @@
 """variants_aggregate.py — local aggregation of variants_collect.py output.
 
-usage: python3 variants_aggregate.py runs.jsonl r_table.sh OUT_DIR
+usage: python3 variants_aggregate.py runs.jsonl r_table.sh OUT_DIR   (paper_v1: r_table_paper.sh)
 Checks every run against the campaign definition (grouping recorded = grouping in path; final_r /
 decay_interval = r_table.sh, fix_r only for base_gsat_noanneal) and lists violations instead of
 averaging them. Writes
@@ -23,7 +23,9 @@ METRICS = [('pred', 'Test prediction (ROC-AUC; RMSE for ESOL / Lipophilicity)'),
            ('pi_one', 'Instance Pearson, impact = mask one copy'),
            ('score_std', 'Motif score std')]
 DATASETS = ['Benzene_Verified_GT', 'Alkane_Carbonyl_Verified_GT', 'Fluoride_Carbonyl_Verified_GT',
-            'BBBP', 'hERG', 'Mutagenicity', 'esol', 'Lipophilicity']
+            'BBBP', 'hERG', 'Mutagenicity', 'esol', 'Lipophilicity',
+            # GSAT paper datasets (paper_v1 tree, r_table_paper.sh); MultiLabel pred = mean per-task ROC-AUC
+            'mutag', 'ogbg-molhiv', 'ogbg-molbace', 'ogbg-molbbbp', 'ogbg-moltox21', 'ogbg-molclintox']
 BACKBONES = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
 PRESETS = ['base_gsat', 'base_gsat_noanneal', 'intra_consistency', 'inter_loss', 'intra_inter_loss',
            'readout', 'readout_inter', 'readout_layernorm', 'readout_nonorm',

@@ -1,9 +1,12 @@
 """variants_collect.py — READ-ONLY collector for the MotifSAT variant campaign.
 
-Run on the HPC with stdin (no file copy):  ssh osuhpc 'python3 -' < variants_collect.py > runs.jsonl
-One JSON line per COMPLETE run under variants_v1/<vocab>/<preset>/<grouping>/<ds>/fold<f>/<bb>/
+Run on the HPC with stdin (no file copy):  ssh osuhpc 'python3 - [TREE]' < variants_collect.py > runs.jsonl
+TREE = variants_v1 (default) or paper_v1 (GSAT paper datasets; replicate dirs fold<k> for mutag,
+seed<k> for OGB — both reported as fold=k, with rep='fold'|'seed').
+One JSON line per COMPLETE run under <TREE>/<vocab>/<preset>/<grouping>/<ds>/<rep><k>/<bb>/
 (complete = summary.json + summary_splits.json + occurrence_summary.json present). Test split only:
-  pred        ROC-AUC (classification) or RMSE in original units (ESOL, Lipophilicity)
+  pred        ROC-AUC (classification; MultiLabel = mean per-task ROC-AUC, auc_per_task kept) or
+              RMSE in original units (ESOL, Lipophilicity)
   gtroc       node GT-ROC per graph, mean (summary_splits test gt_roc_node_auc_mean; same as sweep)
   edge_auc    GSAT pooled edge explanation AUC (summary gsat_edge_auc_test)
   pm_all / pm_one   grouped Pearson, impact = mask ALL copies / mask ONE copy at a time
@@ -16,15 +19,18 @@ import glob
 import json
 import math
 import os
+import sys
 
-ROOT = '/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/motifsat_paper_deliverables_v1/variants_v1'
+TREE = sys.argv[1] if len(sys.argv) > 1 else 'variants_v1'
+ROOT = f'/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/motifsat_paper_deliverables_v1/{TREE}'
 
 
 def num(x):
     return x if isinstance(x, (int, float)) and not (isinstance(x, float) and math.isnan(x)) else None
 
 
-for occ in glob.glob(f'{ROOT}/*/*/*/*/fold*/*/occurrence_summary.json'):
+for occ in glob.glob(f'{ROOT}/*/*/*/*/fold*/*/occurrence_summary.json') + \
+        glob.glob(f'{ROOT}/*/*/*/*/seed*/*/occurrence_summary.json'):
     d = os.path.dirname(occ)
     vocab, preset, grouping, ds, fold, bb = d.split('/')[-6:]
     try:
@@ -34,9 +40,12 @@ for occ in glob.glob(f'{ROOT}/*/*/*/*/fold*/*/occurrence_summary.json'):
         continue
     t = next(iter(sp.values()))['test']
     auc = num(t.get('auc'))
+    if auc is None:
+        auc = num(t.get('auc_mean'))                       # MultiLabel (Tox21, ClinTox)
     row = {
         'vocab': vocab, 'preset': preset, 'grouping': grouping, 'dataset': ds,
-        'fold': int(fold[4:]), 'backbone': bb,
+        'fold': int(fold[4:]), 'rep': fold[:4], 'backbone': bb,
+        'auc_per_task': t.get('auc_per_task'),
         'task': 'cls' if auc is not None else 'reg',
         'pred': auc if auc is not None else num(t.get('rmse_orig')),
         'gtroc': num(t.get('gt_roc_node_auc_mean')),
