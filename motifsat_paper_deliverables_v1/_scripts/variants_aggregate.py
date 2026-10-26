@@ -30,7 +30,9 @@ BACKBONES = ['GIN', 'GCN', 'GAT', 'SAGE', 'PNA']
 PRESETS = ['base_gsat', 'base_gsat_noanneal', 'intra_consistency', 'inter_loss', 'intra_inter_loss',
            'readout', 'readout_inter', 'readout_layernorm', 'readout_nonorm',
            'motif_emb_multihot_gin_res', 'motif_emb_multihot_chem_res',
-           'motif_emb_iddesc_gin_res', 'motif_emb_iddesc_chem_res']
+           'motif_emb_iddesc_gin_res', 'motif_emb_iddesc_chem_res',
+           # KL-level control (2026-10-26): motif gates, KL averaged over atoms
+           'readout_layernorm_nodekl', 'readout_nonorm_nodekl', 'motif_emb_iddesc_gin_res_nodekl']
 
 
 def main(runs_path, rtable_path, out_dir):
@@ -49,7 +51,7 @@ def main(runs_path, rtable_path, out_dir):
         if bool(r['fix_r']) != (r['preset'] == 'base_gsat_noanneal'):
             bad.append((r, f"fix_r={r['fix_r']}"))
         if r['preset'].startswith('motif_emb_'):           # recorded GNN1 knobs must match the preset
-            feat, edge, _ = r['preset'][len('motif_emb_'):].split('_')   # e.g. iddesc, chem, res
+            feat, edge = r['preset'][len('motif_emb_'):].split('_')[:2]  # e.g. iddesc, chem (res[, nodekl])
             want = dict(motif_feat='id_desc' if feat == 'iddesc' else 'multihot', motif_edge_feat=edge == 'chem',
                         motif_edge_chem=edge == 'chem', motif_gnn_layers=2, motif_gnn_norm='layer', motif_gnn_residual=True)
             got = {k: r.get(k) for k in want}

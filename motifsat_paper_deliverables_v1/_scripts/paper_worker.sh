@@ -66,7 +66,7 @@ R_TABLE_FILLED_AT_LAUNCH
 grouping_of(){
     case "$1" in
         base_gsat|base_gsat_noanneal) echo none ;;
-        intra_inter_loss|readout_layernorm|readout_nonorm) echo pooled ;;
+        intra_inter_loss|readout_layernorm|readout_nonorm|readout_layernorm_nodekl|readout_nonorm_nodekl) echo pooled ;;
         motif_emb_*) echo copy ;;
         *) return 1 ;;
     esac

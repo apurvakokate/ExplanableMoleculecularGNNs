@@ -1,0 +1,16 @@
+# Method preset: motif_emb_iddesc_gin_res with the KL term at NODE level (KL-level control, 2026-10-26).
+#
+# Identical to motif_emb_iddesc_gin_res.yaml (motif gates sampled per motif and broadcast to atoms) except
+# info_loss_level: node — the KL is averaged over ATOMS of the broadcast motif gates, so each
+# motif's KL counts once per atom (size-weighted) instead of once per motif. Separates the gate
+# unit from the KL unit (EXPERIMENT_LOG §9.4.1).
+motif_method: motif_emb
+noise: motif
+info_loss_level: node
+w_message: true
+motif_feat: id_desc
+motif_edge_feat: false
+motif_edge_chem: false
+motif_gnn_layers: 2
+motif_gnn_norm: layer
+motif_gnn_residual: true
