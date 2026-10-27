@@ -98,6 +98,25 @@ run_cell(){
     echo "[FAIL rc=$rc] $cid"; tail -5 "$dir/run.log"
 }
 
+# Requeue recovery (added 2026-10-27 after the smoke lost 2 cells this way): a preempted array task is requeued
+# with the SAME job id, so the claims it took before preemption look live to the janitor and block its own
+# loops. On a restart (SLURM_RESTART_COUNT > 0), before any loop starts, this job's unfinished claims are
+# MOVED (never deleted) to claims_orphaned/<stamp>_requeue_<jobid>/, their partial run dirs to
+# <RUNS>_interrupted/<same stamp>/, so the loops below pick the cells up again.
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
+  T="$(date +%Y%m%d%H%M%S)_requeue_${JOBID}"
+  for c in "$CLAIMS"/*; do
+    [ -d "$c" ] || continue; [ -e "$c/.failed" ] && continue
+    [ "$(cut -f2 "$c/info" 2>/dev/null)" = "$JOBID" ] || continue
+    IFS='|' read -r v p g ds f bb <<< "$(basename "$c" | sed 's/__/|/g')"
+    run="$RUNS/$v/$p/$g/$ds/fold${f#f}/$bb"
+    _complete "$run" motifsat && continue
+    mkdir -p "$DISPATCH/claims_orphaned/$T"; mv "$c" "$DISPATCH/claims_orphaned/$T/"
+    if [ -d "$run" ]; then mkdir -p "${RUNS}_interrupted/$T/$v/$p/$g/$ds/fold${f#f}"; mv "$run" "${RUNS}_interrupted/$T/$v/$p/$g/$ds/fold${f#f}/"; fi
+    echo "[requeue] released $(basename "$c") (restart ${SLURM_RESTART_COUNT})"
+  done
+fi
+
 echo "worker $WHO DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] SETTINGS=[$SETTINGS] BACKBONES=[$BACKBONES] FOLDS=[$FOLDS] EPOCHS=$EPOCHS"
 # dataset outermost so the ground-truth sets (listed first in POOL_DATASETS) finish first
 work(){
