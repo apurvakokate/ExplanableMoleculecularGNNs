@@ -40,6 +40,7 @@ class MotifSATConfig:
     motif_method: str = 'none'         # none | loss | readout (motif_emb -> NotImplemented)
     pool_mode: str = 'max_mean'        # mean | max | max_mean | multi (used by 'readout')
     motif_grouping: str = 'pooled'     # pooled = one row per (graph, motif) | copy = per occurrence (needs copy records)
+    motif_id_features: bool = False    # control: append motif-id embedding ⊕ descriptors to atom inputs
     occurrence_eval: bool = False      # also evaluate impact masking ALL vs ONE occurrence (occurrence_eval.py)
     extractor_hidden_mult: int = 2
     extractor_dropout_p: float = 0.5

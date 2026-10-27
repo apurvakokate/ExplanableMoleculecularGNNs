@@ -1,0 +1,13 @@
+# Method preset: BASE GSAT + MOTIF IDENTITY (motif-identity control, 2026-10-26).
+#
+# Base GSAT (atom gates, atom-level KL, no motif machinery in the explainer) whose PREDICTOR also
+# receives, for every atom, its motif's learned id embedding (hidden_dim) and 9 descriptors — the
+# inputs the id_desc motif graph sees. If this alone reproduces the motif graph's prediction gain
+# (+0.018), that gain is motif identity, not explanation quality (EXPERIMENT_LOG §9.4.2).
+# Needs the unfiltered vocabulary (every atom has a motif) and node_encoder onehot.
+motif_method: none
+noise: none
+learn_edge_att: false
+info_loss_level: node
+w_message: true
+motif_id_features: true

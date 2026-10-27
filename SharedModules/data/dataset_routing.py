@@ -237,6 +237,7 @@ def training_summary_extras(cfg) -> Dict:
         'motif_gnn_layers': getattr(cfg, 'motif_gnn_layers', None),
         'motif_gnn_norm': getattr(cfg, 'motif_gnn_norm', None),
         'motif_gnn_residual': getattr(cfg, 'motif_gnn_residual', None),
+        'motif_id_features': getattr(cfg, 'motif_id_features', None),
         'pool_mode': getattr(cfg, 'pool_mode', None),
         'deterministic_att': bool(getattr(cfg, 'deterministic_att', False)),
         'weight_decay': getattr(cfg, 'weight_decay', None),

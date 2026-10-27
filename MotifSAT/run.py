@@ -53,6 +53,13 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
     # Mechanism ③: the fragment-graph GNN needs the vocab size (identity
     # embedding) and, for id_desc, a per-motif descriptor table from the SMARTS.
     _num_motifs, _desc_table = 0, None
+    if getattr(cfg, 'motif_id_features', False):
+        # motif-identity control: same identity inputs as the id_desc motif graph
+        if vocab is None:
+            raise ValueError("motif_id_features=True needs the vocab (num_motifs + descriptors).")
+        from motif_modules import build_motif_descriptors
+        _num_motifs = vocab.num_motifs
+        _desc_table = build_motif_descriptors(vocab.motif_list)
     if cfg.motif_method == 'motif_emb':
         if vocab is None:
             raise ValueError(
@@ -115,6 +122,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
         pna_pieces=tuple(a.strip() for a in
                          str(getattr(cfg, 'pna_pieces', '') or '').split(',') if a.strip()),
         motif_grouping=getattr(cfg, 'motif_grouping', 'pooled'),
+        motif_id_features=bool(getattr(cfg, 'motif_id_features', False)),
     )
 
 
@@ -132,6 +140,7 @@ def _requires_nodes_to_motifs(cfg: MotifSATConfig) -> bool:
     return (
         cfg.motif_method == 'readout'
         or cfg.noise in ('node', 'motif')
+        or bool(getattr(cfg, 'motif_id_features', False))
     )
 
 

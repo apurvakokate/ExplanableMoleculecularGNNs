@@ -32,7 +32,9 @@ PRESETS = ['base_gsat', 'base_gsat_noanneal', 'intra_consistency', 'inter_loss',
            'motif_emb_multihot_gin_res', 'motif_emb_multihot_chem_res',
            'motif_emb_iddesc_gin_res', 'motif_emb_iddesc_chem_res',
            # KL-level control (2026-10-26): motif gates, KL averaged over atoms
-           'readout_layernorm_nodekl', 'readout_nonorm_nodekl', 'motif_emb_iddesc_gin_res_nodekl']
+           'readout_layernorm_nodekl', 'readout_nonorm_nodekl', 'motif_emb_iddesc_gin_res_nodekl',
+           # motif-identity control (2026-10-26): base GSAT + motif-id features in the predictor
+           'base_gsat_motifid']
 
 
 def main(runs_path, rtable_path, out_dir):

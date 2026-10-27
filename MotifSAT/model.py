@@ -245,6 +245,9 @@ class GSAT(nn.Module):
         pna_scalers: bool = True,
         pna_pieces: Tuple[str, ...] = (),
         motif_grouping: str = 'pooled',
+        # Motif-identity control: append each atom's motif-id embedding ⊕ descriptors (the
+        # inputs the id_desc motif graph sees) to the atom features; gates stay as configured.
+        motif_id_features: bool = False,
     ):
         super().__init__()
 
@@ -398,6 +401,24 @@ class GSAT(nn.Module):
         self.deterministic_att = deterministic_att
         self.task_type = task_type
         self.num_classes = num_classes
+
+        # Motif-identity control (2026-10-26): does the id_desc motif graph's prediction gain
+        # come from motif identity rather than from its explanation? Give the PREDICTOR the same
+        # identity inputs: x_v -> [x_v, id_emb(m(v)), desc(m(v))], used by every pass.
+        self.motif_id_features = bool(motif_id_features)
+        if self.motif_id_features:
+            if motif_method == 'motif_emb':
+                raise ValueError("motif_id_features is a control for base / loss / readout presets, "
+                                 "not for motif_method='motif_emb' (whose scorer already sees motif ids).")
+            if node_encoder != 'onehot' or arch_style != 'ours':
+                raise ValueError(f"motif_id_features needs node_encoder='onehot' and arch_style='ours' "
+                                 f"(float atom features to extend); got {node_encoder!r}, {arch_style!r}.")
+            if num_motifs <= 0 or motif_desc_table is None or motif_desc_table.size(0) != num_motifs:
+                raise ValueError("motif_id_features needs num_motifs > 0 and a [num_motifs, D] descriptor "
+                                 "table (build_motif_descriptors(vocab.motif_list)), passed from run.py.")
+            self.motif_id_emb = nn.Embedding(num_motifs, hidden_dim)
+            self.register_buffer('motif_id_desc', motif_desc_table.float())
+            x_dim = x_dim + hidden_dim + self.motif_id_desc.size(1)
 
         # Backbone
         if arch_style == 'gsat':
@@ -647,6 +668,8 @@ class GSAT(nn.Module):
         """
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        if self.motif_id_features:
+            x = self._with_motif_id(x, nodes_to_motifs)
 
         if node_weights is not None:
             # node_weights is already the [N,1] float node attention (prepared by
@@ -733,6 +756,16 @@ class GSAT(nn.Module):
             'group_ids':     group_ids,
         }
         return logits, node_att, aux
+
+    def _with_motif_id(self, x: Tensor, nodes_to_motifs: Optional[Tensor]) -> Tensor:
+        """Motif-identity control: [x_v, id_emb(m(v)), desc(m(v))] for every atom. FAILS LOUD on a
+        missing annotation or an UNK atom (the control runs on the full, unfiltered vocabulary)."""
+        if nodes_to_motifs is None:
+            raise ValueError("motif_id_features=True requires nodes_to_motifs on every forward call.")
+        mid = nodes_to_motifs.view(-1).long().to(x.device)
+        if bool((mid < 0).any()):
+            raise ValueError(f"motif_id_features: {int((mid < 0).sum())} UNK atom(s); use the unfiltered vocabulary.")
+        return torch.cat([x.float(), self.motif_id_emb(mid), self.motif_id_desc[mid]], dim=-1)
 
     def _uses_motif_groups(self) -> bool:
         return (self.motif_scorer is not None or self.motif_loss_coef > 0
