@@ -57,6 +57,19 @@ _complete(){
         && [ -s "$1/history.json" ] && [ -s "$1/occurrence_summary.json" ]
 }
 
+# Wall-time guard (2026-10-28, after 19 workers hit the 12 h limit mid-cell): stop CLAIMING once the job's
+# remaining time is below one cell. CELL_BUDGET_S default 12600 s = 3.5 h (slowest measured cell: hERG planted
+# 3.16 h; p95 1.91 h). If the end time cannot be read there is no guard.
+CELL_BUDGET_S="${CELL_BUDGET_S:-12600}"
+DEADLINE=""; if [ -n "${SLURM_JOB_ID:-}" ]; then
+  _e="$(squeue -h -j "$SLURM_JOB_ID" -o %e 2>/dev/null | head -1)"; DEADLINE="$(date -d "$_e" +%s 2>/dev/null || true)"; fi
+_STOP=0
+_time_left(){   # 0 = may claim another cell
+    [ -z "$DEADLINE" ] && return 0
+    [ "$_STOP" = 1 ] && return 1
+    if [ $(( $(date +%s) + CELL_BUDGET_S )) -gt "$DEADLINE" ]; then
+        _STOP=1; echo "[walltime] $(date +%H:%M) < ${CELL_BUDGET_S}s left before $(date -d @"$DEADLINE" +%H:%M): no new claims"; return 1; fi
+}
 run_cell(){
     local vocab=$1 preset=$2 grouping=$3 ds=$4 f=$5 bb=$6
     local stem=motifsat; [[ "$preset" == base_gsat* || "$preset" == motif_emb* ]] && stem=gsat   # run.py _method: gsat unless readout/loss
@@ -69,6 +82,7 @@ run_cell(){
     if [ "$vocab" = rbrics_v3 ]; then vroot="$REPO/vocab_final_v3"; var=rbrics
     else vroot="$REPO/fmbpe_v4/vocab/fold$f"; var=fm_bpe_full_union; fi
     local gargs=(); [ "$grouping" != none ] && gargs=(--motif_grouping "$grouping")
+    _time_left || return 0                                                # WALL-TIME guard
     mkdir "$CLAIMS/$cid" 2>/dev/null || return 0                         # CLAIM fails -> skip
     printf '%s\t%s\t%s\n' "$WHO" "$JOBID" "$(date +%s)" > "$CLAIMS/$cid/info"
     echo "[run ${DEVICE:-cuda}] $cid (final_r=$fr decay_interval=$di clip_grad=${CLIP:-default})"
@@ -87,6 +101,26 @@ run_cell(){
     touch "$CLAIMS/$cid/.failed"
     echo "[FAIL rc=$rc] $cid"
 }
+
+# Requeue recovery (ported 2026-10-28 from lsweep_worker.sh after 22 cells were stranded overnight): a preempted
+# array task is requeued with the SAME job id, so the claims it took before preemption look live and block its
+# own loops. On a restart (SLURM_RESTART_COUNT > 0), before any loop starts, this job's unfinished claims are
+# MOVED (never deleted) to claims_orphaned/<stamp>_requeue_<jobid>/, their partial run dirs to
+# <RUNS>_interrupted/<same stamp>/, so the loops below pick the cells up again.
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
+  T="$(date +%Y%m%d%H%M%S)_requeue_${JOBID}"
+  for c in "$CLAIMS"/*; do
+    [ -d "$c" ] || continue; [ -e "$c/.failed" ] && continue
+    [ "$(cut -f2 "$c/info" 2>/dev/null)" = "$JOBID" ] || continue
+    IFS='|' read -r v p g ds f bb <<< "$(basename "$c" | sed 's/__/|/g')"
+    run="$RUNS/$v/$p/$g/$ds/fold${f#f}/$bb"
+    st=motifsat; [[ "$p" == base_gsat* || "$p" == motif_emb* ]] && st=gsat
+    _complete "$run" "$st" && continue
+    mkdir -p "$DISPATCH/claims_orphaned/$T"; mv "$c" "$DISPATCH/claims_orphaned/$T/"
+    if [ -d "$run" ]; then mkdir -p "${RUNS}_interrupted/$T/$v/$p/$g/$ds/fold${f#f}"; mv "$run" "${RUNS}_interrupted/$T/$v/$p/$g/$ds/fold${f#f}/"; fi
+    echo "[requeue] released $(basename "$c") (restart ${SLURM_RESTART_COUNT})"
+  done
+fi
 
 echo "worker $WHO DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] VOCABS=[$VOCABS] PRESETS=[$PRESETS] GROUPINGS=[$GROUPINGS] EPOCHS=$EPOCHS CLIP=${CLIP:-default}"
 # dataset outermost so the ground-truth sets (listed first in POOL_DATASETS) finish first
