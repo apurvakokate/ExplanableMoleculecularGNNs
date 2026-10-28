@@ -6,7 +6,8 @@ contain one rule component (76% / 85% of the molecules the stored GT-ROC average
 one where the ground truth is the cause of the label. case_studies.py computed it for GSAT / consistency / readout
 (layer norm) only; this does it for every setting, the coefficient sweep and the averaged-GSAT control.
 
-Run on the HPC (l2xgnn env, CPU):  python3 gt_positive.py TASK_ID   (array 0-19; JSON lines on stdout)
+Run on the HPC (l2xgnn env, CPU):  python3 gt_positive.py TASK_ID [SPLIT]   (array 0-19; JSON lines on stdout;
+SPLIT = test (default) or valid: graphs, saved gates and the stored reference GT-ROC all come from that split)
 TASK_ID -> (dataset, fold): Benzene, Alkane-Carbonyl, Fluoride-Carbonyl, mutag x 5 folds; rBRICS v3 only.
 Test graphs exactly as gt_aupr.py / case_studies.py (same loaders, same processed roots). For every run directory
   variants_v1/rbrics_v3/<preset>/<grouping>/<ds>/fold<f>/<bb>      (our datasets; every preset incl. KL arms)
@@ -43,7 +44,7 @@ def group_mean(s, keys):
     return out
 
 
-def main(i):
+def main(i, split='test'):
     sys.path.insert(0, R); os.chdir(R)
     from SharedModules.data.loader import get_loaders
     from SharedModules.data.vocab import load_vocab
@@ -52,7 +53,7 @@ def main(i):
     proc = f'{R}/processed_paper_v1/rbrics_v3' if ds == 'mutag' else f'{R}/processed_variants_v1/rbrics_v3'
     L, _, _ = get_loaders(dataset=ds, data_root=droot, fold=f, vocab=load_vocab(f'{R}/vocab_final_v3', ds, 'rbrics'),
                           processed_root=proc, batch_size=256)
-    test = list(L['test'].dataset)
+    test = list(L[split].dataset)
     pos_label = 0 if ds == 'mutag' else 1
     keep = []
     for gi, g in enumerate(test):
@@ -70,11 +71,11 @@ def main(i):
     for d in dirs:
         vocab, preset, grouping = d.split('/')[-6], d.split('/')[-5], d.split('/')[-4]
         out = dict(tree=d.split('/')[-7], vocab=vocab, preset=preset, grouping=grouping, dataset=ds, fold=f,
-                   backbone=d.split('/')[-1])
+                   backbone=d.split('/')[-1], split=split)
         try:
-            imp = json.load(open(f'{d}/explainer_importances.json'))['importances_by_split']['test']
+            imp = json.load(open(f'{d}/explainer_importances.json'))['importances_by_split'][split]
             (key,) = imp.keys(); imp = imp[key]
-            ref = next(iter(json.load(open(f'{d}/summary_splits.json')).values()))['test']['gt_roc_node_auc_mean']
+            ref = next(iter(json.load(open(f'{d}/summary_splits.json')).values()))[split]['gt_roc_node_auc_mean']
         except Exception as e:                                   # incomplete run: report, never hide
             print(json.dumps(dict(out, error=repr(e))), flush=True); continue
         assert len(imp) == len(test), (d, len(imp), len(test))
@@ -97,4 +98,4 @@ def main(i):
 
 
 if __name__ == '__main__':
-    main(int(sys.argv[1]))
+    main(int(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else 'test')
