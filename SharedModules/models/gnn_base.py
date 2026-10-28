@@ -70,6 +70,7 @@ class BaseGNN(nn.Module):
         graph_pool: str = 'add',
         pna_scalers: bool = True,
         pna_bn_residual: bool = False,
+        gin_train_eps: bool = True,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -130,6 +131,7 @@ class BaseGNN(nn.Module):
             conv_in_dim, hidden_dim, num_layers,
             backbone, deg=deg, edge_dim=edge_dim,
             gin_inner_bn=gin_inner_bn, pna_scalers=pna_scalers,
+            gin_train_eps=gin_train_eps,
         )
         # pna_bn_residual (PNA only, default off): GSAT's per-layer structure
         # h = ReLU(BN(conv(x))); x = h + x (when widths match); dropout(self.dropout).

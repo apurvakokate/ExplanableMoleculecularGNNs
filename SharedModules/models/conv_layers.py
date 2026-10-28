@@ -408,10 +408,13 @@ def _scale_attenuation(src, deg, avg_deg):
 # Factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-def make_gin_conv(in_dim: int, out_dim: int, inner_bn: bool = True) -> GINConv:
+def make_gin_conv(in_dim: int, out_dim: int, inner_bn: bool = True,
+                  train_eps: bool = True) -> GINConv:
     # Reference GIN MLP: Linear -> ReLU -> Linear -> ReLU -> BatchNorm.
     # inner_bn=True matches the original DomainDrivenGlobalExpl design (Xu et al.
     # GIN); inner_bn=False is the leaner Linear -> ReLU -> Linear.
+    # train_eps=False fixes eps at 0 (a buffer, same state-dict key), as in the
+    # official GSAT GIN; default True = learnable eps (unchanged behaviour).
     if inner_bn:
         from torch.nn import BatchNorm1d
         nn = Sequential(Linear(in_dim, out_dim), ReLU(),
@@ -419,7 +422,7 @@ def make_gin_conv(in_dim: int, out_dim: int, inner_bn: bool = True) -> GINConv:
                         BatchNorm1d(out_dim))
     else:
         nn = Sequential(Linear(in_dim, out_dim), ReLU(), Linear(out_dim, out_dim))
-    return GINConv(nn, train_eps=True)
+    return GINConv(nn, train_eps=train_eps)
 
 def make_gcn_conv(in_dim: int, out_dim: int) -> GCNConvWithAtten:
     return GCNConvWithAtten(in_dim, out_dim, normalize=True)
@@ -474,6 +477,7 @@ def create_conv_layers(
     edge_dim: Optional[int] = None,
     gin_inner_bn: bool = True,
     pna_scalers: bool = True,
+    gin_train_eps: bool = True,
 ) -> torch.nn.ModuleList:
     """Create a ModuleList of conv layers for the given backbone.
 
@@ -508,7 +512,8 @@ def create_conv_layers(
         elif backbone == 'PNA':
             layers.append(factory(d_in, hidden_dim, deg=deg, scalers=pna_scalers))
         elif backbone == 'GIN':
-            layers.append(factory(d_in, hidden_dim, inner_bn=gin_inner_bn))
+            layers.append(factory(d_in, hidden_dim, inner_bn=gin_inner_bn,
+                                  train_eps=gin_train_eps))
         else:
             layers.append(factory(d_in, hidden_dim))
 
