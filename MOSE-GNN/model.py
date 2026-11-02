@@ -76,16 +76,16 @@ def _motif_to_node_weights(
 
     n_classes = motif_params.size(1) if motif_params.dim() == 2 else 1
 
-    # Determine unknown value
+    # Unknown-node weight. The learned UNK weight must stay in the autograd graph:
+    # a float() here detached it, so the task loss never reached unk_param.
     if ignore_unknowns:
-        unk_val = 0.0
+        weights = torch.zeros((num_nodes, n_classes), device=device, dtype=torch.float32)
     elif unk_mode == 'learnable_shared' and unk_param is not None:
-        unk_val = float(unk_param.sigmoid())
+        weights = (unk_param.sigmoid().to(device=device, dtype=torch.float32)
+                   .reshape(1, 1).expand(num_nodes, n_classes).clone())
     else:
-        unk_val = unk_value
-
-    weights = torch.full((num_nodes, n_classes), unk_val,
-                         device=device, dtype=torch.float32)
+        weights = torch.full((num_nodes, n_classes), unk_value,
+                             device=device, dtype=torch.float32)
 
     known_mask = node_to_motifs >= 0
     if known_mask.any():
@@ -180,6 +180,7 @@ class SingleChannelGNN(nn.Module):
         gin_inner_bn: bool = True,
         self_gate: bool = False,
         graph_pool: str = 'add',
+        gin_train_eps: bool = True,
     ):
         super().__init__()
         self.w_feat = w_feat
@@ -200,6 +201,7 @@ class SingleChannelGNN(nn.Module):
             deg=deg, edge_dim=edge_dim,
             conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
             self_gate=self_gate, graph_pool=graph_pool,
+            gin_train_eps=gin_train_eps,
         )
         self.backbone.lin2 = nn.Linear(hidden_dim, 1)
 
@@ -299,6 +301,7 @@ class MultiChannelGNN(nn.Module):
         gin_inner_bn: bool = True,
         self_gate: bool = False,
         graph_pool: str = 'add',
+        gin_train_eps: bool = True,
     ):
         super().__init__()
         if self_gate:
@@ -343,7 +346,7 @@ class MultiChannelGNN(nn.Module):
             layers = create_conv_layers(
                 x_dim if node_encoder == 'onehot' else hidden_dim,
                 hidden_dim, num_layers, backbone, deg=deg, edge_dim=edge_dim,
-                gin_inner_bn=gin_inner_bn,
+                gin_inner_bn=gin_inner_bn, gin_train_eps=gin_train_eps,
             )
             self.convs[str(c)] = layers
             self.lin1[str(c)] = nn.Linear(hidden_dim, hidden_dim)
