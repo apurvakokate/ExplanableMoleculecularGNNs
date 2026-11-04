@@ -52,6 +52,7 @@ class VanillaGNN(nn.Module):
         conv_normalize: str = 'none',
         gin_inner_bn: bool = True,
         graph_pool: str = 'add',
+        fixed_norm: bool = False,
     ):
         super().__init__()
         self.backbone_net = BaseGNN(
@@ -70,6 +71,11 @@ class VanillaGNN(nn.Module):
         )
         self.backbone_net.lin2 = nn.Linear(hidden_dim, num_classes)
         self.num_classes = num_classes
+        # Weight-scaling check (default OFF): freeze predictor weight norms AFTER lin2 is final.
+        self.fixed_norm = bool(fixed_norm)
+        if self.fixed_norm:
+            from ..models.fixed_norm import apply_fixed_norm
+            apply_fixed_norm(self.backbone_net)
 
     def forward(
         self,

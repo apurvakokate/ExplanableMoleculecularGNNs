@@ -28,6 +28,8 @@ class MOSEConfig:
     graph_pool: str = 'add'         # add | mean — graph readout pooling
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
+    gin_train_eps: bool = True      # False = GIN eps fixed at 0 (official GSAT GIN); --gin_fixed_eps
+    fixed_norm: bool = False        # weight-scaling check: freeze predictor weight norms (--fixed_norm)
     dropout: float = 0.5
     w_feat: bool = True
     w_message: bool = False
@@ -144,4 +146,8 @@ class MOSEConfig:
         # non-default 'mean', to keep 'add' paths backward-compatible).
         pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
         base = f'{self.backbone}_{enc}_{ln}{pool}_{inj}_{unk}_{gt}_{ep}_{frag}'
+        if not getattr(self, 'gin_train_eps', True):   # only when non-default: old paths unchanged
+            base = f'{base}_gineps0'
+        if getattr(self, 'fixed_norm', False):          # only when non-default: old paths unchanged
+            base = f'{base}_fixednorm'
         return f'{base}_{hp}' if hp else base

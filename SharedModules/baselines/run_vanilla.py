@@ -55,6 +55,7 @@ class VanillaConfig:
     conv_normalize: str = 'none'
     graph_pool: str = 'add'
     gin_inner_bn: bool = True
+    fixed_norm: bool = False   # weight-scaling check: freeze predictor weight norms (--fixed_norm)
     dropout: float        = 0.5
     epochs: int           = 100
     lr: float             = 1e-3
@@ -107,6 +108,8 @@ class VanillaConfig:
             hp = ''
         pool = '' if getattr(self, 'graph_pool', 'add') == 'add' else f'_pool-{self.graph_pool}'
         base = f'{self.backbone}_{enc}_norm-{_norm}{pool}_{_gt}_{self.vocab_variant}'
+        if getattr(self, 'fixed_norm', False):   # only when non-default: old paths unchanged
+            base = f'{base}_fixednorm'
         return f'{base}_{hp}' if hp else base
 
     def to_dict(self) -> Dict:
@@ -189,6 +192,7 @@ def run(cfg: VanillaConfig) -> dict:
         conv_normalize=getattr(cfg,'conv_normalize','none'),
         graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg,'gin_inner_bn',True),
+        fixed_norm=getattr(cfg,'fixed_norm',False),
         num_classes=num_classes,
         deg=meta.deg,   # degree histogram for PNA; None for GIN/GCN/SAGE/GAT
     )
@@ -226,6 +230,8 @@ def run(cfg: VanillaConfig) -> dict:
         _hp = ''
     _pool = '' if getattr(cfg, 'graph_pool', 'add') == 'add' else f'_pool-{cfg.graph_pool}'
     _ckpt_tag = f'{cfg.backbone}_{cfg.node_encoder}_norm-{_norm}{_pool}_{_gt}_{_ckpt_variant}'
+    if getattr(cfg, 'fixed_norm', False):   # lockstep with variant_tag()
+        _ckpt_tag = f'{_ckpt_tag}_fixednorm'
     if _hp:
         _ckpt_tag = f'{_ckpt_tag}_{_hp}'
     if not cfg.load_weights_from:
@@ -293,6 +299,7 @@ def run(cfg: VanillaConfig) -> dict:
         'vocab_variant':    cfg.vocab_variant,
         'node_encoder':     cfg.node_encoder,
         'apply_layer_norm': cfg.apply_layer_norm,
+        'fixed_norm':       getattr(cfg, 'fixed_norm', False),
         'model_type':       'VanillaGNN',
         'family':           family,
         'motif_method':     'none',
@@ -373,6 +380,8 @@ def main():
     parser.add_argument('--graph_pool', default='add', choices=['add','mean'],
                         help='Graph readout pooling: add (sum, default) | mean.')
     parser.add_argument('--no_gin_inner_bn', dest='gin_inner_bn', action='store_false')
+    parser.add_argument('--fixed_norm', action='store_true',
+                        help='Weight-scaling check (default off): freeze the norm of every predictor weight.')
     parser.set_defaults(gin_inner_bn=True)
     parser.add_argument('--hidden_dim',      type=int, default=64)
     parser.add_argument('--num_layers',      type=int, default=3)
@@ -436,6 +445,7 @@ def main():
         dataset=args.dataset, fold=args.fold, backbone=args.backbone,
         node_encoder=args.node_encoder, apply_layer_norm=args.apply_layer_norm,
         conv_normalize=args.conv_normalize, graph_pool=args.graph_pool, gin_inner_bn=args.gin_inner_bn,
+        fixed_norm=args.fixed_norm,
         hidden_dim=args.hidden_dim, num_layers=args.num_layers,
         epochs=args.epochs, lr=args.lr, data_root=args.data_root,
         vocab_root=args.vocab_root, vocab_variant=args.vocab_variant,

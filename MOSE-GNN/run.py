@@ -62,6 +62,8 @@ def build_model(cfg: MOSEConfig, num_motifs: int, task_type: str, meta,
         graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
         self_gate=getattr(cfg, 'self_gate', False),
+        gin_train_eps=getattr(cfg, 'gin_train_eps', True),
+        fixed_norm=getattr(cfg, 'fixed_norm', False),
     )
     return SingleChannelGNN(**common)
 
@@ -361,6 +363,8 @@ def run(cfg: MOSEConfig, per_split_eval: bool = False) -> dict:
         'conv_normalize': getattr(cfg, 'conv_normalize', 'none'),
         'graph_pool':    cfg.graph_pool,
         'gin_inner_bn':  getattr(cfg, 'gin_inner_bn', True),
+        'gin_train_eps': getattr(cfg, 'gin_train_eps', True),
+        'fixed_norm':    getattr(cfg, 'fixed_norm', False),
         **training_summary_extras(cfg),  # includes self_gate
         # prediction
         'train_auc': split_metrics.get('train', {}).get('auc', split_metrics.get('train', {}).get('auc_mean', float('nan'))),
@@ -576,6 +580,12 @@ def main():
                         action='store_false',
                         help='Disable BatchNorm inside the GIN MLP (default on).')
     parser.set_defaults(gin_inner_bn=True)
+    parser.add_argument('--gin_fixed_eps', dest='gin_train_eps', action='store_false',
+                        help='Fix GIN eps at 0 (official GSAT GIN) instead of learning it (default learnable).')
+    parser.set_defaults(gin_train_eps=True)
+    parser.add_argument('--fixed_norm', action='store_true',
+                        help='Weight-scaling check (default off): freeze the norm of every predictor weight '
+                             '(weight normalisation with the scale g fixed at initialisation).')
     parser.add_argument('--self_gate', action='store_true',
                         help='EXPERIMENTAL (default off): gate GIN/SAGE self-term '
                              'by node attention so the w_message gate controls all '
@@ -642,6 +652,8 @@ def main():
             graph_pool=args.graph_pool,
             gin_inner_bn=args.gin_inner_bn,
             self_gate=args.self_gate,
+            gin_train_eps=args.gin_train_eps,
+            fixed_norm=args.fixed_norm,
             run_multi_explanation=args.run_multi_explanation,
         )
     run(cfg, per_split_eval=args.per_split_eval)
