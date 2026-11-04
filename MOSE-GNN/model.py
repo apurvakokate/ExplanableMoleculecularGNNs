@@ -181,6 +181,7 @@ class SingleChannelGNN(nn.Module):
         self_gate: bool = False,
         graph_pool: str = 'add',
         gin_train_eps: bool = True,
+        fixed_norm: bool = False,
     ):
         super().__init__()
         self.w_feat = w_feat
@@ -204,6 +205,12 @@ class SingleChannelGNN(nn.Module):
             gin_train_eps=gin_train_eps,
         )
         self.backbone.lin2 = nn.Linear(hidden_dim, 1)
+        # Weight-scaling check (default OFF): freeze the norm of every predictor weight AFTER lin2 is final,
+        # so the network cannot rescale itself to cancel the motif weights. Motif params are not touched.
+        self.fixed_norm = bool(fixed_norm)
+        if self.fixed_norm:
+            from SharedModules.models.fixed_norm import apply_fixed_norm
+            apply_fixed_norm(self.backbone)
 
         _init_motif_params(self, num_motifs, kept_motif_ids, n_classes=1)
 
