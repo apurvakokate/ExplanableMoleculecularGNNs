@@ -239,6 +239,7 @@ class GSAT(nn.Module):
         logit_clamp: Optional[float] = None,
         deterministic_att: bool = False,
         self_gate: bool = False,
+        gin_train_eps: bool = True,
         # ── Backbone architecture (gsat = official GSAT GIN/PNA; see gsat_arch.py) ──
         arch_style: str = 'ours',
         pna_aggregators: Optional[Tuple[str, ...]] = None,
@@ -440,6 +441,7 @@ class GSAT(nn.Module):
                 deg=deg, edge_dim=edge_dim,
                 conv_normalize=conv_normalize, gin_inner_bn=gin_inner_bn,
                 self_gate=self_gate, graph_pool=graph_pool,
+                gin_train_eps=gin_train_eps,
                 # GSAT PNA pieces on OUR PNA (default none = unchanged): 'noscalers',
                 # 'bnres' (per-layer BN + residual + dropout). Mean readout = graph_pool.
                 pna_scalers='noscalers' not in pna_pieces,

@@ -28,6 +28,7 @@ class MotifSATConfig:
     graph_pool: str = 'add'           # add | mean — graph readout pooling
     gin_inner_bn: bool = True       # BatchNorm inside GIN MLP (Xu et al. design)
     self_gate: bool = False         # EXPERIMENTAL (off): gate GIN/SAGE self-term by node att
+    gin_train_eps: bool = True      # False = GIN eps fixed at 0 (official GSAT GIN); --gin_fixed_eps
     dropout: float = 0.3
     # Backbone architecture: 'ours' (BaseGNN, default) | 'gsat' (official GSAT
     # GIN/PNA: SharedModules/models/gsat_arch.py). The two PNA knobs apply to gsat.
@@ -220,4 +221,6 @@ class MotifSATConfig:
             base = f'{base}_dr{self.decay_r:g}'
         if getattr(self, 'deterministic_att', False):
             base = f'{base}_det'
+        if not getattr(self, 'gin_train_eps', True):
+            base = f'{base}_gineps0'
         return f'{base}_{hp}' if hp else base

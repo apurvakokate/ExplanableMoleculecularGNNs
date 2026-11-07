@@ -114,6 +114,7 @@ def build_model(cfg: MotifSATConfig, task_type: str, meta, vocab=None) -> GSAT:
         graph_pool=cfg.graph_pool,
         gin_inner_bn=getattr(cfg, 'gin_inner_bn', True),
         self_gate=getattr(cfg, 'self_gate', False),
+        gin_train_eps=getattr(cfg, 'gin_train_eps', True),
         arch_style=getattr(cfg, 'arch_style', 'ours'),
         pna_aggregators=tuple(a.strip() for a in
                               str(getattr(cfg, 'pna_aggregators', '')).split(',') if a.strip())
@@ -253,6 +254,99 @@ def _aggregate_att_to_motif(
     }
 
 
+
+def _write_run_manifest(cfg, out_dir) -> None:
+    """Record the complete resolved configuration and the environment it ran in.
+
+    Failures of the optional probes (git, library versions) are RECORDED as an
+    error string, never silently dropped -- a missing key would read as "not
+    applicable" when it actually means "we did not look".
+    """
+    import socket, subprocess, datetime, platform
+
+    def _probe(fn):
+        try:
+            return fn()
+        except Exception as e:                      # record, never hide
+            return {"error": "%s: %s" % (type(e).__name__, e)}
+
+    def _versions():
+        import torch as _t
+        out = {"python": platform.python_version(), "torch": _t.__version__,
+               "cuda_available": bool(_t.cuda.is_available()),
+               "cuda": getattr(_t.version, "cuda", None)}
+        try:
+            import torch_geometric as _g; out["torch_geometric"] = _g.__version__
+        except Exception as e:
+            out["torch_geometric"] = "error: %s" % e
+        try:
+            import rdkit; out["rdkit"] = rdkit.__version__
+        except Exception as e:
+            out["rdkit"] = "error: %s" % e
+        try:
+            import numpy as _n; out["numpy"] = _n.__version__
+        except Exception as e:
+            out["numpy"] = "error: %s" % e
+        return out
+
+    def _git():
+        root = Path(__file__).resolve().parent.parent
+        sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=20)
+        if sha.returncode != 0:
+            return {"error": sha.stderr.strip() or "git rev-parse failed"}
+        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=20)
+        return {"commit": sha.stdout.strip(),
+                "dirty": bool(dirty.stdout.strip()),
+                "n_dirty_files": len([l for l in dirty.stdout.splitlines() if l.strip()])}
+
+    # Only the environment variables this codebase actually reads, with the value
+    # the code will resolve -- MOSE_GAT_HEADS defaults to 1 (single-head GAT, the
+    # project standard) and is otherwise invisible in the outputs.
+    env_keys = ["MOSE_GAT_HEADS", "CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS", "SLURM_JOB_ID", "SLURM_ARRAY_JOB_ID",
+                "SLURM_ARRAY_TASK_ID", "SLURM_RESTART_COUNT"]
+    manifest = {
+        "config": cfg.to_dict(),                    # ALL dataclass fields, via asdict
+        "resolved": {"gat_heads": int(os.environ.get("MOSE_GAT_HEADS", "1"))},
+        "env": {k: os.environ.get(k) for k in env_keys},
+        "versions": _probe(_versions),
+        "git": _probe(_git),
+        "provenance": {
+            "hostname": socket.gethostname(),
+            "started_utc": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "argv": sys.argv,
+            "cwd": os.getcwd(),
+        },
+    }
+    with open(Path(out_dir) / "run_manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+
+
+def _append_manifest_outputs(out_dir) -> None:
+    """List what the run actually produced, so a silently incomplete cell is visible."""
+    import datetime
+    p = Path(out_dir) / "run_manifest.json"
+    if not p.exists():
+        return
+    try:
+        m = json.load(open(p))
+    except Exception:
+        return
+    files = {}
+    for f in sorted(Path(out_dir).iterdir()):
+        if f.is_file() and f.name != "run_manifest.json":
+            files[f.name] = f.stat().st_size
+    m["outputs"] = {
+        "finished_utc": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "n_files": len(files),
+        "files": files,
+    }
+    with open(p, "w") as f:
+        json.dump(m, f, indent=2, default=str)
+
+
 def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     from SharedModules.data.dataset_routing import validate_use_gt, training_summary_extras
     from reg_config import resolve_gsat_r, resolve_info_loss_coef
@@ -375,6 +469,13 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
     else:
         out_dir = (Path(cfg.out_dir) / cfg.dataset / f"fold{cfg.fold}" / tag)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── run_manifest.json: every INPUT needed to verify or reproduce this run ──
+    # Written here (not at the end) so a crashed run still records what it attempted,
+    # and on every path: training, --eval_only and the no-vocab path.
+    # The config is dumped WHOLESALE via asdict, so it can never drift from the
+    # dataclass the way the hand-picked summary.json field list did (58 of 86 fields).
+    _write_run_manifest(cfg, out_dir)
 
     # Train
     # W&B initialisation (only when --use_wandb is passed)
@@ -516,6 +617,7 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
         with open(out_dir / "summary.json", "w") as f:
             json.dump(summary, f, indent=2, default=float)
         print(f"  [no-vocab] wrote {out_dir / 'summary.json'}; motif evaluation skipped")
+        _append_manifest_outputs(out_dir)
         return {"prediction": split_metrics.get("test", {}), "gsat": gsat_expl}
 
     # Determine GT ROC level: edge for learn_edge_att, node otherwise
@@ -766,6 +868,7 @@ def run(cfg: MotifSATConfig, per_split_eval: bool = False) -> dict:
             top_bottom=results.get('top_bottom'),
         )
 
+    _append_manifest_outputs(out_dir)
     return results
 
 
@@ -971,6 +1074,9 @@ def main():
                         action="store_false",
                         help="Disable BatchNorm inside the GIN MLP (default on).")
     parser.set_defaults(gin_inner_bn=True)
+    parser.add_argument("--gin_fixed_eps", dest="gin_train_eps", action="store_false",
+                        help="Fix GIN eps at 0 (official GSAT GIN) instead of learning it (default learnable).")
+    parser.set_defaults(gin_train_eps=True)
     parser.add_argument("--self_gate", action="store_true",
                         help="EXPERIMENTAL (default off): gate GIN/SAGE self-term "
                              "by node attention so the w_message gate controls all "
@@ -1055,6 +1161,7 @@ def main():
             graph_pool=args.graph_pool,
             gin_inner_bn=args.gin_inner_bn,
             self_gate=args.self_gate,
+            gin_train_eps=args.gin_train_eps,
             run_multi_explanation=args.run_multi_explanation,
         )
     # Override early-stop patience only when explicitly passed (config default
