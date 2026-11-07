@@ -18,7 +18,7 @@ CPU_DATASETS="${CPU_DATASETS:-Fluoride_Carbonyl_Verified_GT BBBP esol Lipophilic
 [ "$SMOKE" = 1 ] && { NGPU="${NGPU_SMOKE:-8}"; NCPU=0; }
 
 W="$(mktemp)"; trap 'rm -f "$W"' EXIT
-python3 - "$HERE/variants_worker.sh" "$HERE/r_table.sh" "$W" <<'PY'
+python3 - "$HERE/variants_worker.sh" "$HERE/${R_TABLE:-r_table.sh}" "$W" <<'PY'
 import sys
 w, t, out = sys.argv[1:4]
 src = open(w).read(); tab = open(t).read()
@@ -32,7 +32,7 @@ submit(){  # n device part gres mem datasets tag
     [ "$n" -gt 0 ] || { echo "skip $tag"; return 0; }
     ssh osuhpc "mkdir -p $LOG && sbatch --requeue --array=1-$n -p $part --gres=$gres -c 2 --mem=$mem \
         -t 12:00:00 -J variants_$tag -o $LOG/${tag}_%A_%a.out \
-        --export=ALL,POOL_DATASETS=${dss// /:},DEVICE=$dev,CLIP=$CLIP,SMOKE=$SMOKE,PAR=$PAR${VOCABS:+,VOCABS=${VOCABS// /:}}${PRESETS:+,PRESETS=${PRESETS// /:}}${GROUPINGS:+,GROUPINGS=${GROUPINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}" < "$W"
+        --export=ALL,MOSE_GAT_HEADS=1,POOL_DATASETS=${dss// /:},DEVICE=$dev,CLIP=$CLIP,SMOKE=$SMOKE,PAR=$PAR${TREE:+,TREE=$TREE}${VOCABS:+,VOCABS=${VOCABS// /:}}${PRESETS:+,PRESETS=${PRESETS// /:}}${GROUPINGS:+,GROUPINGS=${GROUPINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}" < "$W"
 }
 submit "$NGPU" cuda "$GPU_PART" gpu:1 16G "$GPU_DATASETS" gpu
 submit "$NCPU" cpu  "$CPU_PART" gpu:0 12G "$CPU_DATASETS" cpu

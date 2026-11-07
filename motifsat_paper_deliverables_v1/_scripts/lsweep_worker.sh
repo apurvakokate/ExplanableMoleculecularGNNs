@@ -3,7 +3,7 @@
 # Fork of variants_worker.sh (same DONE / CLAIM / FAILURE contract). Submitted through sbatch stdin by
 # lsweep_launch.sh (no file copy to the HPC); this file is the record.
 #
-# Preset intra_inter_loss, pooled grouping, rBRICS v3. The loss is
+# Preset intra_inter_loss, grouping from $GROUPING (default pooled), rBRICS v3. The loss is
 #     motif_loss_coef * (within_node_coef * within_var - between_motif_coef * between_var)
 # and the yaml sets all three to 1.0; explicitly typed CLI flags override the yaml (run.py _cli_provided_dests).
 # SETTINGS (tag -> motif_loss_coef within_node_coef between_motif_coef):
@@ -27,11 +27,15 @@ cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 source /nfs/stak/users/kokatea/hpc-share/anaconda3/etc/profile.d/conda.sh; conda activate l2xgnn
 [ "${DEVICE:-cuda}" = cpu ] && export CUDA_VISIBLE_DEVICES=""
 
-OUT="$REPO/motifsat_paper_deliverables_v1"; RUNS="$OUT/lsweep_v1"
+GROUPING="${GROUPING:-pooled}"
+OUT="$REPO/motifsat_paper_deliverables_v1"
+# a non-default grouping writes its own tree, so lsweep_v1 is never touched
+TREE="${TREE:-lsweep_v1}"
+if [ "$GROUPING" = pooled ]; then RUNS="$OUT/$TREE"; else RUNS="$OUT/${TREE}_$GROUPING"; fi
 FOLDS_ROOT=/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/
 DISPATCH="$OUT/_dispatch_lsweep"; CLAIMS="$DISPATCH/claims"; FAILURES="$DISPATCH/failures.tsv"
 # SMOKE (2-epoch) runs go to a separate tree + claim dir so they can never count as DONE.
-if [ "${SMOKE:-0}" = 1 ]; then RUNS="$OUT/lsweep_v1_smoke"; CLAIMS="$DISPATCH/claims_smoke"; fi
+if [ "${SMOKE:-0}" = 1 ]; then RUNS="$OUT/lsweep_v1_smoke${GROUPING:+_$GROUPING}"; CLAIMS="$DISPATCH/claims_smoke"; fi
 mkdir -p "$CLAIMS"
 [ -s "$FAILURES" ] || printf 'ts\thost\tjobid\tdevice\tcell_id\trc\n' > "$FAILURES"
 WHO="$(hostname -s):${SLURM_JOB_ID:-$$}"; JOBID="${SLURM_JOB_ID:-$$}"
@@ -55,7 +59,9 @@ r_for(){ if [ "$1" = mutag ]; then r_for_paper "$1" "$2"; else r_for_own "$1" "$
 coefs_of(){  # tag -> "<motif_loss_coef> <within_node_coef> <between_motif_coef>"; unknown -> rc 1
     case "$1" in
         lam0.1) echo "0.1 1 1" ;;  lam0.3) echo "0.3 1 1" ;;  lam3) echo "3 1 1" ;;  lam10) echo "10 1 1" ;;
+        lam30) echo "30 1 1" ;;
         btw0.3) echo "1 1 0.3" ;;  btw3) echo "1 1 3" ;;
+        btw10) echo "1 1 10" ;;    btw30) echo "1 1 30" ;;
         *) return 1 ;;
     esac
 }
@@ -67,8 +73,8 @@ _complete(){
 
 run_cell(){
     local tag=$1 ds=$2 f=$3 bb=$4
-    local cid="rbrics_v3_${tag}__intra_inter_loss__pooled__${ds}__f${f}__${bb}"
-    local dir="$RUNS/rbrics_v3_${tag}/intra_inter_loss/pooled/$ds/fold$f/$bb"
+    local cid="rbrics_v3_${tag}__intra_inter_loss__${GROUPING}__${ds}__f${f}__${bb}"
+    local dir="$RUNS/rbrics_v3_${tag}/intra_inter_loss/$GROUPING/$ds/fold$f/$bb"
     _complete "$dir" motifsat && return 0                                 # DONE  -> skip
     local cc; cc="$(coefs_of "$tag")" || { echo "[skip] unknown setting $tag" >&2; return 0; }
     local lam wn bm; read -r lam wn bm <<< "$cc"
@@ -84,7 +90,7 @@ run_cell(){
     python3 MotifSAT/run.py --config MotifSAT/configs/intra_inter_loss.yaml \
         --dataset "$ds" --fold "$f" --backbone "$bb" \
         --data_root "$droot" --vocab_root "$REPO/vocab_final_v3" --vocab_variant rbrics \
-        --processed_root "$proc" --motif_grouping pooled \
+        --processed_root "$proc" --motif_grouping "$GROUPING" \
         --motif_loss_coef "$lam" --within_node_coef "$wn" --between_motif_coef "$bm" \
         --info_loss_coef 1 --init_r 0.9 --decay_r 0.1 --final_r "$fr" --decay_interval "$di" \
         --ckpt_rule gsat \
@@ -117,7 +123,7 @@ if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
   done
 fi
 
-echo "worker $WHO DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] SETTINGS=[$SETTINGS] BACKBONES=[$BACKBONES] FOLDS=[$FOLDS] EPOCHS=$EPOCHS"
+echo "worker $WHO GROUPING=$GROUPING DEVICE=${DEVICE:-cuda} POOL=[$POOL_DATASETS] SETTINGS=[$SETTINGS] BACKBONES=[$BACKBONES] FOLDS=[$FOLDS] EPOCHS=$EPOCHS"
 # dataset outermost so the ground-truth sets (listed first in POOL_DATASETS) finish first
 work(){
 for ds in $POOL_DATASETS; do

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# gin_ablation_launch.sh — run LOCALLY (fork of variants_launch.sh). Submits gin_ablation_worker.sh (ARM required) through sbatch stdin
+# (no file copy), as job arrays of claim-based workers; re-run to add workers.
+# The worker's R_TABLE_FILLED_AT_LAUNCH line is replaced by r_table.sh (same dir) first.
+#   GPU pool (big datasets) : NGPU workers, --gres=gpu:1 -c 2, partition GPU_PART
+#   CPU pool (small datasets): NCPU workers, --gres=gpu:0 -c 2, partition CPU_PART
+# Env passed to workers: POOL_DATASETS DEVICE CLIP SMOKE PAR (+ optional VOCABS PRESETS GROUPINGS);
+# lists travel ':'-joined (no spaces through ssh + sbatch --export); the worker splits them.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+LOG=/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/motifsat_paper_deliverables_v1/_dispatch_ginabl/logs
+: "${ARM:?set ARM to ctrl|self_gate|eps0|nobn}"
+SMOKE="${SMOKE:-0}"; CLIP="${CLIP:-}"; PAR="${PAR:-2}"
+NGPU="${NGPU:-48}"; NCPU="${NCPU:-86}"
+GPU_PART="${GPU_PART:-gpu,preempt}"; CPU_PART="${CPU_PART:-share,preempt}"
+# ground-truth sets first inside each pool (the worker loops dataset-outermost)
+GPU_DATASETS="${GPU_DATASETS:-Benzene_Verified_GT Alkane_Carbonyl_Verified_GT hERG Mutagenicity}"
+CPU_DATASETS="${CPU_DATASETS:-Fluoride_Carbonyl_Verified_GT BBBP esol Lipophilicity}"
+[ "$SMOKE" = 1 ] && { NGPU="${NGPU_SMOKE:-8}"; NCPU=0; }
+
+W="$(mktemp)"; trap 'rm -f "$W"' EXIT
+python3 - "$HERE/gin_ablation_worker.sh" "$HERE/${R_TABLE:-r_table.sh}" "$W" <<'PY'
+import sys
+w, t, out = sys.argv[1:4]
+src = open(w).read(); tab = open(t).read()
+assert src.count('R_TABLE_FILLED_AT_LAUNCH') == 1
+open(out, 'w').write(src.replace('R_TABLE_FILLED_AT_LAUNCH', tab.strip()))
+PY
+bash -n "$W"
+
+submit(){  # n device part gres mem datasets tag
+    local n=$1 dev=$2 part=$3 gres=$4 mem=$5 dss=$6 tag=$7
+    [ "$n" -gt 0 ] || { echo "skip $tag"; return 0; }
+    ssh osuhpc "mkdir -p $LOG && sbatch --requeue --array=1-$n -p $part --gres=$gres -c 2 --mem=$mem \
+        -t 12:00:00 -J ginabl_${ARM}_$tag -o $LOG/${ARM}_${tag}_%A_%a.out \
+        --export=ALL,MOSE_GAT_HEADS=1,READOUT_GROUPING=${READOUT_GROUPING:-pooled},CONSISTENCY_GROUPING=${CONSISTENCY_GROUPING:-pooled},ARM=$ARM,POOL_DATASETS=${dss// /:},DEVICE=$dev,CLIP=$CLIP,SMOKE=$SMOKE,PAR=$PAR${TREE:+,TREE=$TREE}${VOCABS:+,VOCABS=${VOCABS// /:}}${PRESETS:+,PRESETS=${PRESETS// /:}}${GROUPINGS:+,GROUPINGS=${GROUPINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}" < "$W"
+}
+submit "$NGPU" cuda "$GPU_PART" gpu:1 16G "$GPU_DATASETS" gpu
+submit "$NCPU" cpu  "$CPU_PART" gpu:0 12G "$CPU_DATASETS" cpu

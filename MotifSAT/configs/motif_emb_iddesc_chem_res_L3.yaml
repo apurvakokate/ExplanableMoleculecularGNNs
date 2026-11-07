@@ -1,0 +1,11 @@
+# motif_emb_iddesc_chem_res with motif_gnn_layers=3 (GNN1 depth sweep, phase 1).
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_feat: id_desc
+motif_edge_feat: true
+motif_edge_chem: true
+motif_gnn_layers: 3
+motif_gnn_norm: layer
+motif_gnn_residual: true

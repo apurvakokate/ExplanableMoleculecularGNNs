@@ -21,7 +21,7 @@ CPU_DATASETS="${CPU_DATASETS:-Fluoride_Carbonyl_Verified_GT BBBP esol Lipophilic
 [ "$SMOKE" = 1 ] && { NGPU="${NGPU_SMOKE:-3}"; NCPU=0; GPU_DATASETS="Benzene_Verified_GT mutag"; }
 
 W="$(mktemp)"; trap 'rm -f "$W"' EXIT
-python3 - "$HERE/lsweep_worker.sh" "$HERE/r_table.sh" "$HERE/r_table_paper.sh" "$W" <<'PY'
+python3 - "$HERE/lsweep_worker.sh" "$HERE/${R_TABLE:-r_table.sh}" "$HERE/r_table_paper.sh" "$W" <<'PY'
 import re, sys
 w, own, paper, out = sys.argv[1:5]
 src = open(w).read()
@@ -39,8 +39,8 @@ submit(){  # n device part gres mem datasets tag
     local n=$1 dev=$2 part=$3 gres=$4 mem=$5 dss=$6 tag=$7
     [ "$n" -gt 0 ] || { echo "skip $tag"; return 0; }
     ssh osuhpc "mkdir -p $LOG && sbatch --requeue --array=1-$n -p $part --gres=$gres -c 2 --mem=$mem \
-        -t 12:00:00 -J lsweep_$tag -o $LOG/${tag}_%A_%a.out \
-        --export=ALL,POOL_DATASETS=${dss// /:},DEVICE=$dev,SMOKE=$SMOKE,PAR=$PAR${SETTINGS:+,SETTINGS=${SETTINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}${FOLDS:+,FOLDS=${FOLDS// /:}}" < "$W"
+        -t 12:00:00 -J lsweep${GROUPING:+_$GROUPING}_$tag -o $LOG/${tag}_%A_%a.out \
+        --export=ALL,MOSE_GAT_HEADS=1,POOL_DATASETS=${dss// /:},DEVICE=$dev,SMOKE=$SMOKE,PAR=$PAR${TREE:+,TREE=$TREE}${GROUPING:+,GROUPING=$GROUPING}${SETTINGS:+,SETTINGS=${SETTINGS// /:}}${BACKBONES:+,BACKBONES=${BACKBONES// /:}}${FOLDS:+,FOLDS=${FOLDS// /:}}" < "$W"
 }
 submit "$NGPU" cuda "$GPU_PART" gpu:1 16G "$GPU_DATASETS" gpu
 submit "$NCPU" cpu  "$CPU_PART" gpu:0 12G "$CPU_DATASETS" cpu

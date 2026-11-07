@@ -24,12 +24,15 @@ cd "$REPO"; export PYTHONPATH="$REPO" WANDB_MODE=disabled
 source /nfs/stak/users/kokatea/hpc-share/anaconda3/etc/profile.d/conda.sh; conda activate l2xgnn
 [ "${DEVICE:-cuda}" = cpu ] && export CUDA_VISIBLE_DEVICES=""
 
-OUT="$REPO/motifsat_paper_deliverables_v1"; RUNS="$OUT/variants_v1"
+OUT="$REPO/motifsat_paper_deliverables_v1"
+# TREE lets a re-tune write a SEPARATE tree; the default keeps the existing paths byte-identical.
+TREE="${TREE:-variants_v1}"; RUNS="$OUT/$TREE"
 PROC_BASE="$REPO/processed_variants_v1"
 FOLDS_ROOT=/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS/
-DISPATCH="$OUT/_dispatch_variants"; CLAIMS="$DISPATCH/claims"; FAILURES="$DISPATCH/failures.tsv"
+DISPATCH="$OUT/_dispatch_variants"; FAILURES="$DISPATCH/failures.tsv"
+if [ "$TREE" = variants_v1 ]; then CLAIMS="$DISPATCH/claims"; else CLAIMS="$DISPATCH/claims_$TREE"; fi
 # SMOKE (2-epoch) runs go to a separate tree + claim dir so they can never count as DONE.
-if [ "${SMOKE:-0}" = 1 ]; then RUNS="$OUT/variants_v1_smoke"; CLAIMS="$DISPATCH/claims_smoke"; fi
+if [ "${SMOKE:-0}" = 1 ]; then RUNS="$OUT/${TREE}_smoke"; CLAIMS="$DISPATCH/claims_smoke_$TREE"; fi
 mkdir -p "$CLAIMS"
 [ -s "$FAILURES" ] || printf 'ts\thost\tjobid\tdevice\tcell_id\trc\n' > "$FAILURES"
 WHO="$(hostname -s):${SLURM_JOB_ID:-$$}"; JOBID="${SLURM_JOB_ID:-$$}"

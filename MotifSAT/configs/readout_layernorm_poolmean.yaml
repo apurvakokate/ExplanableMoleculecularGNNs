@@ -1,0 +1,7 @@
+# readout_layernorm with pool_mode=mean (pool_mode sweep, phase 1).
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_scorer_norm: layer
+pool_mode: mean
