@@ -945,10 +945,12 @@ def main():
     parser.add_argument("--motif_gnn_layers", type=int, default=2,
                         help="Depth of the motif-graph GNN (GNN1).")
     parser.add_argument("--motif_gnn_norm", default="none",
-                        choices=["none", "layer"],
-                        help="GNN1 per-layer norm. Default 'none'; 'layer' = LayerNorm. "
-                             "NOT batch/instance (unstable when a molecule has one "
-                             "fragment, M=1). An ablation axis.")
+                        choices=["none", "layer", "instance"],
+                        help="GNN1 per-layer norm. Default 'none'; 'layer' = LayerNorm; "
+                             "'instance' = graph-wise InstanceNorm over the motif rows "
+                             "(the normalisation official GSAT uses in its extractor), "
+                             "degenerate for a molecule with one fragment (M=1). "
+                             "NOT batch. An ablation axis.")
     parser.add_argument("--motif_gnn_residual", action="store_true",
                         help="Enable GNN1 per-layer skip connection h = h + block(h). "
                              "Default off (single-branch encoder; an ablation axis).")

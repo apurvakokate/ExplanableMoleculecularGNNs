@@ -51,7 +51,7 @@ class MotifSATConfig:
     motif_edge_feat: bool = True       # variant D: junction edge feature on/off (GINE vs GIN)
     motif_edge_chem: bool = False      # D-chemistry: 17-dim junction feature (vs scalar multiplicity)
     motif_gnn_layers: int = 2          # depth of the motif-graph GNN (GNN1)
-    motif_gnn_norm: str = 'none'       # GNN1 per-layer norm: none (default) | layer
+    motif_gnn_norm: str = 'none'       # GNN1 per-layer norm: none (default) | layer | instance
     motif_gnn_residual: bool = False   # GNN1 per-layer skip connection (default off)
 
     # Stochasticity granularity for motif-scored paths (NOT extra logit noise).

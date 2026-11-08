@@ -438,9 +438,15 @@ class MotifGNN(nn.Module):
 
     Two knobs, both defaulting OFF (consensus-aligned for a single-branch encoder
     on tiny fragment graphs; see the GNN1-design ablation):
-      * ``norm``     — 'none' (default) or 'layer'. NOT batch/instance: BatchNorm
-                       breaks and per-graph InstanceNorm is unstable when a
-                       molecule has a single fragment (M=1).
+      * ``norm``     — 'none' (default), 'layer' or 'instance'. NOT batch:
+                       BatchNorm breaks on tiny fragment graphs. 'instance' is
+                       graph-wise InstanceNorm, the same normalisation official
+                       GSAT uses in its extractor, added 2026-11-07 so the
+                       motif-graph arm can be compared at layer vs instance like
+                       the readout arm. It needs the MOTIF-level batch index and
+                       is degenerate for a molecule with a single fragment
+                       (M=1), where the per-graph variance is zero and the
+                       output collapses to ~0 for that graph.
       * ``residual`` — per-layer skip connection h = h + block(h). Default False;
                        HIMP's residuals live on its cross-level atom↔clique
                        exchange, which this single branch does not have, so a
@@ -452,11 +458,16 @@ class MotifGNN(nn.Module):
                  norm: str = 'none', residual: bool = False):
         super().__init__()
         from torch_geometric.nn import GINConv, GINEConv
-        if norm not in ('none', 'layer'):
-            raise ValueError(f"MotifGNN norm must be 'none' or 'layer', got {norm!r}")
+        if norm not in ('none', 'layer', 'instance'):
+            raise ValueError(
+                f"MotifGNN norm must be 'none', 'layer' or 'instance', got {norm!r}")
         self.edge_dim = edge_dim
         self.dropout = dropout
         self.residual = residual
+        self.norm_mode = norm
+        # InstanceNorm is graph-wise, so it needs the motif-level batch index at
+        # every layer; LayerNorm and Identity do not take one.
+        self.norm_needs_batch = norm == 'instance'
         self.input_lin = nn.Linear(in_dim, hidden_dim)
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -466,18 +477,31 @@ class MotifGNN(nn.Module):
             self.convs.append(
                 GINEConv(mlp, train_eps=True, edge_dim=edge_dim) if edge_dim
                 else GINConv(mlp, train_eps=True))
-            self.norms.append(nn.LayerNorm(hidden_dim) if norm == 'layer'
-                              else nn.Identity())
+            if norm == 'layer':
+                self.norms.append(nn.LayerNorm(hidden_dim))
+            elif norm == 'instance':
+                self.norms.append(InstanceNorm(hidden_dim))
+            else:
+                self.norms.append(nn.Identity())
         self.scorer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1))
 
     def forward(self, Fm: Tensor, edge_index: Tensor,
-                edge_attr: Optional[Tensor]) -> Tensor:
+                edge_attr: Optional[Tensor],
+                motif_batch: Optional[Tensor] = None) -> Tensor:
+        """``motif_batch`` [M] is the graph id of each motif row; required only by
+        norm='instance', which normalises per graph. FAILS LOUD if it is missing,
+        rather than silently normalising the whole batch as one graph."""
+        if self.norm_needs_batch and motif_batch is None:
+            raise ValueError(
+                "MotifGNN norm='instance' is graph-wise and requires motif_batch "
+                "(the [M] graph id of each motif row); got None.")
         h = self.input_lin(Fm)
         for conv, norm in zip(self.convs, self.norms):
             m = (conv(h, edge_index, edge_attr) if self.edge_dim is not None
                  else conv(h, edge_index))
-            block = F.dropout(F.relu(norm(m)), p=self.dropout, training=self.training)
+            m = norm(m, motif_batch) if self.norm_needs_batch else norm(m)
+            block = F.dropout(F.relu(m), p=self.dropout, training=self.training)
             h = h + block if self.residual else block
         return self.scorer(h)                # [M, 1] per-motif logits

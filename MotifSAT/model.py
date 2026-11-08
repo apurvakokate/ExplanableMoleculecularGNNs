@@ -213,7 +213,7 @@ class GSAT(nn.Module):
         motif_edge_feat: bool = True,        # variant D: junction edge feature on/off (GINE vs GIN)
         motif_edge_chem: bool = False,       # D-chemistry: 17-dim junction feature (vs scalar multiplicity)
         motif_gnn_layers: int = 2,           # depth of the motif-graph GNN (GNN1)
-        motif_gnn_norm: str = 'none',        # GNN1 per-layer norm: none (default) | layer
+        motif_gnn_norm: str = 'none',        # GNN1 per-layer norm: none (default) | layer | instance
         motif_gnn_residual: bool = False,    # GNN1 per-layer skip connection (default off)
         num_motifs: int = 0,                 # vocab size — required for motif_feat='id_desc'
         motif_desc_table: Optional[Tensor] = None,  # [num_motifs, MOTIF_DESC_DIM] descriptors (id_desc)
@@ -611,7 +611,8 @@ class GSAT(nn.Module):
         m_edge_index, m_edge_attr = build_motif_graph(
             inv_idx, edge_index, num_motifs, edge_mode=_edge_mode,
             x=x, atom_edge_attr=edge_attr)
-        motif_logits = self.motif_gnn(Fm, m_edge_index, m_edge_attr)
+        motif_logits = self.motif_gnn(Fm, m_edge_index, m_edge_attr,
+                                      motif_batch=motif_batch)
         node_logits = lift_motif_to_node(motif_logits, inv_idx)
         return node_logits, motif_logits, inv_idx, motif_batch
 
