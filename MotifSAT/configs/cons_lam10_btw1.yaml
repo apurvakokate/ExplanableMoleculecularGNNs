@@ -1,0 +1,16 @@
+# Factorial cell, Consistency arm, WAVE 2 (2026-11-07).
+# Grid: motif_loss_coef x between_motif_coef. within_node_coef FIXED at 1.0 — the loss is
+# lam*(within*W - between*B), so (lam, within, between) has one redundant degree of freedom and
+# crossing within_node_coef would produce exact duplicate models.
+# Waves are nested and each is a complete balanced factorial:
+#   1: lam/btw {0.3,1,3}  2: +{10}  3: +lam{0.1,30} +btw{30}
+# Wave 1 is the influential window: with info_loss_coef=1.0 the consistency term is comparable to
+# the IB term only near lam~1; much below it is inert, much above it dominates.
+# No motif scorer in this arm, so info_loss_level stays 'node'.
+motif_method: loss
+noise: none
+info_loss_level: node
+w_message: true
+motif_loss_coef: 10.0
+within_node_coef: 1.0
+between_motif_coef: 1.0

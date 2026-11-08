@@ -1,0 +1,16 @@
+# Method preset: BASE GSAT + MOTIF IDENTITY + NO IB annealing (base-arm factorial cell, 2026-11-07).
+#
+# Completes the base arm's 2x2 factorial over its two knobs: motif_id_features x fix_r.
+# base_gsat (F,F), base_gsat_motifid (T,F) and base_gsat_noanneal (F,T) already exist; this is
+# (T,T). Needed so the motif-identity effect and the annealing effect can be read off a crossed
+# design instead of two separate one-at-a-time contrasts against base_gsat.
+#
+# info_loss_level stays 'node': 'motif' requires a motif scorer (model.py:328) and the base arm
+# has none.
+motif_method: none
+noise: none
+learn_edge_att: false
+info_loss_level: node
+w_message: true
+motif_id_features: true
+fix_r: true

@@ -1,0 +1,19 @@
+# Factorial cell, Motif-graph arm (2026-11-07), depth FIXED at 2:
+# motif_gnn_norm x motif_gnn_residual x motif_feat x edge x info_loss_level.
+# edge: mult = scalar count of crossing atom-bonds (GINEConv, edge_dim 1) | none = topology only
+# (GINConv). The 17-dim junction chemistry is OUT OF SCOPE for this factorial by decision, so the
+# deployed motif_emb_iddesc_chem_res cell sits outside this design.
+# motif_gnn_norm accepts only none|layer — MotifGNN raises on instance, since per-graph
+# InstanceNorm is unstable when a molecule has a single fragment.
+# pool_mode / motif_scorer_norm are deliberately NOT set: this arm builds MotifGNN, not
+# MotifReadoutScorer, and would silently ignore them.
+motif_method: motif_emb
+noise: motif
+info_loss_level: node
+w_message: true
+motif_feat: multihot
+motif_edge_feat: true
+motif_edge_chem: false
+motif_gnn_layers: 2
+motif_gnn_norm: none
+motif_gnn_residual: false

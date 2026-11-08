@@ -1,0 +1,10 @@
+# Tuning arm, generated 2026-11-08 for the post-r-schedule variant tuning.
+# Phase C: lambda=3, b=0.3
+# Fixed across the phase: motif_method=loss, noise=none, info_loss_level=node, w_message=true, within_node_coef=1.0. Grid: motif_loss_coef (lambda) x between_motif_coef (b).
+motif_method: loss
+noise: none
+info_loss_level: node
+w_message: true
+motif_loss_coef: 3
+within_node_coef: 1.0
+between_motif_coef: 0.3

@@ -1,0 +1,13 @@
+# Tuning arm, generated 2026-11-08 for the post-r-schedule variant tuning.
+# Phase A: reference arm
+# Fixed across the phase: motif_method=motif_emb, noise=motif, w_message=true, motif_gnn_layers=2. Base = id_desc / multiplicity edges / layer norm / residual on / kl=motif.
+motif_method: motif_emb
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_feat: id_desc
+motif_edge_feat: true
+motif_edge_chem: false
+motif_gnn_layers: 2
+motif_gnn_norm: layer
+motif_gnn_residual: true

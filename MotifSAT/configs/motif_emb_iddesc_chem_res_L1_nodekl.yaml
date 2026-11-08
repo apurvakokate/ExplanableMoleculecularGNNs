@@ -1,0 +1,20 @@
+# Method preset: motif_emb_iddesc_chem_res with motif_gnn_layers=1 AND the KL term at NODE level
+# (motif-graph arm factorial cell, 2026-11-07).
+#
+# Completes the motif-graph arm's 3x2 factorial over motif_gnn_layers {1,2,3} x
+# info_loss_level {motif, node}. Four of the six cells exist in variants_v2 (all three depths at
+# KL=motif, plus depth 2 at KL=node); this supplies depth=1 x KL=node, so the depth x KL
+# interaction is estimable and the depth null can be checked at node-level KL.
+#
+# Depth is near capacity-matched (321k / 331k / 340k total parameters at depth 1 / 2 / 3), so
+# unlike pool_mode this knob is a clean one.
+motif_method: motif_emb
+noise: motif
+info_loss_level: node
+w_message: true
+motif_feat: id_desc
+motif_edge_feat: true
+motif_edge_chem: true
+motif_gnn_layers: 1
+motif_gnn_norm: layer
+motif_gnn_residual: true

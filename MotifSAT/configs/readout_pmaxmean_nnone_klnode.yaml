@@ -1,0 +1,11 @@
+# Factorial cell, Readout arm (2026-11-07): pool_mode x motif_scorer_norm x info_loss_level.
+# motif_scorer_norm must be set explicitly for a scorer run (model.py raises on None).
+# NOTE pool_mode also changes scorer CAPACITY: ExtractorMLP widths scale with pooled_dim, giving
+# 17k / 17k / 67k / 149k scorer parameters at mean / max / max_mean / multi. A pool_mode contrast
+# is therefore a hyperparameter contrast, not an isolated pooling effect.
+motif_method: readout
+noise: motif
+info_loss_level: node
+w_message: true
+motif_scorer_norm: none
+pool_mode: max_mean

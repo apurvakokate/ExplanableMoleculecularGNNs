@@ -1,0 +1,9 @@
+# Tuning arm, generated 2026-11-08 for the post-r-schedule variant tuning.
+# Phase B: pool_mode max_mean -> max
+# Fixed across the phase: motif_method=readout, noise=motif, w_message=true. Base = layer scorer norm / pool_mode max_mean / kl=motif. pool_mode 'multi' excluded by decision (size dependent, more parameters).
+motif_method: readout
+noise: motif
+info_loss_level: motif
+w_message: true
+motif_scorer_norm: layer
+pool_mode: max

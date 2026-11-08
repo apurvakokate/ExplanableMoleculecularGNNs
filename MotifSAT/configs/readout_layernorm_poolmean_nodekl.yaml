@@ -1,0 +1,18 @@
+# Method preset: readout_layernorm with pool_mode=mean AND the KL term at NODE level
+# (readout-arm factorial cell, 2026-11-07).
+#
+# Completes the readout arm's 4x2 factorial over pool_mode {max_mean, mean, max, multi} x
+# info_loss_level {motif, node}. Five of the eight cells exist in variants_v2 (all four pool modes
+# at KL=motif, plus max_mean at KL=node); this supplies pool=mean x KL=node so the pool x KL
+# INTERACTION is estimable rather than assumed absent.
+#
+# NOTE pool_mode changes scorer capacity: ExtractorMLP widths scale with pooled_dim, so the motif
+# scorer holds 17k / 17k / 67k / 149k parameters at mean / max / max_mean / multi. A pool_mode
+# comparison is therefore not capacity-matched; that is a property of the hyperparameter, and is
+# fine for TUNING, but it is not an isolated pooling effect.
+motif_method: readout
+noise: motif
+info_loss_level: node
+w_message: true
+motif_scorer_norm: layer
+pool_mode: mean
