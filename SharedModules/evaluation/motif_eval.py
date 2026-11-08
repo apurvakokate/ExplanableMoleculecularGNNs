@@ -446,25 +446,44 @@ def compute_motif_impact(
 
 def _impact_value(entry: Dict[str, float]) -> float:
     """Per-motif *mean* impact for ranking / top-bottom stats: the faithful
-    leave-one-out ``masking_without_removal`` when present, else the
-    graph-removal ``impact``."""
-    v = entry.get('masking_without_removal')
-    return entry['impact'] if v is None else v
+    leave-one-out ``masking_without_removal``.
+
+    NO FALLBACK (2026-11-07, by instruction): the graph-removal ``impact`` is
+    never substituted. The two keys currently hold the same number because the
+    removal path is disabled, but that is a property of today's code, not a
+    guarantee — so a missing key raises instead of silently returning a
+    different quantity.
+    """
+    if 'masking_without_removal' not in entry:
+        raise KeyError(
+            "motif-impact entry has no 'masking_without_removal' (keys: "
+            f"{sorted(entry)}). The graph-removal 'impact' is NOT used as a "
+            "fallback; re-run the impact pass.")
+    return float(entry['masking_without_removal'])
 
 
 def _impact_values(entry: Dict[str, float]) -> List[float]:
     """Per-(motif, graph) impact list for instance-level correlation: the
-    faithful LOO ``masking_without_removal_values`` when present, else the
-    graph-removal ``impact_values``, else the single per-motif mean.
+    faithful LOO ``masking_without_removal_values``.
+
+    NO FALLBACK (2026-11-07, by instruction): neither the graph-removal
+    ``impact_values`` nor the per-motif mean is substituted. Collapsing to the
+    mean silently turns a per-(motif, graph) correlation into a per-motif one,
+    which is the error this guard exists to prevent.
 
     Keeping every graph's impact as its own point (rather than averaging across
     graphs) matches the original MOSE-GNN score-vs-impact Pearson."""
-    v = entry.get('masking_without_removal_values')
-    if v is None:
-        v = entry.get('impact_values')
-    if v:
-        return [float(x) for x in v]
-    return [_impact_value(entry)]
+    if 'masking_without_removal_values' not in entry:
+        raise KeyError(
+            "motif-impact entry has no 'masking_without_removal_values' (keys: "
+            f"{sorted(entry)}). Neither 'impact_values' nor the per-motif mean "
+            "is used as a fallback; re-run the impact pass.")
+    v = entry['masking_without_removal_values']
+    if not v:
+        raise ValueError(
+            "'masking_without_removal_values' is empty for this motif; the "
+            "per-motif mean is NOT used as a fallback.")
+    return [float(x) for x in v]
 
 
 def score_impact_correlation(
@@ -536,9 +555,13 @@ def caches_from_motif_impact(
     for mid, e in motif_impacts.items():
         gis = e.get('graph_indices')
         sv = e.get('score_values')
-        iv = e.get('masking_without_removal_values')
-        if iv is None:
-            iv = e.get('impact_values')
+        # NO FALLBACK (2026-11-07, by instruction): the graph-removal
+        # 'impact_values' is never substituted for the faithful LOO values.
+        if 'masking_without_removal_values' not in e:
+            raise KeyError(
+                f"motif {mid}: no 'masking_without_removal_values' (keys: "
+                f"{sorted(e)}). 'impact_values' is NOT used as a fallback.")
+        iv = e['masking_without_removal_values']
         if not gis or sv is None or iv is None:
             continue
         if not (len(gis) == len(sv) == len(iv)):
