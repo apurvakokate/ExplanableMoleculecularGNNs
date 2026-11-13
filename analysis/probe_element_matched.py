@@ -255,8 +255,7 @@ def analyse_arm(X, Y, low, high, mid, DEG, arm, min_n, seed):
                elems=','.join(IDX2SYM.get(e, str(e)) for e in elems))
     per_rows = []
     if not elems:
-        row.update(gap_elem=float('nan'), null_mean=float('nan'),
-                   null_sd=float('nan'), p_perm=float('nan'),
+        row.update(gap_elem=float('nan'),
                    gap_elem_deg=float('nan'), n_strata_deg=0,
                    recall_mid_mean=float('nan'), gap_elem_usable=float('nan'),
                    n_elems_usable=0, elems_usable='',
@@ -409,8 +408,6 @@ def main():
                   f'(p={r["p_usable"]:.4f}, {r["n_elems_usable"]}/{r["n_elems"]} elems)  '
                   f'all_elem={r["gap_elem"]:+.3f}  '
                   f'ceil={r["recall_mid_mean"]:.3f}  '
-                  f'null={r["null_mean"]:+.3f}+-{r["null_sd"]:.3f}  '
-                  f'p={r["p_perm"]:.4f}  '
                   f'elem+deg={r["gap_elem_deg"]:+.3f}  '
                   f'[{r["elems"]}]', flush=True)
 
