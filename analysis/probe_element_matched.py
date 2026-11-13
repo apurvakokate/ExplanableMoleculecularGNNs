@@ -52,6 +52,16 @@ INFERENCE
     p<0.05) because the ``min_n`` floor licenses the normal approximation, and
     within-molecule correlation cancels out of the within-element difference.
 
+SPLITS
+    --splits selects which of train / valid / test to probe (default 'test').
+    Rows are emitted PER SPLIT plus a 'pooled' row when more than one is given.
+    Per-split rows are not interchangeable: the model was fit on train and valid
+    drove early stopping, so on those splits both the gate values and the node
+    embeddings are partly memorised -- a train atom is low-gate because the model
+    learned it should be, on that exact molecule. Quote 'test'; use train/valid
+    for power (e.g. GIN's extremes are too thin on test alone) and treat
+    agreement across splits as the evidence that pooling is legitimate.
+
 Eval only. Writes three CSVs. Must live in <repo>/analysis/ (sibling import).
 """
 from __future__ import annotations
@@ -97,12 +107,13 @@ IDX2SYM = {v: k for k, v in ATOMS.items()}
 # ─────────────────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def collect(mose, tl, device, max_graphs: int):
-    """Walk the test list once; return per-atom (emb, gate, element, degree, graph).
+    """Walk one split's graph list; return per-atom (emb, gate, element, degree, graph).
 
-    No gate multiplication is applied to the embedding: see module docstring.
+    ``max_graphs`` of 0 means no cap. No gate multiplication is applied to the
+    embedding: see module docstring.
     """
     E, GA, Y, DEG, GID = [], [], [], [], []
-    for gi, d in enumerate(tl[:max_graphs]):
+    for gi, d in enumerate(tl[:max_graphs] if max_graphs else tl):
         ne, na, x = _node_emb_and_att(mose, d, device, gated=True)
         if ne is None:
             continue
@@ -119,6 +130,44 @@ def collect(mose, tl, device, max_graphs: int):
         return None
     return dict(E=np.concatenate(E), GA=np.concatenate(GA), Y=np.concatenate(Y),
                 DEG=np.concatenate(DEG), GID=np.concatenate(GID))
+
+
+def _load_graphs(run_dir: Path, data_root: str, vocab_root: str, splits):
+    """Graph lists for the requested splits of THIS run's fold.
+
+    ``_load_model_and_data`` (in probe_vs_vanilla.py, left untouched) returns only
+    the test split. This rebuilds the same ``get_loaders`` call from the run's own
+    summary.json, so the fold threshold and ``kept_motif_ids`` are identical to
+    what the checkpoint was trained against -- same arguments, same datasets.
+
+    Returns {split: [graphs]} for the splits asked for ('train' / 'valid').
+    """
+    from SharedModules.data.vocab import load_vocab
+    from SharedModules.data.loader import get_loaders
+    from SharedModules.data.dataset_routing import (
+        default_processed_base, variant_processed_root)
+
+    with open(run_dir / 'summary.json', encoding='utf-8') as f:
+        meta = json.load(f)
+    dr = meta.get('data_root', data_root)
+    variant = meta['vocab_variant']
+    vocab = load_vocab(vocab_root, meta['dataset'], variant)
+    proc = meta.get('processed_root') or variant_processed_root(
+        default_processed_base(dr, None), variant)
+    loaders, _test_ds, _dmeta = get_loaders(
+        dataset=meta['dataset'], data_root=dr, fold=int(meta.get('fold', 0)),
+        vocab=vocab, processed_root=proc, batch_size=128, normalize=False,
+        mutag_index_maps_path=meta.get('mutag_index_maps_path'),
+        mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
+        mutag_splits_path=meta.get('mutag_splits_path'),
+        mutag_seed=int(meta.get('mutag_seed') or 42),
+    )
+    out = {}
+    for sp in splits:
+        if sp not in loaders:
+            raise KeyError(f"split {sp!r} not in loaders {sorted(loaders)}")
+        out[sp] = [g for g in loaders[sp].dataset]
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,97 +379,177 @@ def process(mose_dir: Path, data_root, vocab_root, device, args):
     bb = mose_dir.name.split('_')[0]
     tag = dict(dataset=ds, backbone=bb, fold=fold)
 
-    mose, tl, st = _load_model_and_data(mose_dir, data_root, vocab_root, device)
+    mose, test_list, st = _load_model_and_data(mose_dir, data_root, vocab_root,
+                                               device)
     if st != 'ok':
         return None, None, None, 'mose ' + st
 
-    got = collect(mose, tl, device, args.max_graphs)
-    if got is None:
+    # The test split comes from _load_model_and_data so that --splits test
+    # reproduces the test-only run exactly; the others are loaded separately.
+    lists = {}
+    if 'test' in args.splits:
+        lists['test'] = test_list
+    extra = [s for s in args.splits if s != 'test']
+    if extra:
+        try:
+            lists.update(_load_graphs(mose_dir, data_root, vocab_root, extra))
+        except Exception as e:
+            return None, None, None, f'split load failed: {e}'
+
+    got = {}
+    for sp in args.splits:
+        if sp not in lists:
+            continue
+        g = collect(mose, lists[sp], device, args.max_graphs)
+        if g is not None:
+            got[sp] = g
+    if not got:
         return None, None, None, 'no embeddings'
-    E, GA, Y, DEG = got['E'], got['GA'], got['Y'], got['DEG']
 
-    low = GA < args.lo
-    high = GA > args.hi
-    mid = (~low) & (~high)
+    # POOLED is reported alongside, never instead of, the per-split rows: the
+    # model was fit on train (and valid drove early stopping), so gate values and
+    # embeddings there are partly memorised. Pool only if the splits agree.
+    units = list(got.items())
+    if len(got) > 1:
+        units.append(('pooled', {k: np.concatenate([v[k] for v in got.values()])
+                                 for k in ('E', 'GA', 'Y', 'DEG')}))
 
-    # Composition over ALL elements, incl. those excluded from the gap.
-    comp = [dict(**tag, element=IDX2SYM.get(int(e), str(e)),
-                 n_low=int((low & (Y == e)).sum()),
-                 n_high=int((high & (Y == e)).sum()),
-                 n_mid=int((mid & (Y == e)).sum()))
-            for e in np.unique(Y)]
+    gap_rows, per_rows, comp = [], [], []
+    status = 'ok'
+    for sp, d in units:
+        E, GA, Y, DEG = d['E'], d['GA'], d['Y'], d['DEG']
+        low, high = GA < args.lo, GA > args.hi
+        mid = (~low) & (~high)
+        stag = dict(tag, split=sp)
 
-    base = dict(**tag, n_atoms=int(len(GA)), n_low=int(low.sum()),
-                n_high=int(high.sum()), n_mid=int(mid.sum()),
-                gate_min=float(GA.min()), gate_med=float(np.median(GA)),
-                gate_max=float(GA.max()))
+        comp.extend(dict(**stag, element=IDX2SYM.get(int(e), str(e)),
+                         n_low=int((low & (Y == e)).sum()),
+                         n_high=int((high & (Y == e)).sum()),
+                         n_mid=int((mid & (Y == e)).sum()))
+                    for e in np.unique(Y))
 
-    if low.sum() < args.min_n or high.sum() < args.min_n or mid.sum() < 100 \
-            or len(np.unique(Y[mid])) < 2:
-        # Informative, not a failure: this backbone does not use the extremes.
-        r = dict(base, arm='n/a', skip_reason=(
-            f'gate extremes too thin (n_low={int(low.sum())} '
-            f'n_high={int(high.sum())} n_mid={int(mid.sum())})'))
-        return [r], [], comp, 'thin'
+        base = dict(**stag, n_atoms=int(len(GA)), n_low=int(low.sum()),
+                    n_high=int(high.sum()), n_mid=int(mid.sum()),
+                    gate_min=float(GA.min()), gate_med=float(np.median(GA)),
+                    gate_max=float(GA.max()))
 
-    gap_rows, per_rows = [], []
-    for arm, X in (('l2', l2(E)), ('raw', E)):
-        r, pr = analyse_arm(X, Y, low, high, mid, DEG, arm,
-                            args.min_n, args.seed)
-        gap_rows.append(dict(base, **r))
-        per_rows.extend(dict(**tag, **p) for p in pr)
-    return gap_rows, per_rows, comp, 'ok'
+        if low.sum() < args.min_n or high.sum() < args.min_n or mid.sum() < 100 \
+                or len(np.unique(Y[mid])) < 2:
+            gap_rows.append(dict(base, arm='n/a', skip_reason=(
+                f'gate extremes too thin (n_low={int(low.sum())} '
+                f'n_high={int(high.sum())} n_mid={int(mid.sum())})')))
+            status = 'thin' if status == 'ok' else status
+            continue
+
+        for arm, X in (('l2', l2(E)), ('raw', E)):
+            r, pr = analyse_arm(X, Y, low, high, mid, DEG, arm,
+                                args.min_n, args.seed)
+            gap_rows.append(dict(base, **r))
+            per_rows.extend(dict(**stag, **p) for p in pr)
+    return gap_rows, per_rows, comp, status
+
+
+def resolve_cell(dataset: str, backbone: str, fold: str):
+    """The ONE run dir for (dataset, backbone, fold), or raise.
+
+    No fallback: 0 matches and >1 matches are both errors. ``run_dirs`` already
+    enforces the tree-per-backbone rule (GAT strictly from final_v2_gath1 because
+    final_v2's GAT is the old 4-head build), so this only filters its output.
+    """
+    cands = [rd for rd in run_dirs(dataset)
+             if rd.name.split('_')[0] == backbone and rd.parent.name == fold]
+    if len(cands) == 1:
+        return cands[0]
+    avail = sorted({(rd.name.split('_')[0], rd.parent.name)
+                    for rd in run_dirs(dataset)})
+    raise SystemExit(
+        f'FATAL: {len(cands)} run dirs for {dataset}/{backbone}/{fold} '
+        f'(need exactly 1).\n  matches: {[str(c) for c in cands]}\n'
+        f'  available (backbone, fold) for {dataset}: {avail}')
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description='Element-matched node-identity probe for ONE cell '
+                    '(dataset x backbone x fold). Parallelism is external: see '
+                    'analysis/probe_elem_launch.sh.')
     ap.add_argument('--dataset', required=True)
+    ap.add_argument('--backbone', required=True,
+                    choices=['GCN', 'GIN', 'GAT', 'SAGE', 'PNA'])
+    ap.add_argument('--fold', required=True,
+                    help="fold dir name, e.g. 'fold0'")
     ap.add_argument('--data_root', required=True)
-    ap.add_argument('--vocab_root', required=True)
-    ap.add_argument('--max_graphs', type=int, default=800)
-    ap.add_argument('--lo', type=float, default=0.1, help='gate < lo  => LOW bucket')
-    ap.add_argument('--hi', type=float, default=0.9, help='gate > hi  => HIGH bucket')
+    ap.add_argument('--vocab_root', required=True,
+                    help='MUST be the vocab the checkpoint was TRAINED with. '
+                         'summary.json does NOT record vocab_root, so this is '
+                         'unchecked by metadata -- but a mismatch changes the '
+                         "fold's kept_motif_ids, hence motif_params' shape, and "
+                         'load_state_dict then fails loudly. For final_v2 / '
+                         'final_v2_gath1 MoSE runs this is vocab_final_v2 '
+                         '(built 2026-07-27, models trained 2026-07-27 onward; '
+                         'vocab_final_v3 is 2026-10 and postdates them).')
+    ap.add_argument('--max_graphs', type=int, default=0,
+                    help='cap graphs per split; 0 = no cap')
+    ap.add_argument('--splits', default='test',
+                    help="comma-separated: test,valid,train  (or 'all'). Rows "
+                         'are emitted per split PLUS a pooled row when >1.')
+    ap.add_argument('--lo', type=float, default=0.1, help='gate < lo  => LOW')
+    ap.add_argument('--hi', type=float, default=0.9, help='gate > hi  => HIGH')
     ap.add_argument('--min_n', type=int, default=30,
                     help='an element must have this many atoms in BOTH buckets')
     ap.add_argument('--seed', type=int, default=0)
-    ap.add_argument('--out_prefix', default=None)
+    ap.add_argument('--out_dir', required=True,
+                    help='campaign root; this cell writes '
+                         '<out_dir>/<dataset>/<backbone>_<fold>_*.csv')
     a = ap.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    G, P, C = [], [], []
-    for rd in run_dirs(a.dataset):
-        gr, pr, cp, st = process(rd, a.data_root, a.vocab_root, device, a)
-        bb = rd.name.split('_')[0]
-        fold = rd.parent.name
-        if gr is None:
-            print(f'  [skip] {bb} {fold}: {st}', flush=True)
-            continue
-        G.extend(gr)
-        P.extend(pr or [])
-        C.extend(cp or [])
-        if st == 'thin':
-            print(f'  [{bb} {fold}] {gr[0]["skip_reason"]}', flush=True)
-            continue
-        for r in gr:
-            print(f'  [{bb} {fold}] {r["arm"]:>3}  '
-                  f'unstrat={r["gap_unstrat"]:+.3f}  '
-                  f'USABLE={r["gap_elem_usable"]:+.3f}+-{r["se_usable"]:.3f} '
-                  f'(p={r["p_usable"]:.4f}, {r["n_elems_usable"]}/{r["n_elems"]} elems)  '
-                  f'all_elem={r["gap_elem"]:+.3f}  '
-                  f'ceil={r["recall_mid_mean"]:.3f}  '
-                  f'elem+deg={r["gap_elem_deg"]:+.3f}  '
-                  f'[{r["elems"]}]', flush=True)
+    _VALID = ('train', 'valid', 'test')
+    a.splits = (list(_VALID) if a.splits.strip().lower() == 'all'
+                else [s.strip() for s in a.splits.split(',') if s.strip()])
+    bad = [s for s in a.splits if s not in _VALID]
+    if bad:
+        ap.error(f'unknown split(s) {bad}; valid: {list(_VALID)}')
+    a.splits = [s for s in _VALID if s in a.splits]
 
-    if not G:
-        print('no runs')
-        return
-    pre = a.out_prefix or str(BASE / 'final_v2' / f'probe_elemmatched_{a.dataset}')
-    os.makedirs(os.path.dirname(pre) or '.', exist_ok=True)
-    pd.DataFrame(G).to_csv(f'{pre}_gap.csv', index=False)
-    if P:
-        pd.DataFrame(P).to_csv(f'{pre}_perelem.csv', index=False)
-    pd.DataFrame(C).to_csv(f'{pre}_composition.csv', index=False)
-    print('wrote', f'{pre}_gap.csv', len(G), '| perelem', len(P), '| comp', len(C))
+    cell = f'{a.dataset}/{a.backbone}/{a.fold}'
+    print(f'cell={cell} splits={",".join(a.splits)} min_n={a.min_n} '
+          f'lo={a.lo} hi={a.hi}', flush=True)
+
+    rd = resolve_cell(a.dataset, a.backbone, a.fold)
+    print(f'run_dir={rd}', flush=True)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    gr, pr, cp, st = process(rd, a.data_root, a.vocab_root, device, a)
+    if gr is None:
+        raise SystemExit(f'FATAL {cell}: {st}')
+
+    for r in gr:
+        if r['arm'] == 'n/a':
+            print(f'  [{r["split"]:>6}] {r["skip_reason"]}', flush=True)
+            continue
+        print(f'  [{r["split"]:>6}] {r["arm"]:>3}  '
+              f'unstrat={r["gap_unstrat"]:+.3f}  '
+              f'USABLE={r["gap_elem_usable"]:+.3f}+-{r["se_usable"]:.3f} '
+              f'(p={r["p_usable"]:.4f}, {r["n_elems_usable"]}/{r["n_elems"]} elems)  '
+              f'all_elem={r["gap_elem"]:+.3f}  '
+              f'ceil={r["recall_mid_mean"]:.3f}  '
+              f'elem+deg={r["gap_elem_deg"]:+.3f}  '
+              f'[{r["elems"]}]', flush=True)
+
+    out = Path(a.out_dir) / a.dataset
+    out.mkdir(parents=True, exist_ok=True)
+    stem = f'{a.backbone}_{a.fold}'
+    pd.DataFrame(gr).to_csv(out / f'{stem}_gap.csv', index=False)
+    if pr:
+        pd.DataFrame(pr).to_csv(out / f'{stem}_perelem.csv', index=False)
+    if cp:
+        pd.DataFrame(cp).to_csv(out / f'{stem}_composition.csv', index=False)
+    (out / f'{stem}.done').write_text(
+        f'{cell}\nsplits={",".join(a.splits)}\nrun_dir={rd}\n'
+        f'gap_rows={len(gr)} perelem_rows={len(pr or [])} '
+        f'comp_rows={len(cp or [])}\nstatus={st}\n')
+    print(f'OK {cell}: gap={len(gr)} perelem={len(pr or [])} '
+          f'comp={len(cp or [])} -> {out}/{stem}_*.csv', flush=True)
 
 
 if __name__ == '__main__':
