@@ -67,6 +67,7 @@ Eval only. Writes three CSVs. Must live in <repo>/analysis/ (sibling import).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -143,7 +144,7 @@ def _load_graphs(run_dir: Path, data_root: str, vocab_root: str, splits):
     Returns {split: [graphs]} for the splits asked for ('train' / 'valid').
     """
     from SharedModules.data.vocab import load_vocab
-    from SharedModules.data.loader import get_loaders
+    from SharedModules.data.loader import get_loaders, TASK_TYPE
     from SharedModules.data.dataset_routing import (
         default_processed_base, variant_processed_root)
 
@@ -154,9 +155,16 @@ def _load_graphs(run_dir: Path, data_root: str, vocab_root: str, splits):
     vocab = load_vocab(vocab_root, meta['dataset'], variant)
     proc = meta.get('processed_root') or variant_processed_root(
         default_processed_base(dr, None), variant)
+    # normalize must match _load_test_list: it scales the REGRESSION target, so
+    # esol / Lipophilicity build differently from the classification sets. The
+    # probe never reads y, but diverging here would differ from how training
+    # built the dataset and can affect cache reuse. batch_size is irrelevant --
+    # we iterate loaders[sp].dataset directly, never the DataLoader.
+    task_type = TASK_TYPE.get(meta['dataset'], 'BinaryClass')
     loaders, _test_ds, _dmeta = get_loaders(
         dataset=meta['dataset'], data_root=dr, fold=int(meta.get('fold', 0)),
-        vocab=vocab, processed_root=proc, batch_size=128, normalize=False,
+        vocab=vocab, processed_root=proc, batch_size=128,
+        normalize=(task_type == 'Regression'),
         mutag_index_maps_path=meta.get('mutag_index_maps_path'),
         mutag_smiles_csv_path=meta.get('mutag_smiles_csv_path'),
         mutag_splits_path=meta.get('mutag_splits_path'),
