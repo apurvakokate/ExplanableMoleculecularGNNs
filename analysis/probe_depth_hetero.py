@@ -146,12 +146,21 @@ def collect(model, graphs, device, max_graphs=0):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def analyse(X, Y, low, high, mid, layer, arm, min_n, seed):
-    """Hetero-only element-matched gap for one (layer, arm)."""
+def analyse(X, Y, low, high, mid, layer, arm, min_n, seed, cw=None):
+    """Element-matched gap for one (layer, arm).
+
+    ``cw='balanced'`` reweights the loss so every class counts equally. Without
+    it the probe inherits the label prior, so an uninformative embedding makes
+    it emit the MAJORITY class -- which manufactures a high recall for that
+    class in the low bucket and a near-zero recall for every other. That is why
+    carbon looked 'spared' when carbon was the majority and oxygen looked
+    'spared' when oxygen was. Balanced weighting removes the prior advantage,
+    so an uninformative embedding yields a near-uniform prediction instead.
+    """
     rng = np.random.default_rng(seed)
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter('always', ConvergenceWarning)
-        clf = LogisticRegression(max_iter=1000).fit(X[mid], Y[mid])
+        clf = LogisticRegression(max_iter=1000, class_weight=cw).fit(X[mid], Y[mid])
         conv = not any(issubclass(x.category, ConvergenceWarning) for x in w)
     train_classes = set(np.unique(Y[mid]).tolist())
     pred = clf.predict(X)
@@ -170,7 +179,8 @@ def analyse(X, Y, low, high, mid, layer, arm, min_n, seed):
             continue
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', ConvergenceWarning)
-            pmid[te] = LogisticRegression(max_iter=1000).fit(X[tr], Y[tr]).predict(X[te])
+            pmid[te] = LogisticRegression(max_iter=1000, class_weight=cw).fit(
+                X[tr], Y[tr]).predict(X[te])
     sm = pmid >= 0
     cmid = sm & (pmid == Y)
 
@@ -256,26 +266,32 @@ def process(rd, args, device):
 
     rows, pers = [], []
     for sp, (reps, GA, Y, DEG) in units:
-        het = Y != CARBON                      # <- carbon excluded entirely
+        # carbon excluded by default; --include_carbon keeps it (needed to test
+        # whether carbon itself is spared, which no previous run could do:
+        # carbon was the majority class in one probe and absent from the other).
+        het = np.ones(len(Y), bool) if args.include_carbon else (Y != CARBON)
         low = (GA < args.lo) & het
         high = (GA > args.hi) & het
         mid = het & ~(GA < args.lo) & ~(GA > args.hi)
         base = dict(**tag, split=sp,
-                    n_hetero=int(het.sum()), n_all=int(len(GA)),
+                    balanced=bool(args.balanced),
+                    include_carbon=bool(args.include_carbon),
+                    n_probed=int(het.sum()), n_all=int(len(GA)),
                     n_low=int(low.sum()), n_high=int(high.sum()), n_mid=int(mid.sum()),
                     frac_gate_zero_low=float((GA[low] == 0).mean()) if low.sum() else float('nan'),
                     frac_gate_zero_all=float((GA == 0).mean()))
         if low.sum() < args.min_n or high.sum() < args.min_n or mid.sum() < 100 \
                 or len(np.unique(Y[mid])) < 2:
             rows.append(dict(base, layer='-', arm='-', skip_reason=(
-                f'hetero extremes too thin (n_low={int(low.sum())} '
+                f'extremes too thin (n_low={int(low.sum())} '
                 f'n_high={int(high.sum())} n_mid={int(mid.sum())} '
                 f'classes={len(np.unique(Y[mid]))})')))
             continue
         for layer in sorted(reps, key=lambda k: (k != 'pre', k)):
             E = reps[layer]
             for arm, X in (('l2', l2(E)), ('raw', E)):
-                r, pr = analyse(X, Y, low, high, mid, layer, arm, args.min_n, args.seed)
+                r, pr = analyse(X, Y, low, high, mid, layer, arm, args.min_n,
+                                args.seed, cw=('balanced' if args.balanced else None))
                 rows.append(dict(base, **r))
                 pers.extend(dict(**tag, split=sp, **p) for p in pr)
     return rows, pers
@@ -294,6 +310,12 @@ def main():
     ap.add_argument('--hi', type=float, default=0.9)
     ap.add_argument('--min_n', type=int, default=30)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--balanced', action='store_true',
+                    help="LogisticRegression(class_weight='balanced'): removes the "
+                         'label-prior advantage that makes the majority class look '
+                         'preserved at low gate')
+    ap.add_argument('--include_carbon', action='store_true',
+                    help='keep carbon in the probe (default: hetero-only)')
     ap.add_argument('--out_dir', required=True)
     a = ap.parse_args()
     V = ('train', 'valid', 'test')
@@ -305,7 +327,8 @@ def main():
     a.splits = [s for s in V if s in a.splits]
 
     rd = resolve_cell(a.dataset, a.backbone, a.fold)
-    print(f'cell={a.dataset}/{a.backbone}/{a.fold} splits={",".join(a.splits)}', flush=True)
+    print(f'cell={a.dataset}/{a.backbone}/{a.fold} splits={",".join(a.splits)} '
+          f'balanced={a.balanced} include_carbon={a.include_carbon}', flush=True)
     print(f'run_dir={rd}', flush=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     rows, pers = process(rd, a, device)
