@@ -12,10 +12,13 @@ Per run and per split S (and "all" = the molecules of the three splits together)
                   fired clauses of AUC(scores; clause atoms, atoms outside every fired clause)
                   — analysis/evaluate.py _dnf_gtroc. gt_all must equal the run's stored
                   instance_gt_roc_node_auc_mean_all (written as `stored`; checked on aggregation).
-  gtx_S           the same molecules against the rule EXTENDED by OR with the class-1-only motifs
-                  (a motif id, not a rule motif, found in rule-positive molecules and in no other
-                  molecule of the dataset): each such motif in the molecule is one more clause and
-                  its atoms leave the negatives. A molecule without such a motif keeps its rule value.
+  ngtx_S, gtx_S   GT-ROC against the rule EXTENDED by OR with the class-1-only motifs (a motif id,
+                  not a rule motif, found in rule-positive molecules and in no other molecule of
+                  the dataset): each such motif in the molecule is one more clause and its atoms
+                  leave the negatives. A molecule without such a motif keeps its rule value. A
+                  molecule whose atoms ALL belong to the rule or to a class-1-only motif has no
+                  negative atom left, so its extended value is undefined and it is left out
+                  (ngtx_S counts the molecules that enter gtx_S; n_S - ngtx_S were left out).
   nwith_S         how many of the n_S molecules hold a class-1-only motif
   nspur_S, spur_S SpurROC as spur_msat_v1/spur.py computes it: per molecule that has atoms of the
                   correlated motif (node_label_spurious) and rule atoms (node_label),
@@ -97,9 +100,9 @@ def groups(fold_graphs):
 
 def score_run(path, fold_graphs, info):
     ibs = json.load(open(path))['importances_by_split']
-    row, tot = {}, dict(n=0, gt=0.0, gtx=0.0, nwith=0, nspur=0, spur=0.0)
+    row, tot = {}, dict(n=0, gt=0.0, ngtx=0, gtx=0.0, nwith=0, nspur=0, spur=0.0)
     for s in SPL:
-        acc = dict(n=0, gt=0.0, gtx=0.0, nwith=0, nspur=0, spur=0.0)
+        acc = dict(n=0, gt=0.0, ngtx=0, gtx=0.0, nwith=0, nspur=0, spur=0.0)
         st = ibs.get(s) or {}
         if st:
             if len(st) != 1:
@@ -131,10 +134,11 @@ def score_run(path, fold_graphs, info):
                     neg_x = [k for k in neg if k not in P]
                     per_x = [v for v in (_auc(att, c, neg_x)
                                          for c in clauses + list(pure_atoms.values())) if v == v]
-                    if per_x:
-                        x = max(per_x)
+                    x = max(per_x) if per_x else None          # None: no negative atom left
                     acc['nwith'] += 1
-                acc['n'] += 1; acc['gt'] += inst; acc['gtx'] += x
+                acc['n'] += 1; acc['gt'] += inst
+                if x is not None:
+                    acc['ngtx'] += 1; acc['gtx'] += x
         for k in tot:
             tot[k] += acc[k]
         for tag, d in ((s, acc),):
@@ -145,7 +149,7 @@ def score_run(path, fold_graphs, info):
 
 def _cols(tag, d):
     return {'n_' + tag: d['n'], 'gt_' + tag: (d['gt'] / d['n'] if d['n'] else None),
-            'gtx_' + tag: (d['gtx'] / d['n'] if d['n'] else None), 'nwith_' + tag: d['nwith'],
+            'ngtx_' + tag: d['ngtx'], 'gtx_' + tag: (d['gtx'] / d['ngtx'] if d['ngtx'] else None), 'nwith_' + tag: d['nwith'],
             'nspur_' + tag: d['nspur'], 'spur_' + tag: (d['spur'] / d['nspur'] if d['nspur'] else None)}
 
 

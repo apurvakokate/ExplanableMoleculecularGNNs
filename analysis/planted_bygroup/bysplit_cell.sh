@@ -2,7 +2,7 @@
 # One planted task: DS RULE GROUP(native|posthoc).  Same invocation as
 # fragmentation_v2/_deploy/gtroc_cell.sh (the run behind the planted GT-ROC tables), with
 # analysis/evaluate_gtroc_bysplit.py in place of evaluate_gtroc.py and its own output tree.
-# Pure READ of the persisted per-atom scores; writes only under mose_replication_v2/gtroc_bysplit.
+# Pure READ of the persisted per-atom scores; writes only under mose_replication_v2/gtroc_bysplit_v2.
 # SKIP-IF-DONE: each per-method CSV gets a <csv>.done sentinel on a clean rc==0 run with rows.
 set -uo pipefail
 DS=$1; RULE=$2; GROUP=$3
@@ -10,7 +10,7 @@ P=/nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor
 DATA=/nfs/hpc/share/kokatea/ChemIntuit/MotifBreakdown/datasets/FOLDS
 source /nfs/stak/users/kokatea/hpc-share/anaconda3/etc/profile.d/conda.sh; conda activate l2xgnn
 export PYTHONPATH=$P WANDB_MODE=disabled OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
-OUT=$P/mose_replication_v2/gtroc_bysplit; TRK=$OUT/_tracking/planted
+OUT=$P/mose_replication_v2/gtroc_bysplit_v2; TRK=$OUT/_tracking/planted
 CK=$P/planted_v2/$DS/$RULE; VR=$P/planted_v2/$DS/_shared/vocab; PR=$P/planted_v2/$DS/_shared/processed
 D=$OUT/planted/$DS/$RULE; mkdir -p $D $TRK
 G="python3 -u $P/analysis/evaluate_gtroc_bysplit.py --dataset $DS --gt_tier planted --ckpt_root $CK \

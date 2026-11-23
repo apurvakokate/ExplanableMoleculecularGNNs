@@ -8,10 +8,14 @@ is --dest.
 
 COLUMNS ADDED (cond in full, filt; S in train, valid, test, all)
   n_<cond>_<S>       rule-positive molecules scored in the split
-  gtx_<cond>_<S>     their mean GT-ROC against the rule EXTENDED by OR with the class-1-only
-                     motifs (definition in evaluate_gtroc_bygroup.py); a molecule that holds no
-                     such motif keeps its rule value
-  nwith_<cond>_<S>   how many of them hold a class-1-only motif
+  ngtx_<cond>_<S>, gtx_<cond>_<S>
+                     mean GT-ROC against the rule EXTENDED by OR with the class-1-only motifs
+                     (definition in evaluate_gtroc_bygroup.py). A molecule that holds no such
+                     motif keeps its rule value. A molecule that holds one but has no negative
+                     atom left under the extended ground truth (every kept atom belongs to the
+                     rule or to a class-1-only motif) has no defined value and is left out;
+                     ngtx counts the molecules that enter the mean.
+  nwith_<cond>_<S>   how many of the n molecules hold a class-1-only motif
 CHECK, every run, both conditions, every split: the mean of the per-molecule rule values of a
 split equals the gtroc_<cond>_<S> that evaluate_gtroc.py returns.
 """
@@ -36,7 +40,7 @@ def eval_one(method, run_dir, art_dir, meta, args, device, kept):
     for cond, unk in (('full', 'include'), ('filt', 'exclude')):
         keep_fn = G._keep_fn(kept if cond == 'filt' else None, unk)
         inst, ext, _pvr, group = G._by_group(abi, gl, keep_fn, info)
-        x = {i: ext.get(i, v) for i, v in inst.items()}
+        x = {i: (ext[i] if group[i] else v) for i, v in inst.items() if (not group[i]) or i in ext}
         for s in E.SPLITS:
             lo, hi = bounds[s]
             idx = [i for i in inst if lo <= i < hi]
@@ -45,9 +49,11 @@ def eval_one(method, run_dir, art_dir, meta, args, device, kept):
             if not np.isclose(got, ref, rtol=0, atol=1e-9, equal_nan=True):
                 raise ValueError(f'per-molecule mean {got} != gtroc_{cond}_{s} {ref}')
             row[f'n_{cond}_{s}'] = len(idx)
-            row[f'gtx_{cond}_{s}'] = G._mean(x[i] for i in idx)
+            row[f'ngtx_{cond}_{s}'] = sum(1 for i in idx if i in x)
+            row[f'gtx_{cond}_{s}'] = G._mean(x[i] for i in idx if i in x)
             row[f'nwith_{cond}_{s}'] = sum(1 for i in idx if group[i])
         row[f'n_{cond}_all'] = len(inst)
+        row[f'ngtx_{cond}_all'] = len(x)
         row[f'gtx_{cond}_all'] = G._mean(x.values())
         row[f'nwith_{cond}_all'] = sum(1 for i in inst if group[i])
     return row

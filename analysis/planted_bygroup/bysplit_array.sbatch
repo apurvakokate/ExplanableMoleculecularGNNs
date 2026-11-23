@@ -3,7 +3,7 @@
 #SBATCH -p preempt,dgxh,dgx2,eecs,gpu,share
 #SBATCH --gres=gpu:0 -c 2 --mem=20G -t 6:00:00 --requeue --exclude=cn-gpu3
 #SBATCH -a 0-299%150
-#SBATCH -o /nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/mose_replication_v2/gtroc_bysplit/_logs/bs_%a.out
+#SBATCH -o /nfs/hpc/share/kokatea/ChemIntuit/Claude+Cursor/mose_replication_v2/gtroc_bysplit_v2/_logs/bs_%a.out
 # 300 tasks = 150 planted rules x {native, posthoc}; the manifest is the one the planted
 # GT-ROC tables were run from. CPU only, 2 cores per task.
 set -uo pipefail
